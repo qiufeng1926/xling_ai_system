@@ -1,0 +1,265 @@
+<template>
+  <el-container class="layout-container">
+    <el-aside width="240px" class="layout-aside">
+      <div class="logo">xling</div>
+      <el-menu
+        :default-active="activeMenu"
+        :default-openeds="defaultOpeneds"
+        router
+        background-color="#001529"
+        text-color="#fff"
+        active-text-color="#409eff"
+      >
+        <el-sub-menu index="module-influencer">
+          <template #title>
+            <el-icon><DataAnalysis /></el-icon>
+            <span>达人信息管理</span>
+          </template>
+          <el-menu-item :index="INFLUENCER_ROUTES.dashboard">
+            <el-icon><Odometer /></el-icon>
+            <span>工作台</span>
+          </el-menu-item>
+          <el-menu-item :index="INFLUENCER_ROUTES.collection">
+            <el-icon><Search /></el-icon>
+            <span>自动采集</span>
+          </el-menu-item>
+          <el-menu-item :index="INFLUENCER_ROUTES.review">
+            <el-icon><Checked /></el-icon>
+            <span>待审核</span>
+          </el-menu-item>
+          <el-menu-item :index="INFLUENCER_ROUTES.influencers">
+            <el-icon><User /></el-icon>
+            <span>{{ influencerMenuLabel }}</span>
+          </el-menu-item>
+          <el-menu-item v-if="showAdminMenus" :index="INFLUENCER_ROUTES.tags">
+            <el-icon><CollectionTag /></el-icon>
+            <span>标签管理</span>
+          </el-menu-item>
+          <el-menu-item v-if="showAdminMenus" :index="INFLUENCER_ROUTES.agencies">
+            <el-icon><OfficeBuilding /></el-icon>
+            <span>MCN机构</span>
+          </el-menu-item>
+          <el-menu-item v-if="showAdminMenus" :index="INFLUENCER_ROUTES.match">
+            <el-icon><Connection /></el-icon>
+            <span>智能匹配</span>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="module-meeting">
+          <template #title>
+            <el-icon><Microphone /></el-icon>
+            <span>会议 AI</span>
+          </template>
+          <el-menu-item :index="MEETING_ROUTES.home">
+            <el-icon><VideoCamera /></el-icon>
+            <span class="menu-item-with-badge">
+              协作会议
+              <el-badge v-if="pendingInviteCount > 0" :value="pendingInviteCount" class="menu-badge" />
+            </span>
+          </el-menu-item>
+          <el-menu-item :index="MEETING_ROUTES.solo">
+            <el-icon><Microphone /></el-icon>
+            <span>单人录制</span>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="module-platform">
+          <template #title>
+            <el-icon><Setting /></el-icon>
+            <span>平台管理</span>
+          </template>
+          <el-menu-item v-if="showUserManage" :index="INFLUENCER_ROUTES.users">
+            <el-icon><UserFilled /></el-icon>
+            <span>用户管理</span>
+          </el-menu-item>
+          <el-menu-item v-if="showAccessReview" :index="INFLUENCER_ROUTES.accessReview">
+            <el-icon><Stamp /></el-icon>
+            <span>权限管理</span>
+          </el-menu-item>
+        </el-sub-menu>
+      </el-menu>
+    </el-aside>
+
+    <el-container>
+      <el-header class="layout-header">
+        <div class="header-title">{{ currentTitle }}</div>
+        <div class="header-right">
+          <el-button
+            v-if="pendingInviteCount > 0"
+            type="primary"
+            link
+            @click="router.push(MEETING_ROUTES.home)"
+          >
+            {{ pendingInviteCount }} 条会议邀请待处理
+          </el-button>
+          <el-tag v-if="roleLabel" size="small" type="info">{{ roleLabel }}</el-tag>
+          <span class="username">{{ userStore.userInfo?.nickname || userStore.userInfo?.username }}</span>
+          <el-button link type="primary" @click="handleLogout">退出</el-button>
+        </div>
+      </el-header>
+      <el-main class="layout-main">
+        <router-view />
+      </el-main>
+    </el-container>
+  </el-container>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useUserStore } from '@/stores/user'
+import { listMyRooms } from '@/api/meetingRooms'
+import {
+  ROLE_LABELS,
+  canManageUsers,
+  canReviewAccess,
+  canUseMatch,
+  isUser,
+  normalizeRole,
+} from '@/utils/permission'
+import { AUTH_ROUTES, INFLUENCER_ROUTES, MEETING_ROUTES } from '@/constants/routes'
+
+const route = useRoute()
+const router = useRouter()
+const userStore = useUserStore()
+
+const activeMenu = computed(() => {
+  const path = route.path
+  if (path.startsWith('/influencer/influencers')) return INFLUENCER_ROUTES.influencers
+  if (path.startsWith('/influencer/collection')) return INFLUENCER_ROUTES.collection
+  if (path.startsWith('/influencer/review')) return INFLUENCER_ROUTES.review
+  if (path.startsWith('/influencer/tags')) return INFLUENCER_ROUTES.tags
+  if (path.startsWith('/influencer/match')) return INFLUENCER_ROUTES.match
+  if (path.startsWith('/influencer/agencies')) return INFLUENCER_ROUTES.agencies
+  if (path.startsWith('/influencer/users')) return INFLUENCER_ROUTES.users
+  if (path.startsWith('/influencer/access-review')) return INFLUENCER_ROUTES.accessReview
+  if (path.startsWith('/meeting/solo')) return MEETING_ROUTES.solo
+  if (path.startsWith('/meeting/create')) return MEETING_ROUTES.create
+  if (path.startsWith('/meeting/room')) return MEETING_ROUTES.home
+  if (path.startsWith('/meeting')) return MEETING_ROUTES.home
+  if (path.startsWith('/influencer/dashboard')) return INFLUENCER_ROUTES.dashboard
+  return path
+})
+
+const defaultOpeneds = computed(() => {
+  if (route.path.startsWith('/meeting')) {
+    return ['module-meeting']
+  }
+  if (route.path.startsWith('/influencer/users') || route.path.startsWith('/influencer/access-review')) {
+    return ['module-platform']
+  }
+  return ['module-influencer']
+})
+
+const currentTitle = computed(() => {
+  if (route.path.startsWith('/influencer/influencers') && isUser(userStore.userInfo?.role)) {
+    return '我的达人'
+  }
+  return (route.meta.title as string) || 'xling'
+})
+
+const role = computed(() => normalizeRole(userStore.userInfo?.role))
+const roleLabel = computed(() => ROLE_LABELS[role.value] || role.value)
+const showAdminMenus = computed(() => canUseMatch(role.value))
+const showUserManage = computed(() => canManageUsers(role.value))
+const showAccessReview = computed(
+  () => canReviewAccess(role.value) || isUser(userStore.userInfo?.role)
+)
+const accessMenuLabel = computed(() => (isUser(userStore.userInfo?.role) ? '权限申请' : '权限审核'))
+const influencerMenuLabel = computed(() => (isUser(userStore.userInfo?.role) ? '我的达人' : '达人库'))
+
+const pendingInviteCount = ref(0)
+let invitePollTimer: ReturnType<typeof setInterval> | null = null
+
+async function refreshPendingInvites() {
+  if (!userStore.token) {
+    pendingInviteCount.value = 0
+    return
+  }
+  try {
+    const res = await listMyRooms()
+    pendingInviteCount.value = res.pending_invitations?.length || 0
+  } catch {
+    // meeting 服务不可用时静默忽略
+  }
+}
+
+onMounted(() => {
+  userStore.fetchUserInfo()
+  refreshPendingInvites()
+  invitePollTimer = setInterval(refreshPendingInvites, 30000)
+})
+
+onUnmounted(() => {
+  if (invitePollTimer) clearInterval(invitePollTimer)
+})
+
+function handleLogout() {
+  userStore.logout()
+  router.push(AUTH_ROUTES.login)
+}
+</script>
+
+<style scoped>
+.layout-container {
+  height: 100vh;
+}
+
+.layout-aside {
+  background: #001529;
+}
+
+.logo {
+  height: 60px;
+  line-height: 60px;
+  text-align: center;
+  color: #fff;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.layout-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #fff;
+  border-bottom: 1px solid #ebeef5;
+}
+
+.header-title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.username {
+  color: #606266;
+}
+
+.menu-item-with-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.menu-badge :deep(.el-badge__content) {
+  border: none;
+}
+
+.layout-main {
+  background: #f5f7fa;
+}
+
+:deep(.el-sub-menu__title),
+:deep(.el-menu-item) {
+  height: 46px;
+  line-height: 46px;
+}
+</style>

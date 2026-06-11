@@ -1,0 +1,48 @@
+"""应用启动配置校验"""
+from config.config import (
+    app_env,
+    cors_origins,
+    glm_api_key,
+    jwt_secret,
+    jwt_secret_default,
+    seed_default_users_on_startup,
+    tingwu_access_key_id,
+    tingwu_app_key,
+)
+
+_INSECURE_JWT_SECRETS = frozenset(
+    {
+        jwt_secret_default,
+        "meeting-ai-jwt-secret-change-in-production",
+        "changeme",
+        "secret",
+    }
+)
+
+
+def validate_startup_config() -> None:
+    """生产环境拒绝不安全配置；开发环境仅告警。"""
+    issues: list[str] = []
+
+    if not jwt_secret or jwt_secret in _INSECURE_JWT_SECRETS:
+        issues.append(
+            "JWT_SECRET 未设置或仍为默认值；嵌入 xling 门户时须与达人后端 SECRET_KEY 完全一致"
+        )
+
+    if app_env == "production":
+        if seed_default_users_on_startup:
+            issues.append("生产环境禁止 SEED_DEFAULT_USERS=true（勿自动创建默认账号）")
+        if not cors_origins.strip():
+            issues.append("生产环境必须配置 CORS_ORIGINS（逗号分隔的前端域名）")
+        if not glm_api_key:
+            issues.append("生产环境必须配置 GLM_API_KEY")
+        if not tingwu_access_key_id or not tingwu_app_key:
+            issues.append("生产环境必须配置听悟 AccessKey 与 TINGWU_APP_KEY")
+
+    if issues:
+        msg = "启动配置检查未通过:\n- " + "\n- ".join(issues)
+        if app_env == "production":
+            raise RuntimeError(msg)
+        from utils.logger import get_logger
+
+        get_logger("startup").warning(msg)

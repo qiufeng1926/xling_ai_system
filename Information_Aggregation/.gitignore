@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Node
+node_modules/
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Cookie / 登录态（勿提交）
+backend/cookies/*.json
+backend/cookies/*.txt
+
+# 运行日志
+backend/logs/
+logs/*.log

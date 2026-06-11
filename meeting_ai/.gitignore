@@ -1,0 +1,11 @@
+logs/*
+output/summaries/*.md
+output/summaries/*.json
+output/transcripts/*.txt
+upload/*.mp3
+upload/*.mp4
+*.pyc
+__pycache__/
+*.db
+.DS_Store
+.env

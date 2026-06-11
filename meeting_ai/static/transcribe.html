@@ -1,0 +1,4176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>会议 AI - 语音转文本系统</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            font-size: 36px;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+        
+        .header p {
+            font-size: 16px;
+            opacity: 0.9;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            justify-content: center;
+        }
+        
+        .tab-btn {
+            padding: 15px 40px;
+            border: none;
+            border-radius: 10px;
+            font-size: 18px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: bold;
+            background: rgba(255, 255, 255, 0.3);
+            color: white;
+            backdrop-filter: blur(10px);
+        }
+        
+        .tab-btn:hover {
+            background: rgba(255, 255, 255, 0.5);
+            transform: translateY(-2px);
+        }
+        
+        .tab-btn.active {
+            background: white;
+            color: #667eea;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.2);
+        }
+        
+        .content-panel {
+            display: none;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            animation: fadeIn 0.3s;
+        }
+        
+        .content-panel.active {
+            display: block;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        /* 实时转写样式 */
+        .status {
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            text-align: center;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+        
+        .status.disconnected {
+            background: #fee;
+            color: #c33;
+        }
+        
+        .status.connected {
+            background: #efe;
+            color: #3c3;
+        }
+
+        .mic-warning {
+            display: none;
+            background: #fff8e1;
+            border: 1px solid #ffcc80;
+            color: #e65100;
+            padding: 12px 14px;
+            border-radius: 10px;
+            margin-bottom: 16px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .mic-warning.visible {
+            display: block;
+        }
+
+        .mic-warning code {
+            background: rgba(0, 0, 0, 0.06);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            justify-content: center;
+        }
+
+        .collab-bar {
+            margin-bottom: 16px;
+            padding: 12px 16px;
+            background: #f0f4ff;
+            border: 1px solid #d0daf5;
+            border-radius: 8px;
+        }
+        .collab-bar-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+        .collab-role-label {
+            font-weight: bold;
+            color: #667eea;
+        }
+        .collab-room-code {
+            font-family: monospace;
+            background: #fff;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .collab-participants {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            font-size: 13px;
+            color: #555;
+        }
+        .collab-participant-tag {
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            padding: 2px 10px;
+        }
+        .collab-participant-tag.recording {
+            border-color: #e74c3c;
+            color: #e74c3c;
+        }
+        .collab-end-btn {
+            margin-top: 10px;
+            padding: 8px 20px;
+            font-size: 14px;
+        }
+        
+        button {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: bold;
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        
+        .btn-primary:hover:not(:disabled) {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-danger {
+            background: #e74c3c;
+            color: white;
+        }
+        
+        .btn-danger:hover:not(:disabled) {
+            background: #c0392b;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(231, 76, 60, 0.4);
+        }
+        
+        .result-container {
+            background: #fff;
+            border-radius: 10px;
+            padding: 20px;
+            min-height: 200px;
+            max-height: 480px;
+            overflow-y: auto;
+            border: 1px solid #eee;
+        }
+        
+        .result-label {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+        
+        .current-text {
+            color: #667eea;
+            font-size: 16px;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: white;
+            border-radius: 5px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .total-text {
+            color: #333;
+            font-size: 15px;
+            line-height: 1.8;
+            word-wrap: break-word;
+        }
+
+        /* 按说话人展示（参考会议转写列表） */
+        .transcript-by-speaker {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .speaker-turn {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+        }
+
+        .speaker-avatar {
+            flex-shrink: 0;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .speaker-turn-body {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .speaker-turn-header {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            margin-bottom: 6px;
+        }
+
+        .speaker-turn-name {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .speaker-turn-time {
+            font-size: 12px;
+            color: #999;
+        }
+
+        .speaker-turn-text {
+            font-size: 15px;
+            line-height: 1.75;
+            color: #333;
+            word-break: break-word;
+        }
+
+        .speaker-turn-text .current-fragment {
+            color: #667eea;
+        }
+
+        .speaker-turn.is-partial .speaker-turn-text {
+            opacity: 0.92;
+        }
+        
+        /* 批量上传样式 */
+        .upload-area {
+            border: 3px dashed #667eea;
+            border-radius: 15px;
+            padding: 60px 40px;
+            text-align: center;
+            background: #f8f9ff;
+            transition: all 0.3s;
+            cursor: pointer;
+            margin-bottom: 30px;
+        }
+        
+        .upload-area:hover {
+            border-color: #764ba2;
+            background: #f0f2ff;
+            transform: scale(1.02);
+        }
+        
+        .upload-area.dragover {
+            border-color: #764ba2;
+            background: #e8ebff;
+        }
+        
+        .upload-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+        
+        .upload-text {
+            font-size: 20px;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .upload-hint {
+            font-size: 14px;
+            color: #999;
+        }
+        
+        #fileInput {
+            display: none;
+        }
+        
+        .file-info {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        
+        .file-info.show {
+            display: block;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            width: 0%;
+            transition: width 0.3s;
+        }
+        
+        .summary-container {
+            background: #fff9e6;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+            border-left: 4px solid #ffa726;
+        }
+        
+        .summary-title {
+            color: #f57c00;
+            font-size: 18px;
+            margin-bottom: 15px;
+            font-weight: bold;
+        }
+        
+        .summary-content {
+            color: #333;
+            font-size: 16px;
+            line-height: 1.8;
+            white-space: pre-wrap;
+        }
+
+        .summary-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            gap: 12px;
+        }
+
+        .summary-view-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+
+        .summary-view-tab {
+            padding: 8px 16px;
+            border: 2px solid #e0e0e0;
+            background: white;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            color: #666;
+        }
+
+        .summary-view-tab.active {
+            border-color: #667eea;
+            color: #667eea;
+            font-weight: bold;
+            background: #f0f3ff;
+        }
+
+        .summary-view-tab:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .visual-summary-root {
+            background: #f5f6fa;
+            border-radius: 12px;
+            padding: 16px;
+        }
+
+        .visual-summary-title {
+            font-size: 22px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 4px;
+        }
+
+        .visual-summary-subtitle {
+            color: #888;
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+
+        .visual-consensus-banner {
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.12), rgba(118, 75, 162, 0.1));
+            border-left: 4px solid #667eea;
+            border-radius: 10px;
+            padding: 16px 18px;
+            margin-bottom: 18px;
+        }
+
+        .visual-consensus-banner h4 {
+            margin: 0 0 8px 0;
+            color: #667eea;
+            font-size: 15px;
+        }
+
+        .visual-card-tag.tag-focus { background: #fff3e0; color: #e65100; }
+        .visual-card-tag.tag-todo { background: #e3f2fd; color: #1565c0; }
+        .visual-card-tag.tag-done { background: #e8f5e9; color: #2e7d32; }
+        .visual-card-tag.tag-risk { background: #ffebee; color: #c62828; }
+        .visual-card-tag.tag-pending { background: #f3e5f5; color: #7b1fa2; }
+
+        .visual-section {
+            margin-bottom: 24px;
+        }
+
+        .visual-section-head {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+
+        .visual-section-num {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            color: white;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+
+        .visual-section-title {
+            font-size: 17px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .visual-cards {
+            display: grid;
+            gap: 12px;
+        }
+
+        .visual-cards.layout-grid-2 { grid-template-columns: repeat(2, 1fr); }
+        .visual-cards.layout-grid-3 { grid-template-columns: repeat(3, 1fr); }
+        .visual-cards.layout-grid-4 { grid-template-columns: repeat(4, 1fr); }
+        .visual-cards.layout-full { grid-template-columns: 1fr; }
+
+        @media (max-width: 900px) {
+            .visual-cards.layout-grid-3,
+            .visual-cards.layout-grid-4 { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        @media (max-width: 600px) {
+            .visual-cards.layout-grid-2,
+            .visual-cards.layout-grid-3,
+            .visual-cards.layout-grid-4 { grid-template-columns: 1fr; }
+        }
+
+        .visual-card {
+            background: white;
+            border-radius: 10px;
+            padding: 14px;
+            border: 1px solid #eee;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        }
+
+        .visual-card-head {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .visual-card-icon { font-size: 20px; line-height: 1; }
+
+        .visual-card-title {
+            font-weight: bold;
+            color: #333;
+            font-size: 15px;
+            flex: 1;
+        }
+
+        .visual-card-tag {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: #f0f0f0;
+            color: #666;
+            white-space: nowrap;
+        }
+
+        .visual-card-bullets {
+            margin: 0 0 10px 0;
+            padding-left: 18px;
+            color: #555;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .visual-card-highlight {
+            font-size: 12px;
+            padding: 8px 10px;
+            border-radius: 6px;
+            line-height: 1.5;
+        }
+
+        .visual-footer-block {
+            background: white;
+            border-radius: 10px;
+            padding: 16px;
+            margin-top: 8px;
+            border: 1px solid #eee;
+        }
+
+        .visual-footer-block h4 {
+            margin: 0 0 10px 0;
+            color: #667eea;
+            font-size: 15px;
+        }
+
+        .visual-disclaimer {
+            font-size: 12px;
+            color: #999;
+            margin-top: 12px;
+            text-align: center;
+        }
+
+        .theme-green { --accent: #27ae60; --accent-bg: #e8f8ef; }
+        .theme-orange { --accent: #e67e22; --accent-bg: #fef5e7; }
+        .theme-blue { --accent: #3498db; --accent-bg: #ebf5fb; }
+        .theme-pink { --accent: #e91e63; --accent-bg: #fce4ec; }
+        .theme-teal { --accent: #16a085; --accent-bg: #e8f6f3; }
+        .theme-brown { --accent: #795548; --accent-bg: #efebe9; }
+        .theme-purple { --accent: #9b59b6; --accent-bg: #f4ecf7; }
+        .theme-red { --accent: #e74c3c; --accent-bg: #fdedec; }
+
+        .theme-green .visual-section-num,
+        .theme-green .visual-card-highlight { background: var(--accent-bg); color: var(--accent); }
+        .theme-green .visual-section-num { background: var(--accent); color: white; }
+        .theme-green .visual-card-highlight { background: var(--accent-bg); }
+
+        .theme-orange .visual-section-num { background: #e67e22; color: white; }
+        .theme-orange .visual-card-highlight { background: #fef5e7; color: #e67e22; }
+        .theme-blue .visual-section-num { background: #3498db; color: white; }
+        .theme-blue .visual-card-highlight { background: #ebf5fb; color: #3498db; }
+        .theme-pink .visual-section-num { background: #e91e63; color: white; }
+        .theme-pink .visual-card-highlight { background: #fce4ec; color: #e91e63; }
+        .theme-teal .visual-section-num { background: #16a085; color: white; }
+        .theme-teal .visual-card-highlight { background: #e8f6f3; color: #16a085; }
+        .theme-brown .visual-section-num { background: #795548; color: white; }
+        .theme-brown .visual-card-highlight { background: #efebe9; color: #795548; }
+        .theme-purple .visual-section-num { background: #9b59b6; color: white; }
+        .theme-purple .visual-card-highlight { background: #f4ecf7; color: #9b59b6; }
+        .theme-red .visual-section-num { background: #e74c3c; color: white; }
+        .theme-red .visual-card-highlight { background: #fdedec; color: #e74c3c; }
+
+        .btn-export {
+            padding: 8px 16px;
+            background: #4caf50;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            white-space: nowrap;
+            font-weight: bold;
+        }
+
+        .btn-export:hover {
+            background: #43a047;
+        }
+
+        .btn-export:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .summary-export-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .btn-export-visual {
+            padding: 8px 16px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            white-space: nowrap;
+            font-weight: bold;
+        }
+
+        .btn-export-visual:hover { background: #5568d3; }
+        .btn-export-visual:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .info-box {
+            margin-top: 20px;
+            padding: 15px;
+            background: #e3f2fd;
+            border-radius: 8px;
+            color: #1976d2;
+            font-size: 14px;
+        }
+        
+        .info-box h3 {
+            margin-bottom: 10px;
+        }
+        
+        .info-box ul {
+            margin-left: 20px;
+        }
+        
+        .info-box li {
+            margin: 5px 0;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* 登录与用户栏 */
+        .user-bar {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 15px;
+            color: white;
+        }
+
+        .user-badge {
+            background: rgba(255,255,255,0.2);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 14px;
+            backdrop-filter: blur(10px);
+        }
+
+        .role-root { background: rgba(231, 76, 60, 0.8); }
+        .role-admin { background: rgba(243, 156, 18, 0.8); }
+        .role-user { background: rgba(52, 152, 219, 0.8); }
+
+        .btn-logout {
+            padding: 8px 18px;
+            background: rgba(255,255,255,0.25);
+            color: white;
+            border: 1px solid rgba(255,255,255,0.4);
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .btn-logout:hover {
+            background: rgba(255,255,255,0.4);
+        }
+
+        #authOverlay {
+            position: fixed;
+            inset: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+
+        .auth-box {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            width: 100%;
+            max-width: 420px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+
+        .auth-box h2 {
+            text-align: center;
+            color: #667eea;
+            margin-bottom: 8px;
+        }
+
+        .auth-box .subtitle {
+            text-align: center;
+            color: #999;
+            margin-bottom: 25px;
+            font-size: 14px;
+        }
+
+        .auth-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 25px;
+        }
+
+        .auth-tab {
+            flex: 1;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            background: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            color: #666;
+        }
+
+        .auth-tab.active {
+            border-color: #667eea;
+            color: #667eea;
+            background: #f0f2ff;
+        }
+
+        .auth-field {
+            margin-bottom: 18px;
+        }
+
+        .auth-field label {
+            display: block;
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 6px;
+            font-weight: bold;
+        }
+
+        .auth-field input, .auth-field textarea, .auth-field select {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 15px;
+        }
+
+        .auth-field input:focus, .auth-field textarea:focus {
+            border-color: #667eea;
+            outline: none;
+        }
+
+        .auth-error {
+            color: #e74c3c;
+            font-size: 14px;
+            margin-bottom: 12px;
+            text-align: center;
+            min-height: 20px;
+        }
+
+        .auth-submit {
+            width: 100%;
+            padding: 14px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .auth-submit:hover {
+            background: #5568d3;
+        }
+
+        .auth-hint {
+            margin-top: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #666;
+            line-height: 1.6;
+        }
+
+        #mainApp { display: none; }
+
+        .request-card {
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 12px;
+            background: #fafafa;
+        }
+
+        .request-status-pending { color: #f39c12; font-weight: bold; }
+        .request-status-approved { color: #27ae60; font-weight: bold; }
+        .request-status-rejected { color: #e74c3c; font-weight: bold; }
+
+        .admin-modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.45);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 8000;
+            padding: 20px;
+        }
+
+        .admin-modal-overlay.active { display: flex; }
+
+        .admin-modal-box {
+            background: white;
+            border-radius: 16px;
+            width: 100%;
+            max-width: 720px;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+        }
+
+        .admin-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 24px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .admin-modal-header h3 {
+            margin: 0;
+            color: #333;
+            font-size: 18px;
+        }
+
+        .admin-modal-close {
+            background: none;
+            border: none;
+            font-size: 28px;
+            line-height: 1;
+            color: #999;
+            cursor: pointer;
+            padding: 0 4px;
+        }
+
+        .admin-modal-close:hover { color: #333; }
+
+        .admin-modal-body {
+            padding: 20px 24px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .admin-modal-hint {
+            color: #999;
+            font-size: 13px;
+            margin-bottom: 16px;
+            line-height: 1.6;
+        }
+
+        .admin-user-row {
+            border: 1px solid #e8e8e8;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 14px;
+            background: #fafafa;
+        }
+
+        .admin-user-row-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .admin-user-meta {
+            color: #666;
+            font-size: 13px;
+            margin-top: 6px;
+            line-height: 1.6;
+        }
+
+        .admin-user-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 12px;
+            align-items: center;
+        }
+
+        .admin-user-actions select {
+            padding: 8px 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 13px;
+            min-width: 180px;
+            background: white;
+        }
+
+        .admin-perm-panel {
+            margin-top: 14px;
+            padding: 14px;
+            background: white;
+            border-radius: 10px;
+            border: 1px solid #e8e8e8;
+        }
+
+        .admin-perm-panel .auth-field { margin-bottom: 12px; }
+        .admin-perm-panel .auth-field:last-of-type { margin-bottom: 0; }
+
+        .admin-perm-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 14px;
+        }
+
+        .btn-sm {
+            padding: 8px 14px;
+            font-size: 13px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        .btn-sm.btn-primary { background: #667eea; color: white; }
+        .btn-sm.btn-primary:hover { background: #5568d3; }
+
+        .root-admin-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .admin-modal-box.download-log-modal {
+            max-width: 1020px;
+            width: 96vw;
+        }
+
+        .download-log-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 14px;
+            align-items: flex-end;
+        }
+
+        .download-log-toolbar .dl-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            min-width: 120px;
+            flex: 1;
+        }
+
+        .download-log-toolbar .dl-field label {
+            font-size: 12px;
+            color: #888;
+        }
+
+        .download-log-toolbar input,
+        .download-log-toolbar select {
+            padding: 8px 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 13px;
+            background: white;
+        }
+
+        .download-log-toolbar-actions {
+            display: flex;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .download-log-summary {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        .download-log-table-wrap {
+            overflow: auto;
+            max-height: 52vh;
+            border: 1px solid #e8e8e8;
+            border-radius: 10px;
+        }
+
+        .download-log-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .download-log-table th {
+            background: #f5f6fa;
+            padding: 10px 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #555;
+            white-space: nowrap;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+
+        .download-log-table td {
+            padding: 10px 12px;
+            border-top: 1px solid #eee;
+            vertical-align: top;
+            line-height: 1.5;
+        }
+
+        .download-log-table tr:hover td {
+            background: #fafbff;
+        }
+
+        .download-log-table .dl-mono {
+            font-family: Consolas, Monaco, monospace;
+            font-size: 12px;
+            color: #666;
+            word-break: break-all;
+        }
+
+        .download-log-pagination {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 14px;
+            flex-wrap: wrap;
+            gap: 10px;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .download-log-pagination .pager-btns {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .error-alert-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+            padding: 20px;
+        }
+
+        .error-alert-overlay.active {
+            display: flex;
+        }
+
+        @keyframes error-box-pop {
+            0% { transform: scale(0.85); opacity: 0; }
+            60% { transform: scale(1.03); opacity: 1; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        .error-alert-box {
+            background: white;
+            border-radius: 14px;
+            padding: 28px 32px 24px;
+            max-width: 420px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+            border-top: 4px solid #e74c3c;
+            animation: error-box-pop 0.35s ease-out;
+        }
+
+        .error-alert-icon {
+            font-size: 40px;
+            margin-bottom: 12px;
+            line-height: 1;
+        }
+
+        .error-alert-message {
+            color: #333;
+            font-size: 15px;
+            line-height: 1.6;
+            margin-bottom: 22px;
+            word-break: break-word;
+        }
+
+        .error-alert-btn {
+            padding: 10px 32px;
+            background: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .error-alert-btn:hover {
+            background: #c0392b;
+        }
+
+        .speaker-count-panel {
+            margin-top: 18px;
+            padding: 16px 18px;
+            background: #f8f9fc;
+            border: 1px solid #e8eaf0;
+            border-radius: 12px;
+        }
+
+        .speaker-count-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+
+        .speaker-count-title {
+            font-size: 14px;
+            font-weight: bold;
+            color: #555;
+        }
+
+        .speaker-count-status {
+            font-size: 12px;
+            color: #00897b;
+        }
+
+        .speaker-count-options {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .speaker-count-option {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 14px;
+            color: #444;
+            cursor: pointer;
+        }
+
+        .speaker-count-input {
+            width: 72px;
+            padding: 8px 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .speaker-count-input:disabled {
+            background: #f0f0f0;
+            color: #999;
+        }
+
+        .speaker-count-unit {
+            font-size: 14px;
+            color: #666;
+        }
+
+        .speaker-count-hint {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #999;
+            line-height: 1.6;
+        }
+
+        .speaker-count-hint code {
+            font-size: 11px;
+            background: #eef0f5;
+            padding: 1px 5px;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <!-- 错误提示弹窗 -->
+    <div id="errorAlertOverlay" class="error-alert-overlay" onclick="if(event.target===this) closeErrorAlert()">
+        <div class="error-alert-box" onclick="event.stopPropagation()">
+            <div class="error-alert-icon">⚠️</div>
+            <div id="errorAlertMessage" class="error-alert-message"></div>
+            <button type="button" class="error-alert-btn" onclick="closeErrorAlert()">确定</button>
+        </div>
+    </div>
+
+    <!-- 登录/注册界面 -->
+    <div id="authOverlay">
+        <div class="auth-box">
+            <h2>🎤 会议 AI 助手</h2>
+            <p class="subtitle" id="authSubtitle">请登录或注册后使用</p>
+            <p id="portalAuthHint" class="auth-error" style="display:none;color:#667eea;">
+                已嵌入 xling 平台，请先在平台登录页登录后再进入「会议 AI」。
+            </p>
+            <div class="auth-tabs">
+                <button class="auth-tab active" id="loginTabBtn" onclick="switchAuthTab('login')">登录</button>
+                <button class="auth-tab" id="registerTabBtn" onclick="switchAuthTab('register')">注册</button>
+            </div>
+            <div id="authError" class="auth-error"></div>
+            <div id="loginForm">
+                <div class="auth-field">
+                    <label>用户名</label>
+                    <input type="text" id="loginUsername" placeholder="请输入用户名">
+                </div>
+                <div class="auth-field">
+                    <label>密码</label>
+                    <input type="password" id="loginPassword" placeholder="请输入密码">
+                </div>
+                <button class="auth-submit" onclick="doLogin()">登录</button>
+            </div>
+            <div id="registerForm" style="display:none;">
+                <div class="auth-field">
+                    <label>昵称</label>
+                    <input type="text" id="registerNickname" placeholder="支持中文，1-32 个字符">
+                </div>
+                <div class="auth-field">
+                    <label>用户名</label>
+                    <input type="text" id="registerUsername" placeholder="登录用，3-32 个字符">
+                </div>
+                <div class="auth-field">
+                    <label>密码</label>
+                    <input type="password" id="registerPassword" placeholder="至少 6 位">
+                </div>
+                <div class="auth-field">
+                    <label>确认密码</label>
+                    <input type="password" id="registerPassword2" placeholder="再次输入密码">
+                </div>
+                <button class="auth-submit" onclick="doRegister()">注册</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="mainApp">
+    <div class="user-bar">
+        <span class="user-badge" id="userBadge">未登录</span>
+        <button class="btn-logout" onclick="doLogout()">退出登录</button>
+    </div>
+    <div class="header">
+        <h1>🎤 会议 AI 助手</h1>
+        <p>智能语音识别与会议纪要生成</p>
+    </div>
+    
+    <div class="container">
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('realtime')">🎙️ 实时转写</button>
+            <button class="tab-btn" onclick="switchTab('batch')">📁 批量处理</button>
+            <button class="tab-btn" onclick="switchTab('history')">📋 历史会议</button>
+            <button class="tab-btn" id="accountTabBtn" onclick="switchTab('account')">👤 账户管理</button>
+        </div>
+        
+        <!-- 实时转写面板 -->
+        <div id="realtimePanel" class="content-panel active">
+            <div id="collabBar" class="collab-bar" style="display: none;">
+                <div class="collab-bar-info">
+                    <span id="collabRoleLabel" class="collab-role-label"></span>
+                    <span id="collabRoomCode" class="collab-room-code"></span>
+                </div>
+                <div id="collabParticipants" class="collab-participants"></div>
+                <button id="endMeetingBtn" type="button" class="btn-danger collab-end-btn" style="display: none;" onclick="endCollabMeeting()">结束会议</button>
+            </div>
+
+            <div style="margin-bottom: 20px;" id="meetingNameWrap">
+                <label style="display: block; color: #666; font-size: 14px; margin-bottom: 8px; font-weight: bold;">📝 会议名称：<span style="color:#e74c3c;">*</span></label>
+                <input type="text" id="meetingNameInput" placeholder="请输入会议名称（必填）" required
+                       style="width: 100%; padding: 12px 15px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; transition: all 0.3s;"
+                       onfocus="this.style.borderColor='#667eea'" 
+                       onblur="this.style.borderColor='#e0e0e0'">
+            </div>
+            
+            <div id="status" class="status disconnected">
+                未连接
+            </div>
+
+            <div id="micWarning" class="mic-warning" role="alert"></div>
+
+            <div class="speaker-count-panel">
+                <div class="speaker-count-header">
+                    <span class="speaker-count-title">👥 会议人数（说话人分离）<span style="color:#e74c3c;">*</span></span>
+                    <span id="speakerCountStatus" class="speaker-count-status"></span>
+                </div>
+                <div class="speaker-count-options">
+                    <label class="speaker-count-option">
+                        <input type="radio" name="speakerCountMode" value="auto" checked
+                               onchange="onSpeakerCountModeChange()">
+                        自动识别
+                    </label>
+                    <label class="speaker-count-option">
+                        <input type="radio" name="speakerCountMode" value="manual"
+                               onchange="onSpeakerCountModeChange()">
+                        手动设置
+                    </label>
+                    <input type="number" id="speakerCountInput" class="speaker-count-input"
+                           min="2" max="100" value="2" disabled placeholder="人数">
+                    <span class="speaker-count-unit">人</span>
+                </div>
+                <p class="speaker-count-hint">开始录音前请选择人数。单麦克风场景下，说话人标签会在停止录音后由听悟整理并展示。</p>
+            </div>
+                    
+            <div class="controls">
+                <button id="startBtn" class="btn-primary" onclick="startRecording()">
+                    开始录音
+                </button>
+                <button id="stopBtn" class="btn-danger" onclick="stopRecording()" disabled>
+                    停止录音
+                </button>
+            </div>
+                    
+            <div class="result-container">
+                <div class="result-label">实时转写：</div>
+                <div id="realtimeTranscript" class="total-text transcript-by-speaker">等待录音...</div>
+            </div>
+                    
+            <div id="realtimeSummary" class="summary-container" style="display: none;">
+                <div class="summary-header">
+                    <div class="summary-title" style="margin-bottom:0;">📝 AI 智能速览</div>
+                    <div class="summary-export-actions">
+                        <button class="btn-export" onclick="exportSummary('realtime')">📥 导出 Word</button>
+                        <button type="button" id="realtimeExportVisualBtn" class="btn-export-visual" onclick="exportVisual('realtime')">📥 下载图文</button>
+                    </div>
+                </div>
+                <div class="summary-view-tabs">
+                    <button type="button" id="realtimeTabMarkdown" class="summary-view-tab active" onclick="switchSummaryTab('realtime','markdown')">文字速览</button>
+                    <button type="button" id="realtimeTabVisual" class="summary-view-tab" onclick="switchSummaryTab('realtime','visual')">图文速览</button>
+                </div>
+                <div id="realtimeSummaryMarkdown" class="summary-content"></div>
+                <div id="realtimeSummaryVisual" class="visual-summary-root" style="display:none;"></div>
+                <p class="visual-disclaimer">图文内容由 AI 根据转写整理，如有出入以转写原文为准。</p>
+            </div>
+                    
+            <div class="info-box">
+                <h3>使用说明：</h3>
+                <ul>
+                    <li>点击“开始录音”按钮开始实时语音转写</li>
+                    <li>说话时会自动识别并显示文本</li>
+                    <li>点击“停止录音”后会自动生成 AI 智能速览</li>
+                    <li>支持中文语音识别</li>
+                </ul>
+            </div>
+        </div>
+        
+        <!-- 批量处理面板 -->
+        <div id="batchPanel" class="content-panel">
+            <div style="margin-bottom: 20px;">
+                <label style="display: block; color: #666; font-size: 14px; margin-bottom: 8px; font-weight: bold;">📝 会议名称：<span style="color:#e74c3c;">*</span></label>
+                <input type="text" id="batchMeetingNameInput" placeholder="请输入会议名称（必填）" required
+                       style="width: 100%; padding: 12px 15px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; transition: all 0.3s;"
+                       onfocus="this.style.borderColor='#667eea'" 
+                       onblur="this.style.borderColor='#e0e0e0'">
+            </div>
+            
+            <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
+                <div class="upload-icon">📤</div>
+                <div class="upload-text">点击或拖拽音频文件到此处</div>
+                <div class="upload-hint">支持 WAV、MP3、M4A 等格式</div>
+            </div>
+            
+            <input type="file" id="fileInput" accept="audio/*" onchange="handleFileSelect(event)">
+            
+            <div id="fileInfo" class="file-info">
+                <strong>文件名：</strong><span id="fileName"></span><br>
+                <strong>文件大小：</strong><span id="fileSize"></span>
+                <div class="progress-bar">
+                    <div id="progressFill" class="progress-fill"></div>
+                </div>
+            </div>
+            
+            <div class="controls">
+                <button id="uploadBtn" class="btn-primary" onclick="uploadFile()" disabled>
+                    开始处理
+                </button>
+            </div>
+            
+            <div id="transcriptResult" class="result-container" style="display: none;">
+                <div class="result-label">转写文本：</div>
+                <div id="transcriptText" class="total-text"></div>
+            </div>
+            
+            <div id="summaryResult" class="summary-container" style="display: none;">
+                <div class="summary-header">
+                    <div class="summary-title" style="margin-bottom:0;">📝 AI 智能速览</div>
+                    <div class="summary-export-actions">
+                        <button class="btn-export" onclick="exportSummary('batch')">📥 导出 Word</button>
+                        <button type="button" id="batchExportVisualBtn" class="btn-export-visual" onclick="exportVisual('batch')">📥 下载图文</button>
+                    </div>
+                </div>
+                <div class="summary-view-tabs">
+                    <button type="button" id="batchTabMarkdown" class="summary-view-tab active" onclick="switchSummaryTab('batch','markdown')">文字速览</button>
+                    <button type="button" id="batchTabVisual" class="summary-view-tab" onclick="switchSummaryTab('batch','visual')">图文速览</button>
+                </div>
+                <div id="batchSummaryMarkdown" class="summary-content"></div>
+                <div id="batchSummaryVisual" class="visual-summary-root" style="display:none;"></div>
+                <p class="visual-disclaimer">图文内容由 AI 根据转写整理，如有出入以转写原文为准。</p>
+            </div>
+            
+            <div class="info-box">
+                <h3>功能说明：</h3>
+                <ul>
+                    <li>上传音频文件后自动进行语音识别</li>
+                    <li>AI 自动生成会议纪要和要点总结</li>
+                    <li>结果可保存为文本文件</li>
+                    <li>支持多种音频格式</li>
+                </ul>
+            </div>
+        </div>
+        
+        <!-- 历史会议面板 -->
+        <div id="historyPanel" class="content-panel">
+            <h2 style="color: #333; margin-bottom: 20px;">📋 历史会议记录</h2>
+            
+            <!-- 日期筛选器 -->
+            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 200px;">
+                        <label style="display: block; color: #666; font-size: 14px; margin-bottom: 8px; font-weight: bold;">开始日期：</label>
+                        <input type="date" id="startDateFilter" 
+                               style="width: 100%; padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; transition: all 0.3s;"
+                               onfocus="this.style.borderColor='#667eea'" 
+                               onblur="this.style.borderColor='#e0e0e0'">
+                    </div>
+                    <div style="flex: 1; min-width: 200px;">
+                        <label style="display: block; color: #666; font-size: 14px; margin-bottom: 8px; font-weight: bold;">结束日期：</label>
+                        <input type="date" id="endDateFilter" 
+                               style="width: 100%; padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; transition: all 0.3s;"
+                               onfocus="this.style.borderColor='#667eea'" 
+                               onblur="this.style.borderColor='#e0e0e0'">
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: flex-end;">
+                        <button onclick="loadHistory()" class="btn-primary" style="padding: 10px 25px; font-size: 14px;">🔍 查询</button>
+                        <button onclick="clearDateFilter()" class="btn-primary" style="padding: 10px 25px; font-size: 14px; background: #999;">清除</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="historyList" style="max-height: 700px; overflow-y: auto;">
+                <p style="text-align: center; color: #999;">加载中...</p>
+            </div>
+        </div>
+
+        <!-- 账户管理面板 -->
+        <div id="accountPanel" class="content-panel">
+            <h2 style="color: #333; margin-bottom: 20px;">👤 账户管理</h2>
+
+            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 25px;">
+                <h3 style="color: #667eea; margin-bottom: 10px;">当前账户</h3>
+                <p id="accountInfo" style="color: #666; line-height: 1.8;"></p>
+            </div>
+
+            <div id="applySection" style="margin-bottom: 30px;">
+                <h3 style="color: #333; margin-bottom: 15px;">权限申请</h3>
+                <div class="auth-field">
+                    <label>申请类型</label>
+                    <select id="applyType">
+                        <option value="view_all">申请查看全部会议</option>
+                        <option value="admin">申请成为管理员</option>
+                    </select>
+                </div>
+                <div class="auth-field">
+                    <label>申请理由（可选）</label>
+                    <textarea id="applyReason" rows="3" placeholder="请说明申请原因"></textarea>
+                </div>
+                <button class="btn-primary" onclick="submitPermissionRequest()">提交申请</button>
+                <p id="applyHint" style="color: #999; font-size: 13px; margin-top: 10px;"></p>
+            </div>
+
+            <div style="margin-bottom: 30px;">
+                <h3 style="color: #333; margin-bottom: 15px;">我的申请记录</h3>
+                <div id="myRequestsList"><p style="color:#999;">暂无记录</p></div>
+            </div>
+
+            <div id="reviewSection" style="display:none;">
+                <h3 style="color: #333; margin-bottom: 15px;">待审批申请</h3>
+                <div id="pendingRequestsList"><p style="color:#999;">暂无待审批</p></div>
+            </div>
+
+            <div id="rootAdminSection" class="root-admin-actions" style="display:none; margin-top: 25px;">
+                <button type="button" class="btn-primary" onclick="openAdminModal()" style="padding: 12px 24px;">
+                    👥 用户管理
+                </button>
+                <button type="button" class="btn-primary" onclick="openAdminReviewLogModal()" style="padding: 12px 24px; background: #5c6bc0;">
+                    📋 管理员审批记录
+                </button>
+                <button type="button" class="btn-primary" onclick="openDownloadLogModal()" style="padding: 12px 24px; background: #00897b;">
+                    📥 用户下载记录
+                </button>
+            </div>
+        </div>
+    </div>
+    </div>
+
+    <!-- 超级管理员：管理员审批记录二级弹窗 -->
+    <div id="reviewLogModalOverlay" class="admin-modal-overlay" onclick="if(event.target===this) closeAdminReviewLogModal()">
+        <div class="admin-modal-box" onclick="event.stopPropagation()">
+            <div class="admin-modal-header">
+                <h3>📋 管理员审批记录</h3>
+                <button type="button" class="admin-modal-close" onclick="closeAdminReviewLogModal()" title="关闭">&times;</button>
+            </div>
+            <div class="admin-modal-body">
+                <p class="admin-modal-hint">管理员对「查看全部会议」申请的处理历史（已通过 / 已拒绝）。</p>
+                <div id="adminReviewLogList"><p style="color:#999;">加载中...</p></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 超级管理员：用户下载记录二级弹窗 -->
+    <div id="downloadLogModalOverlay" class="admin-modal-overlay" onclick="if(event.target===this) closeDownloadLogModal()">
+        <div class="admin-modal-box download-log-modal" onclick="event.stopPropagation()">
+            <div class="admin-modal-header">
+                <h3>📥 用户下载记录</h3>
+                <button type="button" class="admin-modal-close" onclick="closeDownloadLogModal()" title="关闭">&times;</button>
+            </div>
+            <div class="admin-modal-body">
+                <p class="admin-modal-hint">可按用户、会议名称、会议 ID、导出类型、日期范围筛选，支持分页浏览。</p>
+                <div class="download-log-toolbar">
+                    <div class="dl-field" style="flex:2;min-width:180px;">
+                        <label for="dlKeyword">关键词</label>
+                        <input type="text" id="dlKeyword" placeholder="用户名 / 昵称 / 会议名 / 会议 ID"
+                               onkeydown="if(event.key==='Enter') searchDownloadLogs()">
+                    </div>
+                    <div class="dl-field">
+                        <label for="dlExportType">导出类型</label>
+                        <select id="dlExportType">
+                            <option value="">全部类型</option>
+                            <option value="summary_docx">Word 总结</option>
+                            <option value="visual_html">图文 HTML</option>
+                            <option value="visual_json">图文 JSON</option>
+                        </select>
+                    </div>
+                    <div class="dl-field">
+                        <label for="dlDateFrom">开始日期</label>
+                        <input type="date" id="dlDateFrom">
+                    </div>
+                    <div class="dl-field">
+                        <label for="dlDateTo">结束日期</label>
+                        <input type="date" id="dlDateTo">
+                    </div>
+                    <div class="download-log-toolbar-actions">
+                        <button type="button" class="btn-sm btn-primary" onclick="searchDownloadLogs()">查询</button>
+                        <button type="button" class="btn-sm" style="background:#eee;color:#333;" onclick="resetDownloadLogFilters()">重置</button>
+                    </div>
+                </div>
+                <div id="downloadLogSummary" class="download-log-summary"></div>
+                <div class="download-log-table-wrap">
+                    <div id="downloadLogList"><p style="color:#999;padding:12px;">加载中...</p></div>
+                </div>
+                <div id="downloadLogPagination" class="download-log-pagination" style="display:none;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 超级管理员：用户管理二级弹窗 -->
+    <div id="adminModalOverlay" class="admin-modal-overlay" onclick="if(event.target===this) closeAdminModal()">
+        <div class="admin-modal-box" onclick="event.stopPropagation()">
+            <div class="admin-modal-header">
+                <h3>👥 用户管理</h3>
+                <button type="button" class="admin-modal-close" onclick="closeAdminModal()" title="关闭">&times;</button>
+            </div>
+            <div class="admin-modal-body">
+                <p class="admin-modal-hint">可重置密码、调整查阅会议权限与账号权限、删除账号。不可修改或删除超级管理员账号。</p>
+                <div id="adminUsersList"><p style="color:#999;">加载中...</p></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ========== 认证状态（与 xling 门户共用 localStorage.token）==========
+        function isPortalEmbedded() {
+            return window.self !== window.top
+                || new URLSearchParams(window.location.search).get('embedded') === '1';
+        }
+
+        function getPortalToken() {
+            return localStorage.getItem('token') || localStorage.getItem('authToken') || '';
+        }
+
+        function persistAuthToken(token) {
+            authToken = token || '';
+            if (!authToken) return;
+            if (isPortalEmbedded()) {
+                localStorage.setItem('token', authToken);
+            } else {
+                localStorage.setItem('authToken', authToken);
+            }
+        }
+
+        let authToken = getPortalToken();
+        let currentUser = null;
+
+        const urlSearchParams = new URLSearchParams(window.location.search);
+        const collabRoomCode = (urlSearchParams.get('room_code') || '').trim().toUpperCase();
+        const collabRole = (urlSearchParams.get('role') || '').trim().toLowerCase();
+        const isCollabMode = urlSearchParams.get('collab') === '1' || !!collabRoomCode;
+        let collabWsReady = false;
+        let collabRoomStatus = 'waiting';
+        let collabParticipants = [];
+
+        const COLLAB_ROLE_LABELS = { host: '主持人', recorder: '录音员', viewer: '观看者' };
+
+        const ROLE_LABELS = { root: '超级管理员', admin: '管理员', user: '普通用户' };
+        let adminUsersCache = [];
+
+        function switchAuthTab(tab) {
+            document.getElementById('loginTabBtn').classList.toggle('active', tab === 'login');
+            document.getElementById('registerTabBtn').classList.toggle('active', tab === 'register');
+            document.getElementById('loginForm').style.display = tab === 'login' ? 'block' : 'none';
+            document.getElementById('registerForm').style.display = tab === 'register' ? 'block' : 'none';
+            document.getElementById('authError').textContent = '';
+        }
+
+        function showErrorAlert(message) {
+            const msg = String(message || '发生未知错误').trim() || '发生未知错误';
+            document.getElementById('errorAlertMessage').textContent = msg;
+            document.getElementById('errorAlertOverlay').classList.add('active');
+        }
+
+        function closeErrorAlert() {
+            document.getElementById('errorAlertOverlay').classList.remove('active');
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && document.getElementById('errorAlertOverlay').classList.contains('active')) {
+                closeErrorAlert();
+            }
+        });
+
+        function showAuthError(msg) {
+            document.getElementById('authError').textContent = msg;
+        }
+
+        function updateUserBar() {
+            const badge = document.getElementById('userBadge');
+            if (!currentUser) {
+                badge.textContent = '未登录';
+                badge.className = 'user-badge';
+                return;
+            }
+            badge.textContent = `${currentUser.nickname || currentUser.username} · ${ROLE_LABELS[currentUser.role] || currentUser.role}`;
+            badge.className = 'user-badge role-' + currentUser.role;
+        }
+
+        function showMainApp() {
+            document.getElementById('authOverlay').style.display = 'none';
+            document.getElementById('mainApp').style.display = 'block';
+            updateUserBar();
+            updateAccountPanel();
+            loadSpeakerCountSetting();
+            const logoutBtn = document.querySelector('.btn-logout');
+            if (logoutBtn) {
+                logoutBtn.style.display = isPortalEmbedded() ? 'none' : '';
+            }
+            const accountTabBtn = document.getElementById('accountTabBtn');
+            if (accountTabBtn) {
+                accountTabBtn.style.display = isPortalEmbedded() ? 'none' : '';
+            }
+            if (isCollabMode) {
+                initCollabMode();
+            }
+        }
+
+        function initCollabMode() {
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.style.display = 'none';
+            });
+            const speakerPanel = document.querySelector('.speaker-count-panel');
+            if (speakerPanel) speakerPanel.style.display = 'none';
+
+            const collabBar = document.getElementById('collabBar');
+            if (collabBar) collabBar.style.display = 'block';
+
+            const roleLabel = document.getElementById('collabRoleLabel');
+            const roomCodeEl = document.getElementById('collabRoomCode');
+            if (roleLabel) {
+                roleLabel.textContent = '角色：' + (COLLAB_ROLE_LABELS[collabRole] || collabRole || '参与者');
+            }
+            if (roomCodeEl && collabRoomCode) {
+                roomCodeEl.textContent = '房间 ' + collabRoomCode;
+            }
+
+            const meetingName = urlSearchParams.get('meeting_name') || '';
+            const nameInput = document.getElementById('meetingNameInput');
+            if (nameInput && meetingName) {
+                nameInput.value = meetingName;
+                nameInput.readOnly = true;
+            }
+
+            const endBtn = document.getElementById('endMeetingBtn');
+            if (endBtn) {
+                endBtn.style.display = collabRole === 'host' ? '' : 'none';
+            }
+
+            if (collabRole === 'viewer') {
+                startBtn.disabled = true;
+                startBtn.textContent = '观看模式（无法录音）';
+                stopBtn.style.display = 'none';
+            } else {
+                startBtn.textContent = '开始录音';
+            }
+
+            if (authToken && collabRoomCode) {
+                connectWebSocket(meetingName);
+            }
+
+            window.addEventListener('message', (event) => {
+                if (event.data && event.data.type === 'end_collab_meeting') {
+                    endCollabMeeting();
+                }
+            });
+        }
+
+        function renderCollabParticipants(list) {
+            const el = document.getElementById('collabParticipants');
+            if (!el) return;
+            if (!list || !list.length) {
+                el.innerHTML = '<span style="color:#999;">暂无在线参与者</span>';
+                return;
+            }
+            el.innerHTML = list.map(p => {
+                const name = p.nickname || p.username || '';
+                const role = COLLAB_ROLE_LABELS[p.role] || p.role || '';
+                const rec = p.is_recording ? ' recording' : '';
+                const suffix = p.is_recording ? ' · 录音中' : '';
+                return `<span class="collab-participant-tag${rec}">${escapeHtml(name)} (${escapeHtml(role)})${suffix}</span>`;
+            }).join('');
+        }
+
+        function onSpeakerCountModeChange() {
+            const manual = document.querySelector('input[name="speakerCountMode"]:checked')?.value === 'manual';
+            const input = document.getElementById('speakerCountInput');
+            if (input) {
+                input.disabled = !manual;
+                if (manual && (!input.value || parseInt(input.value, 10) < 2)) {
+                    input.value = '2';
+                }
+            }
+        }
+
+        function updateSpeakerCountStatusText(mode, count) {
+            const el = document.getElementById('speakerCountStatus');
+            if (!el) return;
+            if (mode === 'auto') {
+                el.textContent = '当前：自动识别';
+            } else {
+                el.textContent = `当前：手动 ${count} 人`;
+            }
+        }
+
+        async function loadSpeakerCountSetting() {
+            if (!authToken) return;
+            try {
+                const resp = await authFetch('/api/settings/tingwu-speaker-count');
+                const data = await resp.json();
+                if (!resp.ok) return;
+                const mode = data.mode || 'auto';
+                const count = data.speaker_count || 0;
+                const autoRadio = document.querySelector('input[name="speakerCountMode"][value="auto"]');
+                const manualRadio = document.querySelector('input[name="speakerCountMode"][value="manual"]');
+                if (mode === 'manual') {
+                    if (manualRadio) manualRadio.checked = true;
+                    const input = document.getElementById('speakerCountInput');
+                    if (input) input.value = String(Math.max(2, count));
+                } else if (autoRadio) {
+                    autoRadio.checked = true;
+                }
+                onSpeakerCountModeChange();
+                updateSpeakerCountStatusText(mode, count);
+            } catch (e) {
+                console.warn('加载会议人数设置失败', e);
+            }
+        }
+
+        function validateSpeakerCountSetting() {
+            const mode = document.querySelector('input[name="speakerCountMode"]:checked')?.value;
+            if (!mode) {
+                showErrorAlert('请选择会议人数');
+                return false;
+            }
+            if (mode === 'manual') {
+                const speakerCount = parseInt(document.getElementById('speakerCountInput').value, 10);
+                if (!speakerCount || speakerCount < 2) {
+                    showErrorAlert('手动设置时会议人数至少为 2 人');
+                    document.getElementById('speakerCountInput').focus();
+                    return false;
+                }
+                if (speakerCount > 100) {
+                    showErrorAlert('会议人数不能超过 100 人');
+                    document.getElementById('speakerCountInput').focus();
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        async function persistSpeakerCountSetting() {
+            if (!authToken) {
+                showErrorAlert('请先登录');
+                return false;
+            }
+            if (!validateSpeakerCountSetting()) {
+                return false;
+            }
+            const mode = document.querySelector('input[name="speakerCountMode"]:checked').value;
+            let speakerCount = 0;
+            if (mode === 'manual') {
+                speakerCount = parseInt(document.getElementById('speakerCountInput').value, 10);
+            }
+            try {
+                const resp = await authFetch('/api/settings/tingwu-speaker-count', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode, speaker_count: speakerCount }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    showErrorAlert(data.detail || '会议人数设置失败');
+                    return false;
+                }
+                updateSpeakerCountStatusText(data.mode, data.speaker_count);
+                return true;
+            } catch (e) {
+                showErrorAlert('会议人数设置失败，请稍后重试');
+                return false;
+            }
+        }
+
+        function showAuthOverlay() {
+            if (isPortalEmbedded()) {
+                document.getElementById('authOverlay').style.display = 'flex';
+                document.getElementById('mainApp').style.display = 'none';
+                document.getElementById('portalAuthHint').style.display = 'block';
+                document.getElementById('authSubtitle').textContent = '尚未登录 xling 平台';
+                document.querySelector('.auth-tabs').style.display = 'none';
+                document.getElementById('loginForm').style.display = 'none';
+                document.getElementById('registerForm').style.display = 'none';
+                authToken = '';
+                currentUser = null;
+                return;
+            }
+            document.getElementById('portalAuthHint').style.display = 'none';
+            document.querySelector('.auth-tabs').style.display = 'flex';
+            document.getElementById('authOverlay').style.display = 'flex';
+            document.getElementById('mainApp').style.display = 'none';
+            authToken = '';
+            currentUser = null;
+            localStorage.removeItem('authToken');
+        }
+
+        async function authFetch(url, options = {}) {
+            const headers = { ...(options.headers || {}) };
+            if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
+            const resp = await fetch(url, { ...options, headers });
+            if (resp.status === 401) {
+                showAuthOverlay();
+                throw new Error('登录已过期，请重新登录');
+            }
+            return resp;
+        }
+
+        async function doLogin() {
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value;
+            if (!username || !password) { showAuthError('请输入用户名和密码'); return; }
+            try {
+                const resp = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await resp.json();
+                if (!resp.ok) { showAuthError(data.detail || '登录失败'); return; }
+                authToken = data.token;
+                currentUser = data.user;
+                persistAuthToken(authToken);
+                showMainApp();
+            } catch (e) {
+                showAuthError('网络错误: ' + e.message);
+            }
+        }
+
+        async function doRegister() {
+            const nickname = document.getElementById('registerNickname').value.trim();
+            const username = document.getElementById('registerUsername').value.trim();
+            const password = document.getElementById('registerPassword').value;
+            const password2 = document.getElementById('registerPassword2').value;
+            if (!nickname || !username || !password) { showAuthError('请填写完整信息'); return; }
+            if (password !== password2) { showAuthError('两次密码不一致'); return; }
+            try {
+                const resp = await fetch('/api/auth/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, nickname, password })
+                });
+                const data = await resp.json();
+                if (!resp.ok) { showAuthError(data.detail || '注册失败'); return; }
+                authToken = data.token;
+                currentUser = data.user;
+                persistAuthToken(authToken);
+                showMainApp();
+            } catch (e) {
+                showAuthError('网络错误: ' + e.message);
+            }
+        }
+
+        function doLogout() {
+            if (isPortalEmbedded()) {
+                showErrorAlert('请使用 xling 平台右上角的「退出」按钮退出登录');
+                return;
+            }
+            if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+            showAuthOverlay();
+        }
+
+        async function checkAuth() {
+            authToken = getPortalToken();
+            if (!authToken) { showAuthOverlay(); return false; }
+            try {
+                const resp = await authFetch('/api/auth/me');
+                const data = await resp.json();
+                if (data.success) {
+                    currentUser = data.user;
+                    showMainApp();
+                    return true;
+                }
+            } catch (e) { /* handled in authFetch */ }
+            showAuthOverlay();
+            return false;
+        }
+
+        function userCanDownload() {
+            return currentUser && (currentUser.role === 'root' || currentUser.can_download);
+        }
+
+        function updateExportButtonsState() {
+            const allowed = userCanDownload();
+            document.querySelectorAll('.btn-export, .btn-export-visual').forEach(btn => {
+                if (!allowed) {
+                    btn.disabled = true;
+                    btn.title = '暂无下载权限，请在 xling 平台权限管理中申请';
+                } else {
+                    btn.disabled = false;
+                    btn.title = '';
+                }
+            });
+        }
+
+        function updateAccountPanel() {
+            if (!currentUser) return;
+            const roleLabel = ROLE_LABELS[currentUser.role] || currentUser.role;
+            let accountHtml =
+                `昵称：<strong>${currentUser.nickname || currentUser.username}</strong><br>` +
+                `用户名：<strong>${currentUser.username}</strong><br>` +
+                `角色：<strong>${roleLabel}</strong><br>`;
+
+            if (currentUser.role === 'root') {
+                accountHtml += `下载/导出权限：<strong>是（超级管理员）</strong><br>`;
+            } else {
+                accountHtml += `下载/导出权限：<strong>${currentUser.can_download ? '是' : '否'}</strong><br>`;
+                if (currentUser.role === 'admin') {
+                    accountHtml += `可审批下载申请：<strong>${currentUser.can_approve_download ? '是' : '否'}</strong><br>`;
+                }
+            }
+
+            if (currentUser.role === 'admin') {
+                accountHtml +=
+                    `可查看其他用户会议：<strong>是</strong><br>` +
+                    `可查看超级管理员会议：<strong>${currentUser.can_view_root_meetings ? '是（限3天内）' : '否'}</strong>`;
+            } else if (currentUser.role === 'root') {
+                accountHtml += `可查看全部会议：<strong>是</strong>`;
+            } else {
+                accountHtml += `可查看全部会议：<strong>${currentUser.can_view_all ? '是' : '否'}</strong>`;
+            }
+            document.getElementById('accountInfo').innerHTML = accountHtml;
+
+            const applySection = document.getElementById('applySection');
+            const applyHint = document.getElementById('applyHint');
+            const applyType = document.getElementById('applyType');
+
+            const downloadApply =
+                '<option value="download">申请下载/导出权限（需超级管理员或已授权管理员审批）</option>';
+
+            if (currentUser.role === 'root') {
+                applySection.style.display = 'none';
+            } else if (currentUser.role === 'admin') {
+                const opts = [];
+                if (!currentUser.can_view_root_meetings) {
+                    opts.push('<option value="view_root_meetings">申请查看超级管理员会议（限3天内，需超级管理员审批）</option>');
+                }
+                if (!currentUser.can_download) {
+                    opts.push(downloadApply);
+                }
+                if (opts.length) {
+                    applySection.style.display = 'block';
+                    applyType.innerHTML = opts.join('');
+                    applyHint.textContent = '可向超级管理员申请查阅或下载权限；下载申请也可由已授权审批的管理员处理。';
+                } else {
+                    applySection.style.display = 'none';
+                    applyHint.textContent = '您已拥有当前角色下的查阅与下载权限。';
+                }
+            } else {
+                const opts = [];
+                if (!currentUser.can_view_all) {
+                    opts.push('<option value="view_all">申请查看全部会议（需管理员审批）</option>');
+                }
+                opts.push('<option value="admin">申请成为管理员（需超级管理员审批）</option>');
+                if (!currentUser.can_download) {
+                    opts.push(downloadApply);
+                }
+                applySection.style.display = 'block';
+                applyType.innerHTML = opts.join('');
+                applyHint.textContent = currentUser.can_view_all
+                    ? '您已拥有查看全部会议权限，仍可申请下载或管理员权限。'
+                    : '普通用户默认只能查看自己创建的会议记录。';
+            }
+
+            const reviewSection = document.getElementById('reviewSection');
+            reviewSection.style.display = (currentUser.role === 'admin' || currentUser.role === 'root') ? 'block' : 'none';
+
+            loadMyRequests();
+            if (currentUser.role === 'admin' || currentUser.role === 'root') {
+                loadPendingRequests();
+            }
+
+            document.getElementById('rootAdminSection').style.display =
+                currentUser.role === 'root' ? 'flex' : 'none';
+
+            updateExportButtonsState();
+        }
+
+        function openAdminModal() {
+            document.getElementById('adminModalOverlay').classList.add('active');
+            loadAdminUsers();
+        }
+
+        function closeAdminModal() {
+            document.getElementById('adminModalOverlay').classList.remove('active');
+        }
+
+        function openAdminReviewLogModal() {
+            document.getElementById('reviewLogModalOverlay').classList.add('active');
+            loadAdminReviewLog();
+        }
+
+        function closeAdminReviewLogModal() {
+            document.getElementById('reviewLogModalOverlay').classList.remove('active');
+        }
+
+        let downloadLogPage = 1;
+        let downloadLogPageSize = 20;
+        let downloadLogTotalPages = 0;
+
+        function openDownloadLogModal() {
+            document.getElementById('downloadLogModalOverlay').classList.add('active');
+            loadDownloadLogs(1);
+        }
+
+        function closeDownloadLogModal() {
+            document.getElementById('downloadLogModalOverlay').classList.remove('active');
+        }
+
+        function searchDownloadLogs() {
+            loadDownloadLogs(1);
+        }
+
+        function resetDownloadLogFilters() {
+            document.getElementById('dlKeyword').value = '';
+            document.getElementById('dlExportType').value = '';
+            document.getElementById('dlDateFrom').value = '';
+            document.getElementById('dlDateTo').value = '';
+            loadDownloadLogs(1);
+        }
+
+        function changeDownloadLogPage(delta) {
+            const next = downloadLogPage + delta;
+            if (next < 1 || (downloadLogTotalPages && next > downloadLogTotalPages)) return;
+            loadDownloadLogs(next);
+        }
+
+        function onDownloadLogPageSizeChange() {
+            downloadLogPageSize = parseInt(document.getElementById('dlPageSize').value, 10) || 20;
+            loadDownloadLogs(1);
+        }
+
+        const EXPORT_TYPE_LABELS = {
+            summary_docx: 'Word 总结',
+            visual_html: '图文 HTML',
+            visual_json: '图文 JSON',
+        };
+
+        function buildDownloadLogQuery(page) {
+            const params = new URLSearchParams({
+                page: String(page),
+                page_size: String(downloadLogPageSize),
+            });
+            const keyword = document.getElementById('dlKeyword').value.trim();
+            const exportType = document.getElementById('dlExportType').value;
+            const dateFrom = document.getElementById('dlDateFrom').value;
+            const dateTo = document.getElementById('dlDateTo').value;
+            if (keyword) params.set('keyword', keyword);
+            if (exportType) params.set('export_type', exportType);
+            if (dateFrom) params.set('date_from', dateFrom);
+            if (dateTo) params.set('date_to', dateTo);
+            return params.toString();
+        }
+
+        function renderDownloadLogPagination(data) {
+            const pager = document.getElementById('downloadLogPagination');
+            if (!data.total) {
+                pager.style.display = 'none';
+                return;
+            }
+            downloadLogPage = data.page;
+            downloadLogTotalPages = data.total_pages;
+            pager.style.display = 'flex';
+            pager.innerHTML = `
+                <div>共 <strong>${data.total}</strong> 条 · 第 ${data.page} / ${Math.max(data.total_pages, 1)} 页</div>
+                <div class="pager-btns">
+                    <label style="display:flex;align-items:center;gap:6px;">
+                        每页
+                        <select id="dlPageSize" onchange="onDownloadLogPageSizeChange()" style="padding:6px 8px;border-radius:6px;border:1px solid #ddd;">
+                            <option value="10" ${downloadLogPageSize === 10 ? 'selected' : ''}>10</option>
+                            <option value="20" ${downloadLogPageSize === 20 ? 'selected' : ''}>20</option>
+                            <option value="50" ${downloadLogPageSize === 50 ? 'selected' : ''}>50</option>
+                            <option value="100" ${downloadLogPageSize === 100 ? 'selected' : ''}>100</option>
+                        </select>
+                        条
+                    </label>
+                    <button type="button" class="btn-sm" style="background:#eee;color:#333;"
+                        onclick="changeDownloadLogPage(-1)" ${data.page <= 1 ? 'disabled' : ''}>上一页</button>
+                    <button type="button" class="btn-sm" style="background:#eee;color:#333;"
+                        onclick="changeDownloadLogPage(1)" ${data.page >= data.total_pages ? 'disabled' : ''}>下一页</button>
+                </div>`;
+        }
+
+        async function loadDownloadLogs(page = 1) {
+            const el = document.getElementById('downloadLogList');
+            const summaryEl = document.getElementById('downloadLogSummary');
+            el.innerHTML = '<p style="color:#999;padding:12px;">加载中...</p>';
+            summaryEl.textContent = '';
+            try {
+                const resp = await authFetch('/api/admin/download-logs?' + buildDownloadLogQuery(page));
+                const data = await resp.json();
+                if (!resp.ok) {
+                    el.innerHTML = '<p style="color:#f44336;padding:12px;">' + escapeHtml(data.detail || '加载失败') + '</p>';
+                    document.getElementById('downloadLogPagination').style.display = 'none';
+                    return;
+                }
+                renderDownloadLogPagination(data);
+                if (!data.logs || data.logs.length === 0) {
+                    el.innerHTML = '<p style="color:#999;padding:12px;">未找到匹配的下载记录</p>';
+                    return;
+                }
+                const rows = data.logs.map(log => {
+                    const typeLabel = EXPORT_TYPE_LABELS[log.export_type] || log.export_type;
+                    const downloadedAt = log.created_at
+                        ? new Date(log.created_at).toLocaleString('zh-CN')
+                        : '—';
+                    const userLabel = escapeHtml((log.nickname || log.username || '未知') +
+                        (log.username && log.nickname !== log.username ? ` (${log.username})` : ''));
+                    return `<tr>
+                        <td style="white-space:nowrap;">${downloadedAt}</td>
+                        <td>${userLabel}</td>
+                        <td><strong>${escapeHtml(log.meeting_name)}</strong></td>
+                        <td><span style="color:#00897b;">${typeLabel}</span></td>
+                        <td>${escapeHtml(log.meeting_owner_username || '—')}</td>
+                        <td class="dl-mono">${escapeHtml(log.file_id || '—')}</td>
+                    </tr>`;
+                }).join('');
+                el.innerHTML = `<table class="download-log-table">
+                    <thead>
+                        <tr>
+                            <th>下载时间</th>
+                            <th>下载用户</th>
+                            <th>会议名称</th>
+                            <th>导出类型</th>
+                            <th>会议归属</th>
+                            <th>会议 ID</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>`;
+            } catch (e) {
+                el.innerHTML = '<p style="color:#f44336;padding:12px;">加载失败</p>';
+                document.getElementById('downloadLogPagination').style.display = 'none';
+            }
+        }
+
+        function hideAdminPermPanels(userId) {
+            const meeting = document.getElementById('adminPermMeeting_' + userId);
+            const download = document.getElementById('adminPermDownload_' + userId);
+            const account = document.getElementById('adminPermAccount_' + userId);
+            const pwd = document.getElementById('adminResetPwd_' + userId);
+            if (meeting) meeting.style.display = 'none';
+            if (download) download.style.display = 'none';
+            if (account) account.style.display = 'none';
+            if (pwd) pwd.style.display = 'none';
+        }
+
+        function onAdminPermActionChange(userId, action) {
+            hideAdminPermPanels(userId);
+            if (action === 'meeting') {
+                document.getElementById('adminPermMeeting_' + userId).style.display = 'block';
+            } else if (action === 'download') {
+                document.getElementById('adminPermDownload_' + userId).style.display = 'block';
+            } else if (action === 'account') {
+                document.getElementById('adminPermAccount_' + userId).style.display = 'block';
+            } else if (action === 'password') {
+                document.getElementById('adminResetPwd_' + userId).style.display = 'block';
+            }
+        }
+
+        async function submitPermissionRequest() {
+            const request_type = document.getElementById('applyType').value;
+            const reason = document.getElementById('applyReason').value.trim();
+            try {
+                const resp = await authFetch('/api/auth/requests', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ request_type, reason })
+                });
+                const data = await resp.json();
+                if (!resp.ok) { showErrorAlert(data.detail || '提交失败'); return; }
+                alert('申请已提交，请等待审批');
+                document.getElementById('applyReason').value = '';
+                loadMyRequests();
+                if (currentUser.role === 'admin' || currentUser.role === 'root') loadPendingRequests();
+            } catch (e) {
+                showErrorAlert('提交失败，请稍后重试');
+            }
+        }
+
+        const REQUEST_TYPE_LABELS = {
+            view_all: '查看全部会议',
+            admin: '成为管理员',
+            view_root_meetings: '查看超级管理员会议',
+            download: '下载/导出会议文件',
+        };
+
+        async function loadMyRequests() {
+            const el = document.getElementById('myRequestsList');
+            try {
+                const resp = await authFetch('/api/auth/requests/mine');
+                const data = await resp.json();
+                if (!data.requests || data.requests.length === 0) {
+                    el.innerHTML = '<p style="color:#999;">暂无记录</p>';
+                    return;
+                }
+                el.innerHTML = data.requests.map(r => {
+                    const typeLabel = REQUEST_TYPE_LABELS[r.request_type] || r.request_type;
+                    const statusLabel = { pending: '待审批', approved: '已通过', rejected: '已拒绝' }[r.status];
+                    return `<div class="request-card">
+                        <div><strong>${typeLabel}</strong> · <span class="request-status-${r.status}">${statusLabel}</span></div>
+                        <div style="color:#666;font-size:13px;margin-top:6px;">${r.reason || '无说明'}</div>
+                        <div style="color:#999;font-size:12px;margin-top:4px;">${new Date(r.created_at).toLocaleString('zh-CN')}</div>
+                        ${r.review_note ? `<div style="color:#666;font-size:12px;margin-top:4px;">审批备注：${r.review_note}</div>` : ''}
+                    </div>`;
+                }).join('');
+            } catch (e) {
+                el.innerHTML = '<p style="color:#f44336;">加载失败</p>';
+            }
+        }
+
+        async function loadAdminReviewLog() {
+            const el = document.getElementById('adminReviewLogList');
+            try {
+                const resp = await authFetch('/api/auth/requests/review-history');
+                const data = await resp.json();
+                if (!resp.ok) {
+                    el.innerHTML = '<p style="color:#f44336;">' + escapeHtml(data.detail || '加载失败') + '</p>';
+                    return;
+                }
+                if (!data.requests || data.requests.length === 0) {
+                    el.innerHTML = '<p style="color:#999;">暂无审批记录</p>';
+                    return;
+                }
+                el.innerHTML = data.requests.map(r => {
+                    const typeLabel = REQUEST_TYPE_LABELS[r.request_type] || r.request_type;
+                    const statusLabel = { pending: '待审批', approved: '已通过', rejected: '已拒绝' }[r.status];
+                    const statusClass = 'request-status-' + r.status;
+                    const reviewedAt = r.reviewed_at
+                        ? new Date(r.reviewed_at).toLocaleString('zh-CN')
+                        : '—';
+                    return `<div class="request-card">
+                        <div>
+                            <strong>${escapeHtml(r.nickname || r.username)}</strong> 申请 <strong>${typeLabel}</strong>
+                            · <span class="${statusClass}">${statusLabel}</span>
+                        </div>
+                        <div style="color:#666;font-size:13px;margin:6px 0;">${escapeHtml(r.reason || '无说明')}</div>
+                        <div style="color:#999;font-size:12px;">
+                            审批人：<strong>${escapeHtml(r.reviewer_username || '未知')}</strong>
+                            · ${reviewedAt}
+                        </div>
+                        ${r.review_note ? `<div style="color:#666;font-size:12px;margin-top:4px;">备注：${escapeHtml(r.review_note)}</div>` : ''}
+                    </div>`;
+                }).join('');
+            } catch (e) {
+                el.innerHTML = '<p style="color:#f44336;">加载失败</p>';
+            }
+        }
+
+        async function loadPendingRequests() {
+            const el = document.getElementById('pendingRequestsList');
+            try {
+                const resp = await authFetch('/api/auth/requests/pending');
+                const data = await resp.json();
+                if (!data.requests || data.requests.length === 0) {
+                    el.innerHTML = '<p style="color:#999;">暂无待审批</p>';
+                    return;
+                }
+                el.innerHTML = data.requests.map(r => {
+                    const typeLabel = REQUEST_TYPE_LABELS[r.request_type] || r.request_type;
+                    return `<div class="request-card">
+                        <div><strong>${r.nickname || r.username}</strong> 申请 <strong>${typeLabel}</strong></div>
+                        <div style="color:#666;font-size:13px;margin:6px 0;">${r.reason || '无说明'}</div>
+                        <div style="color:#999;font-size:12px;">${new Date(r.created_at).toLocaleString('zh-CN')}</div>
+                        <div style="margin-top:10px;display:flex;gap:10px;">
+                            <button class="btn-primary" style="padding:8px 16px;font-size:13px;" onclick="reviewRequest(${r.id}, 'approve')">通过</button>
+                            <button class="btn-danger" style="padding:8px 16px;font-size:13px;" onclick="reviewRequest(${r.id}, 'reject')">拒绝</button>
+                        </div>
+                    </div>`;
+                }).join('');
+            } catch (e) {
+                el.innerHTML = '<p style="color:#f44336;">加载失败</p>';
+            }
+        }
+
+        function escapeHtml(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        function escapeAttr(s) {
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;')
+                .replace(/</g, '&lt;');
+        }
+
+        function buildMeetingPermPanel(u) {
+            if (u.role === 'user') {
+                return `
+                    <div class="auth-field">
+                        <label>查阅会议权限</label>
+                        <select id="adminCanViewAll_${u.id}">
+                            <option value="0" ${!u.can_view_all ? 'selected' : ''}>仅查看自己的会议</option>
+                            <option value="1" ${u.can_view_all ? 'selected' : ''}>可查看全部会议</option>
+                        </select>
+                    </div>`;
+            }
+            if (u.role === 'admin') {
+                return `
+                    <div class="auth-field">
+                        <label>查阅会议权限</label>
+                        <select id="adminCanViewRoot_${u.id}">
+                            <option value="0" ${!u.can_view_root_meetings ? 'selected' : ''}>不可查看超级管理员会议</option>
+                            <option value="1" ${u.can_view_root_meetings ? 'selected' : ''}>可查看超级管理员会议（限最近3天）</option>
+                        </select>
+                    </div>
+                    <p style="color:#999;font-size:12px;margin:0;">管理员默认可查看其他普通用户的会议。</p>`;
+            }
+            return '<p style="color:#999;margin:0;">该角色无需设置查阅会议权限。</p>';
+        }
+
+        function buildDownloadPermPanel(u) {
+            let html = `
+                <div class="auth-field">
+                    <label>下载/导出会议文件（Word、图文）</label>
+                    <select id="adminCanDownload_${u.id}">
+                        <option value="0" ${!u.can_download ? 'selected' : ''}>不可下载</option>
+                        <option value="1" ${u.can_download ? 'selected' : ''}>允许下载</option>
+                    </select>
+                </div>`;
+            if (u.role === 'admin') {
+                html += `
+                <div class="auth-field">
+                    <label>审批他人下载权限申请</label>
+                    <select id="adminCanApproveDownload_${u.id}">
+                        <option value="0" ${!u.can_approve_download ? 'selected' : ''}>不可审批</option>
+                        <option value="1" ${u.can_approve_download ? 'selected' : ''}>可审批下载申请</option>
+                    </select>
+                </div>
+                <p style="color:#999;font-size:12px;margin:0;">仅超级管理员可授权管理员审批下载申请。</p>`;
+            }
+            return html;
+        }
+
+        function renderAdminUserRow(u) {
+            const roleLabel = ROLE_LABELS[u.role] || u.role;
+            const isRoot = u.role === 'root';
+            const isSelf = currentUser && u.id === currentUser.id;
+            let permInfo = '';
+            if (u.role === 'admin') {
+                permInfo = `查阅：可查看其他用户会议；超级管理员会议 ${u.can_view_root_meetings ? '可查看（限3天）' : '不可查看'}`;
+                permInfo += `；下载：${u.can_download ? '允许' : '禁止'}`;
+                permInfo += `；审批下载：${u.can_approve_download ? '已授权' : '未授权'}`;
+            } else if (u.role === 'user') {
+                permInfo = `查阅：${u.can_view_all ? '可查看全部会议' : '仅自己的会议'}`;
+                permInfo += `；下载：${u.can_download ? '允许' : '禁止'}`;
+            }
+
+            if (isRoot) {
+                return `<div class="admin-user-row">
+                    <div class="admin-user-row-header">
+                        <div>
+                            <strong>${escapeHtml(u.nickname || u.username)}</strong>
+                            <span class="role-${u.role}" style="padding:2px 8px;border-radius:4px;font-size:12px;color:#fff;margin-left:6px;">${roleLabel}</span>
+                            <div class="admin-user-meta">${escapeHtml(u.username)}${isSelf ? ' · 当前登录' : ''}</div>
+                        </div>
+                    </div>
+                </div>`;
+            }
+
+            return `<div class="admin-user-row">
+                <div class="admin-user-row-header">
+                    <div>
+                        <strong>${escapeHtml(u.nickname || u.username)}</strong>
+                        <span class="role-${u.role}" style="padding:2px 8px;border-radius:4px;font-size:12px;color:#fff;margin-left:6px;">${roleLabel}</span>
+                        <div class="admin-user-meta">
+                            ${escapeHtml(u.username)} · 注册 ${new Date(u.created_at).toLocaleString('zh-CN')}
+                            ${permInfo ? '<br>' + permInfo : ''}
+                        </div>
+                    </div>
+                </div>
+                <div class="admin-user-actions">
+                    <select onchange="onAdminPermActionChange(${u.id}, this.value); this.value='';">
+                        <option value="">选择操作…</option>
+                        <option value="meeting">修改查阅会议权限</option>
+                        <option value="download">修改下载权限</option>
+                        <option value="account">修改用户账号权限</option>
+                        <option value="password">重置密码</option>
+                    </select>
+                    ${!isSelf ? `<button type="button" class="btn-sm btn-danger" onclick="adminDeleteUser(${u.id}, '${escapeAttr(u.username)}')">删除账号</button>` : ''}
+                </div>
+                <div id="adminPermMeeting_${u.id}" class="admin-perm-panel" style="display:none;">
+                    <div style="font-weight:bold;color:#667eea;margin-bottom:10px;font-size:14px;">修改查阅会议权限</div>
+                    ${buildMeetingPermPanel(u)}
+                    <div class="admin-perm-actions">
+                        <button type="button" class="btn-sm btn-primary" onclick="saveAdminMeetingPerm(${u.id})">保存</button>
+                        <button type="button" class="btn-sm" style="background:#eee;color:#666;" onclick="hideAdminPermPanels(${u.id})">取消</button>
+                    </div>
+                </div>
+                <div id="adminPermDownload_${u.id}" class="admin-perm-panel" style="display:none;">
+                    <div style="font-weight:bold;color:#667eea;margin-bottom:10px;font-size:14px;">修改下载权限</div>
+                    ${buildDownloadPermPanel(u)}
+                    <div class="admin-perm-actions">
+                        <button type="button" class="btn-sm btn-primary" onclick="saveAdminDownloadPerm(${u.id})">保存</button>
+                        <button type="button" class="btn-sm" style="background:#eee;color:#666;" onclick="hideAdminPermPanels(${u.id})">取消</button>
+                    </div>
+                </div>
+                <div id="adminPermAccount_${u.id}" class="admin-perm-panel" style="display:none;">
+                    <div style="font-weight:bold;color:#667eea;margin-bottom:10px;font-size:14px;">修改用户账号权限</div>
+                    <div class="auth-field">
+                        <label>昵称</label>
+                        <input type="text" id="adminNickname_${u.id}" value="${escapeAttr(u.nickname || u.username || '')}">
+                    </div>
+                    <div class="auth-field">
+                        <label>账号角色</label>
+                        <select id="adminRole_${u.id}">
+                            <option value="user" ${u.role === 'user' ? 'selected' : ''}>普通用户</option>
+                            <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>管理员</option>
+                        </select>
+                    </div>
+                    <p style="color:#999;font-size:12px;margin:0;">设为管理员后自动获得查看其他用户会议权限。</p>
+                    <div class="admin-perm-actions">
+                        <button type="button" class="btn-sm btn-primary" onclick="saveAdminAccountPerm(${u.id})">保存</button>
+                        <button type="button" class="btn-sm" style="background:#eee;color:#666;" onclick="hideAdminPermPanels(${u.id})">取消</button>
+                    </div>
+                </div>
+                <div id="adminResetPwd_${u.id}" class="admin-perm-panel" style="display:none;">
+                    <div style="font-weight:bold;color:#667eea;margin-bottom:10px;font-size:14px;">重置密码 · ${escapeHtml(u.username)}</div>
+                    <div class="auth-field">
+                        <label>新密码</label>
+                        <input type="password" id="adminNewPwd_${u.id}" placeholder="至少 6 位">
+                    </div>
+                    <div class="auth-field">
+                        <label>确认新密码</label>
+                        <input type="password" id="adminNewPwd2_${u.id}" placeholder="再次输入">
+                    </div>
+                    <div class="admin-perm-actions">
+                        <button type="button" class="btn-sm btn-primary" onclick="saveAdminResetPassword(${u.id})">确认重置</button>
+                        <button type="button" class="btn-sm" style="background:#eee;color:#666;" onclick="hideAdminPermPanels(${u.id})">取消</button>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        async function loadAdminUsers() {
+            const el = document.getElementById('adminUsersList');
+            el.innerHTML = '<p style="color:#999;">加载中...</p>';
+            try {
+                const resp = await authFetch('/api/admin/users');
+                const data = await resp.json();
+                if (!resp.ok) {
+                    el.innerHTML = '<p style="color:#f44336;">' + escapeHtml(data.detail || '加载失败') + '</p>';
+                    return;
+                }
+                adminUsersCache = data.users || [];
+                if (adminUsersCache.length === 0) {
+                    el.innerHTML = '<p style="color:#999;">暂无用户</p>';
+                    return;
+                }
+                el.innerHTML = adminUsersCache.map(renderAdminUserRow).join('');
+            } catch (e) {
+                el.innerHTML = '<p style="color:#f44336;">加载失败</p>';
+            }
+        }
+
+        async function saveAdminDownloadPerm(userId) {
+            const user = adminUsersCache.find(u => u.id === userId);
+            if (!user || user.role === 'root') return;
+            const body = {
+                can_download: document.getElementById('adminCanDownload_' + userId)?.value === '1',
+            };
+            if (user.role === 'admin') {
+                body.can_approve_download =
+                    document.getElementById('adminCanApproveDownload_' + userId)?.value === '1';
+            }
+            try {
+                const resp = await authFetch(`/api/admin/users/${userId}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await resp.json();
+                if (!resp.ok) { showErrorAlert(data.detail || '保存失败'); return; }
+                alert('下载权限已更新');
+                hideAdminPermPanels(userId);
+                loadAdminUsers();
+            } catch (e) {
+                showErrorAlert('操作失败，请稍后重试');
+            }
+        }
+
+        async function saveAdminMeetingPerm(userId) {
+            const user = adminUsersCache.find(u => u.id === userId);
+            if (!user) return;
+            const body = {};
+            if (user.role === 'user') {
+                const el = document.getElementById('adminCanViewAll_' + userId);
+                body.can_view_all = el && el.value === '1';
+            } else if (user.role === 'admin') {
+                const el = document.getElementById('adminCanViewRoot_' + userId);
+                body.can_view_root_meetings = el && el.value === '1';
+            } else {
+                showErrorAlert('该用户无需设置查阅会议权限');
+                return;
+            }
+            try {
+                const resp = await authFetch(`/api/admin/users/${userId}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await resp.json();
+                if (!resp.ok) { showErrorAlert(data.detail || '保存失败'); return; }
+                alert('查阅会议权限已更新');
+                loadAdminUsers();
+            } catch (e) { showErrorAlert('操作失败，请稍后重试'); }
+        }
+
+        async function saveAdminAccountPerm(userId) {
+            const nicknameEl = document.getElementById('adminNickname_' + userId);
+            const roleEl = document.getElementById('adminRole_' + userId);
+            const nickname = nicknameEl.value.trim();
+            if (!nickname) { showErrorAlert('昵称不能为空'); return; }
+            const role = roleEl.value;
+            try {
+                const resp = await authFetch(`/api/admin/users/${userId}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nickname, role })
+                });
+                const data = await resp.json();
+                if (!resp.ok) { showErrorAlert(data.detail || '保存失败'); return; }
+                alert('账号权限已更新');
+                loadAdminUsers();
+            } catch (e) { showErrorAlert('操作失败，请稍后重试'); }
+        }
+
+        async function saveAdminResetPassword(userId) {
+            const pwd = document.getElementById('adminNewPwd_' + userId).value;
+            const pwd2 = document.getElementById('adminNewPwd2_' + userId).value;
+            if (!pwd || pwd.length < 6) { showErrorAlert('密码至少 6 位'); return; }
+            if (pwd !== pwd2) { showErrorAlert('两次密码不一致'); return; }
+            try {
+                const resp = await authFetch(`/api/admin/users/${userId}/reset-password`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ new_password: pwd })
+                });
+                const data = await resp.json();
+                if (!resp.ok) { showErrorAlert(data.detail || '操作失败'); return; }
+                alert(data.message || '密码已重置');
+                hideAdminPermPanels(userId);
+            } catch (e) { showErrorAlert('操作失败，请稍后重试'); }
+        }
+
+        async function adminDeleteUser(userId, username) {
+            if (!confirm(`确定删除用户「${username}」？其会议记录将保留但不再关联该用户。`)) return;
+            try {
+                const resp = await authFetch(`/api/admin/users/${userId}`, { method: 'DELETE' });
+                const data = await resp.json();
+                if (!resp.ok) { showErrorAlert(data.detail || '删除失败'); return; }
+                alert(data.message || '已删除');
+                loadAdminUsers();
+            } catch (e) { showErrorAlert('操作失败，请稍后重试'); }
+        }
+
+        async function adminDeleteMeeting(fileId, displayName) {
+            const name = displayName || fileId;
+            if (!confirm(`确定删除会议「${name}」？此操作不可恢复。`)) return;
+            try {
+                const resp = await authFetch(`/api/admin/meetings/${fileId}`, { method: 'DELETE' });
+                const data = await resp.json();
+                if (!resp.ok) { showErrorAlert(data.detail || '删除失败'); return; }
+                alert(data.message || '已删除');
+                loadHistory();
+            } catch (e) { showErrorAlert('操作失败，请稍后重试'); }
+        }
+
+        async function reviewRequest(id, action) {
+            const review_note = prompt(action === 'approve' ? '审批备注（可选）' : '拒绝原因（可选）') || '';
+            try {
+                const resp = await authFetch(`/api/auth/requests/${id}/review`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action, review_note })
+                });
+                const data = await resp.json();
+                if (!resp.ok) { showErrorAlert(data.detail || '操作失败'); return; }
+                alert(action === 'approve' ? '已通过' : '已拒绝');
+                loadPendingRequests();
+                loadMyRequests();
+                const meResp = await authFetch('/api/auth/me');
+                const meData = await meResp.json();
+                if (meData.success) { currentUser = meData.user; updateUserBar(); updateAccountPanel(); }
+            } catch (e) {
+                showErrorAlert('操作失败，请稍后重试');
+            }
+        }
+
+        function downloadBlobResponse(response, defaultFilename) {
+            const disposition = response.headers.get('Content-Disposition') || '';
+            let filename = defaultFilename;
+            const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+            const plainMatch = disposition.match(/filename="([^"]+)"/i);
+            if (utf8Match) filename = decodeURIComponent(utf8Match[1]);
+            else if (plainMatch) filename = plainMatch[1];
+            return response.blob().then(blob => {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+            });
+        }
+
+        async function exportSummaryDocx({ fileId, content, title }) {
+            if (!userCanDownload()) {
+                showErrorAlert('暂无下载/导出权限，请在 xling 平台「平台管理 → 权限管理」中申请');
+                return;
+            }
+            const exportTitle = (title || '').trim();
+            if (!fileId && !exportTitle) {
+                showErrorAlert('请先填写会议名称');
+                return;
+            }
+            try {
+                let response;
+                if (fileId) {
+                    response = await authFetch(`/api/meetings/${fileId}/export/summary`);
+                } else if (content) {
+                    response = await authFetch('/api/export/summary', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ content, title: exportTitle }),
+                    });
+                } else {
+                    showErrorAlert('无可导出的总结');
+                    return;
+                }
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    showErrorAlert(err.detail || '导出失败');
+                    return;
+                }
+                await downloadBlobResponse(response, 'AI智能速览.docx');
+            } catch (e) {
+                showErrorAlert('导出失败，请稍后重试');
+            }
+        }
+
+        async function exportVisualHtml({ fileId, visual, title, format = 'html' }) {
+            if (!userCanDownload()) {
+                showErrorAlert('暂无下载/导出权限，请在 xling 平台「平台管理 → 权限管理」中申请');
+                return;
+            }
+            const exportTitle = (title || '').trim();
+            if (!fileId && !exportTitle) {
+                showErrorAlert('请先填写会议名称');
+                return;
+            }
+            try {
+                let response;
+                const fmt = format === 'json' ? 'json' : 'html';
+                if (fileId) {
+                    response = await authFetch(`/api/meetings/${fileId}/export/visual?format=${fmt}`);
+                } else if (visual) {
+                    response = await authFetch(`/api/export/visual?format=${fmt}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ visual, title: exportTitle }),
+                    });
+                } else {
+                    showErrorAlert('无可下载的图文速览');
+                    return;
+                }
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    showErrorAlert(err.detail || '下载失败');
+                    return;
+                }
+                const defaultName = fmt === 'json' ? '图文速览.json' : '图文速览.html';
+                await downloadBlobResponse(response, defaultName);
+            } catch (e) {
+                showErrorAlert('下载失败，请稍后重试');
+            }
+        }
+
+        function exportSummary(source) {
+            if (source === 'realtime') {
+                const mdEl = document.getElementById('realtimeSummaryMarkdown');
+                const content = (mdEl ? mdEl.textContent : '').trim();
+                const meetingName = document.getElementById('meetingNameInput').value.trim();
+                if (!meetingName && !lastRealtimeFileId) {
+                    showErrorAlert('请先填写会议名称');
+                    return;
+                }
+                exportSummaryDocx({
+                    fileId: lastRealtimeFileId,
+                    content: lastRealtimeFileId ? null : content,
+                    title: meetingName,
+                });
+            } else if (source === 'batch') {
+                const mdEl = document.getElementById('batchSummaryMarkdown');
+                const content = (mdEl ? mdEl.textContent : '').trim();
+                exportSummaryDocx({
+                    fileId: lastBatchFileId,
+                    content: lastBatchFileId ? null : content,
+                    title: lastBatchSummaryTitle,
+                });
+            }
+        }
+
+        function exportVisual(source, format) {
+            if (source === 'realtime') {
+                const meetingName = document.getElementById('meetingNameInput').value.trim();
+                if (!meetingName && !lastRealtimeFileId) {
+                    showErrorAlert('请先填写会议名称');
+                    return;
+                }
+                exportVisualHtml({
+                    fileId: lastRealtimeFileId,
+                    visual: lastRealtimeFileId ? null : lastRealtimeVisual,
+                    title: meetingName,
+                    format,
+                });
+            } else if (source === 'batch') {
+                exportVisualHtml({
+                    fileId: lastBatchFileId,
+                    visual: lastBatchFileId ? null : lastBatchVisual,
+                    title: lastBatchSummaryTitle,
+                    format,
+                });
+            }
+        }
+
+        function exportHistorySummary(fileId, title) {
+            exportSummaryDocx({ fileId, title });
+        }
+
+        function exportHistoryVisual(fileId, title, format) {
+            exportVisualHtml({ fileId, title, format });
+        }
+
+        // ========== 原有功能 ==========
+        let ws = null;
+        let mediaRecorder = null;
+        let audioContext = null;
+        let isRecording = false;
+        let sessionEnding = false;
+        let pendingFileId = null;
+        let pollAbort = false;
+        let pollFallbackTimer = null;
+        let selectedFile = null;
+        let lastRealtimeFileId = null;
+        let lastRealtimeVisual = null;
+        let lastBatchFileId = null;
+        let lastBatchVisual = null;
+        let lastBatchSummaryTitle = '';
+        
+        const statusEl = document.getElementById('status');
+        const micWarningEl = document.getElementById('micWarning');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const realtimeTranscriptEl = document.getElementById('realtimeTranscript');
+
+        function canUseMicrophone() {
+            if (window.location.protocol === 'file:') {
+                return {
+                    ok: false,
+                    reason: '请通过浏览器访问本系统页面，不要直接双击打开 HTML 文件。',
+                };
+            }
+            if (!window.isSecureContext) {
+                return {
+                    ok: false,
+                    reason:
+                        '当前访问方式无法调用麦克风。请使用安全连接（HTTPS）访问本系统，或联系管理员获取正确访问地址。',
+                };
+            }
+            if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+                return {
+                    ok: false,
+                    reason: '当前浏览器不支持麦克风，请使用 Chrome、Edge 或 Firefox 最新版。',
+                };
+            }
+            return { ok: true };
+        }
+
+        function describeMicError(error) {
+            const name = error && error.name ? error.name : '';
+            const msg = error && error.message ? error.message : String(error);
+            if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+                return '麦克风权限被拒绝。请点击地址栏左侧的锁/站点图标，将麦克风设为「允许」，然后刷新页面重试。';
+            }
+            if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+                return '未检测到可用麦克风，请确认设备已连接且未被其他程序占用。';
+            }
+            if (name === 'NotReadableError' || name === 'TrackStartError') {
+                return '麦克风被其他应用占用或驱动异常，请关闭占用麦克风的程序后重试。';
+            }
+            if (name === 'SecurityError') {
+                return '浏览器安全策略阻止了麦克风访问，请使用安全连接（HTTPS）访问本系统。';
+            }
+            if (name === 'OverconstrainedError') {
+                return '麦克风参数不兼容，请尝试更换浏览器或检查系统录音设备。';
+            }
+            return '无法访问麦克风，请检查权限与设备后重试。';
+        }
+
+        function stopMediaStream(stream) {
+            if (!stream) return;
+            stream.getTracks().forEach(track => track.stop());
+        }
+
+        function updateMicrophoneHint() {
+            if (!micWarningEl) return;
+            const check = canUseMicrophone();
+            if (check.ok) {
+                micWarningEl.classList.remove('visible');
+                micWarningEl.innerHTML = '';
+                startBtn.disabled = false;
+                return;
+            }
+            micWarningEl.innerHTML = `⚠️ ${check.reason}`;
+            micWarningEl.classList.add('visible');
+            startBtn.disabled = true;
+        }
+        
+        // 切换标签页
+        function switchTab(tab) {
+            const tabs = document.querySelectorAll('.tab-btn');
+            const panels = document.querySelectorAll('.content-panel');
+            
+            tabs.forEach(t => t.classList.remove('active'));
+            panels.forEach(p => p.classList.remove('active'));
+            
+            if (tab === 'realtime') {
+                tabs[0].classList.add('active');
+                document.getElementById('realtimePanel').classList.add('active');
+            } else if (tab === 'batch') {
+                tabs[1].classList.add('active');
+                document.getElementById('batchPanel').classList.add('active');
+            } else if (tab === 'history') {
+                tabs[2].classList.add('active');
+                document.getElementById('historyPanel').classList.add('active');
+                loadHistory();
+            } else if (tab === 'account') {
+                tabs[3].classList.add('active');
+                document.getElementById('accountPanel').classList.add('active');
+                updateAccountPanel();
+            }
+        }
+        
+        // 连接 WebSocket
+        function connectWebSocket(meetingName = '') {
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            let wsUrl = `${wsProtocol}//${window.location.host}/api/ws/transcribe?token=${encodeURIComponent(authToken)}`;
+            if (isCollabMode && collabRoomCode) {
+                wsUrl += `&room_code=${encodeURIComponent(collabRoomCode)}`;
+            }
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                console.log('WebSocket 连接成功');
+                updateStatus('已连接', true);
+                collabWsReady = true;
+
+                if (isCollabMode) {
+                    return;
+                }
+                
+                const initMessage = {
+                    type: 'init',
+                    meeting_name: meetingName
+                };
+                ws.send(JSON.stringify(initMessage));
+                console.log('发送会议名称:', meetingName);
+            };
+            
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleWebSocketMessage(data);
+                } catch (e) {
+                    console.error('解析消息失败:', e);
+                }
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket 错误:', error);
+                updateStatus('连接错误', false);
+            };
+            
+            ws.onclose = () => {
+                console.log('WebSocket 连接关闭');
+                updateStatus('已断开', false);
+                cleanupMediaOnly();
+                if (sessionEnding && pendingFileId) {
+                    setRealtimeTranscriptStatus('连接已断开，正在获取会议纪要...');
+                    pollMeetingSummary(pendingFileId);
+                } else if (sessionEnding) {
+                    resetRealtimeSessionUI('连接已断开，请查看历史记录');
+                }
+            };
+        }
+
+        function resetRealtimeSessionUI(statusText) {
+            sessionEnding = false;
+            pollAbort = true;
+            startBtn.disabled = false;
+            stopBtn.disabled = false;
+            stopBtn.innerHTML = '停止录音';
+            if (statusText) {
+                setRealtimeTranscriptStatus(statusText);
+            }
+        }
+
+        const VISUAL_ICONS = {
+            doc: '📄', trophy: '🏆', people: '👥', policy: '📋', chat: '💬',
+            star: '⭐', calendar: '📅', money: '💰', check: '✅', warn: '⚠️',
+            idea: '💡', target: '🎯', handshake: '🤝', chart: '📊', time: '⏱️',
+        };
+
+        const VISUAL_TAG_CLASS = {
+            '重点': 'tag-focus', '待跟进': 'tag-todo', '已决策': 'tag-done',
+            '风险': 'tag-risk', '待确认': 'tag-pending',
+        };
+
+        function visualTagClass(tag) {
+            if (!tag) return 'visual-card-tag';
+            return 'visual-card-tag ' + (VISUAL_TAG_CLASS[tag] || '');
+        }
+
+        function switchSummaryTab(prefix, tab) {
+            const mdEl = document.getElementById(prefix + 'SummaryMarkdown');
+            const visEl = document.getElementById(prefix + 'SummaryVisual');
+            const btnMd = document.getElementById(prefix + 'TabMarkdown');
+            const btnVis = document.getElementById(prefix + 'TabVisual');
+            if (!mdEl || !visEl) return;
+            const isMd = tab === 'markdown';
+            mdEl.style.display = isMd ? 'block' : 'none';
+            visEl.style.display = isMd ? 'none' : 'block';
+            if (btnMd) btnMd.classList.toggle('active', isMd);
+            if (btnVis) btnVis.classList.toggle('active', !isMd);
+        }
+
+        function parseVisualData(raw) {
+            if (!raw) return null;
+            if (typeof raw === 'string') {
+                try {
+                    return JSON.parse(raw);
+                } catch (e) {
+                    console.warn('图文 JSON 解析失败', e);
+                    return null;
+                }
+            }
+            return raw;
+        }
+
+        function normalizeVisualForDisplay(visual) {
+            const data = parseVisualData(visual);
+            if (!data || typeof data !== 'object') return null;
+
+            const sectionsIn = data.sections || data.items || [];
+            const sectionsOut = [];
+
+            function coerceList(value) {
+                if (!value) return [];
+                if (Array.isArray(value)) return value.map(v => String(v).trim()).filter(Boolean);
+                if (typeof value === 'string') {
+                    return value.split(/[\n；;，,]+/).map(s => s.trim()).filter(Boolean);
+                }
+                return [String(value).trim()].filter(Boolean);
+            }
+
+            function cardHasContent(card) {
+                if (!card || typeof card !== 'object') return false;
+                return Boolean(
+                    (card.title || card.name || card.heading || '').trim()
+                    || coerceList(card.bullets || card.points || card.items).length
+                    || (card.highlight || card.summary || card.content || '').trim()
+                );
+            }
+
+            sectionsIn.forEach((sec, idx) => {
+                if (!sec || typeof sec !== 'object') return;
+                const secTitle = (sec.title || sec.name || sec.heading || sec.topic || '').trim();
+                let cards = [];
+
+                const rawCards = sec.cards || sec.items || sec.children || [];
+                if (Array.isArray(rawCards)) {
+                    rawCards.forEach(item => {
+                        if (typeof item === 'string' && item.trim()) {
+                            cards.push({ title: '', bullets: [item.trim()], icon: 'doc' });
+                            return;
+                        }
+                        if (!item || typeof item !== 'object') return;
+                        const card = {
+                            title: (item.title || item.name || item.heading || '').trim(),
+                            icon: item.icon || 'doc',
+                            tag: item.tag || null,
+                            bullets: coerceList(item.bullets || item.points || item.items),
+                            highlight: (item.highlight || item.summary || item.content || '').trim() || null,
+                        };
+                        if (cardHasContent(card)) cards.push(card);
+                    });
+                }
+
+                const secPoints = coerceList(sec.bullets || sec.points || sec.items || sec.content);
+                if (!cards.length && secPoints.length) {
+                    cards.push({ title: secTitle || '要点', icon: 'doc', bullets: secPoints });
+                } else if (!cards.length && secTitle) {
+                    const desc = (sec.description || sec.summary || sec.content || sec.highlight || '').trim();
+                    cards.push({
+                        title: secTitle,
+                        icon: 'doc',
+                        bullets: desc ? [desc] : ['（该主题详情见文字速览）'],
+                    });
+                }
+
+                cards = cards.map(card => {
+                    if (!card.title) {
+                        if (card.bullets && card.bullets.length) {
+                            const first = card.bullets[0];
+                            card.title = first.length > 24 ? first.slice(0, 24) + '…' : first;
+                        } else {
+                            card.title = secTitle || '要点';
+                        }
+                    }
+                    if (!card.bullets.length && card.highlight) {
+                        card.bullets = [card.highlight];
+                    }
+                    return card;
+                }).filter(cardHasContent);
+
+                if (!cards.length) return;
+
+                sectionsOut.push({
+                    id: String(sectionsOut.length + 1).padStart(2, '0'),
+                    title: secTitle || cards[0].title || `分区 ${idx + 1}`,
+                    theme: sec.theme || ['green', 'orange', 'blue', 'pink', 'teal', 'brown', 'purple', 'red'][sectionsOut.length % 8],
+                    layout: cards.length <= 1 ? 'full' : (cards.length === 2 ? 'grid-2' : 'grid-3'),
+                    cards,
+                });
+            });
+
+            return {
+                title: data.title || '',
+                subtitle: data.subtitle || '',
+                sections: sectionsOut,
+                footer: data.footer || {},
+            };
+        }
+
+        function renderVisualSummary(container, visual, status) {
+            if (!container) return;
+            visual = normalizeVisualForDisplay(visual);
+            if (!visual || !visual.sections || !visual.sections.length) {
+                if (status === 'failed') {
+                    container.innerHTML = '<p style="color:#e74c3c;text-align:center;padding:20px;">图文速览生成失败，请稍后刷新或查看文字速览。</p>';
+                } else {
+                    container.innerHTML = '<p style="color:#999;text-align:center;padding:20px;">暂无图文速览</p>';
+                }
+                return;
+            }
+            let html = '';
+            if (visual.title) {
+                html += `<div class="visual-summary-title">${escapeHtml(visual.title)}</div>`;
+            }
+            if (visual.subtitle) {
+                html += `<div class="visual-summary-subtitle">${escapeHtml(visual.subtitle)}</div>`;
+            }
+            const footer = visual.footer || {};
+            if (footer.core_consensus) {
+                html += `<div class="visual-consensus-banner">
+                    <h4>核心共识</h4>
+                    <p style="margin:0;line-height:1.7;color:#444;">${escapeHtml(footer.core_consensus)}</p>
+                </div>`;
+            }
+            (visual.sections || []).forEach((sec, idx) => {
+                const theme = sec.theme || 'green';
+                const layout = sec.layout || 'grid-3';
+                const secId = sec.id || String(idx + 1).padStart(2, '0');
+                html += `<div class="visual-section theme-${theme}">
+                    <div class="visual-section-head">
+                        <div class="visual-section-num">${escapeHtml(secId)}</div>
+                        <div class="visual-section-title">${escapeHtml(sec.title || '')}</div>
+                    </div>
+                    <div class="visual-cards layout-${layout}">`;
+                const cards = (sec.cards || []).filter(card =>
+                    (card.title || '').trim() || (card.bullets || []).length || (card.highlight || '').trim()
+                );
+                if (!cards.length) return;
+                cards.forEach(card => {
+                    const icon = VISUAL_ICONS[card.icon] || '📄';
+                    const bullets = card.bullets || [];
+                    html += `<div class="visual-card">
+                        <div class="visual-card-head">
+                            <span class="visual-card-icon">${icon}</span>
+                            <span class="visual-card-title">${escapeHtml(card.title || '')}</span>
+                            ${card.tag ? `<span class="${visualTagClass(card.tag)}">${escapeHtml(card.tag)}</span>` : ''}
+                        </div>`;
+                    if (bullets.length) {
+                        html += `<ul class="visual-card-bullets">
+                            ${bullets.map(b => `<li>${escapeHtml(b)}</li>`).join('')}
+                        </ul>`;
+                    }
+                    if (card.highlight) {
+                        html += `<div class="visual-card-highlight">${escapeHtml(card.highlight)}</div>`;
+                    }
+                    html += `</div>`;
+                });
+                html += `</div></div>`;
+            });
+            if (footer.contacts && footer.contacts.length) {
+                html += `<div class="visual-footer-block"><h4>联系人</h4><ul class="visual-card-bullets">
+                    ${footer.contacts.map(c => `<li>${escapeHtml(c)}</li>`).join('')}</ul></div>`;
+            }
+            if (footer.next_steps && footer.next_steps.length) {
+                html += `<div class="visual-footer-block"><h4>下一步</h4><ul class="visual-card-bullets">
+                    ${footer.next_steps.map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ul></div>`;
+            }
+            container.innerHTML = html;
+        }
+
+        function displayDualSummary(prefix, payload) {
+            const boxId = prefix === 'batch' ? 'summaryResult'
+                : (prefix === 'history' ? null : (prefix + 'Summary'));
+            const box = boxId ? document.getElementById(boxId)
+                : document.getElementById('historySummaryMarkdown')?.closest('.summary-container');
+            if (!box) return;
+            const summary = payload.summary;
+            const visual = payload.summary_visual;
+            const status = payload.summary_visual_status;
+            if (!summary && !visual) {
+                box.style.display = 'none';
+                return;
+            }
+            box.style.display = 'block';
+            const mdEl = document.getElementById(prefix + 'SummaryMarkdown');
+            if (mdEl) mdEl.textContent = summary || '暂无文字速览';
+            renderVisualSummary(document.getElementById(prefix + 'SummaryVisual'), visual, status);
+            const btnVis = document.getElementById(prefix + 'TabVisual');
+            if (btnVis) {
+                btnVis.disabled = !visual && status === 'failed';
+            }
+            const exportVisBtn = document.getElementById(prefix + 'ExportVisualBtn');
+            if (exportVisBtn) {
+                exportVisBtn.disabled = !visual && status !== 'completed';
+            }
+            if (prefix === 'realtime') lastRealtimeVisual = visual || null;
+            if (prefix === 'batch') lastBatchVisual = visual || null;
+            switchSummaryTab(prefix, 'markdown');
+        }
+
+        function applySessionResult(data) {
+            sessionEnding = false;
+            pollAbort = true;
+            pendingFileId = null;
+            if (pollFallbackTimer) {
+                clearTimeout(pollFallbackTimer);
+                pollFallbackTimer = null;
+            }
+
+            if (data.total_text) {
+                renderRealtimeTranscript(data.total_text);
+            } else {
+                setRealtimeTranscriptStatus('会话已结束');
+            }
+
+            displayDualSummary('realtime', data);
+            if (data.file_id) {
+                lastRealtimeFileId = data.file_id;
+            }
+
+            startBtn.disabled = false;
+            stopBtn.disabled = false;
+            stopBtn.innerHTML = '停止录音';
+
+            if (data.error) {
+                showErrorAlert(data.error || '部分功能未完成，请稍后重试');
+            }
+            if (data.summary_visual_status === 'failed' && data.summary_visual_error) {
+                console.warn('图文速览:', data.summary_visual_error);
+            }
+        }
+
+        async function pollMeetingSummary(fileId, maxAttempts = 90) {
+            pollAbort = false;
+            for (let i = 0; i < maxAttempts; i++) {
+                if (pollAbort) return;
+                try {
+                    const resp = await authFetch(`/api/meetings/${fileId}`);
+                    const data = await resp.json();
+                    if (data.success && data.summary) {
+                        applySessionResult({
+                            total_text: data.transcript,
+                            summary: data.summary,
+                            summary_visual: data.summary_visual,
+                            summary_visual_status: data.summary_visual_status,
+                        });
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.close();
+                        }
+                        return;
+                    }
+                } catch (e) {
+                    console.error('轮询会议结果失败:', e);
+                }
+                await new Promise(r => setTimeout(r, 2000));
+            }
+            resetRealtimeSessionUI('纪要已生成，请到「历史会议」查看');
+        }
+
+        function cleanupMediaOnly() {
+            if (!mediaRecorder) return;
+            if (mediaRecorder.flushTimer) {
+                clearInterval(mediaRecorder.flushTimer);
+            }
+            mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            try {
+                mediaRecorder.processor.disconnect();
+                mediaRecorder.source.disconnect();
+            } catch (e) { /* 已断开 */ }
+            if (audioContext) {
+                audioContext.close();
+            }
+            mediaRecorder = null;
+            isRecording = false;
+        }
+
+        function waitForWebSocketOpen(socket, timeoutMs = 8000) {
+            return new Promise((resolve, reject) => {
+                if (socket.readyState === WebSocket.OPEN) {
+                    resolve();
+                    return;
+                }
+                const timer = setTimeout(() => reject(new Error('连接超时，请重试')), timeoutMs);
+                socket.addEventListener('open', () => {
+                    clearTimeout(timer);
+                    resolve();
+                }, { once: true });
+                socket.addEventListener('error', () => {
+                    clearTimeout(timer);
+                    reject(new Error('连接失败，请重试'));
+                }, { once: true });
+            });
+        }
+        
+        // 说话人展示
+        const SPEAKER_THEME_COLORS = [
+            { avatar: '#42a5f5', name: '#1976d2' },
+            { avatar: '#66bb6a', name: '#388e3c' },
+            { avatar: '#ab47bc', name: '#7b1fa2' },
+            { avatar: '#ffa726', name: '#ef6c00' },
+            { avatar: '#26c6da', name: '#00838f' },
+            { avatar: '#ec407a', name: '#c2185b' },
+        ];
+        let realtimeSegmentTimes = [];
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function stripSpeakerPrefix(text) {
+            return (text || '').replace(/^\[说话人\d+\]\s*/, '');
+        }
+
+        function speakerTheme(speaker) {
+            const m = (speaker || '').match(/说话人(\d+)/);
+            if (m) {
+                const idx = parseInt(m[1], 10) - 1;
+                return SPEAKER_THEME_COLORS[Math.abs(idx) % SPEAKER_THEME_COLORS.length];
+            }
+            let hash = 0;
+            const label = speaker || '未知';
+            for (let i = 0; i < label.length; i++) {
+                hash = ((hash << 5) - hash) + label.charCodeAt(i);
+                hash |= 0;
+            }
+            return SPEAKER_THEME_COLORS[Math.abs(hash) % SPEAKER_THEME_COLORS.length];
+        }
+
+        function speakerAvatarChar(speaker) {
+            const m = (speaker || '').match(/说话人(\d+)/);
+            if (m) return m[1];
+            const label = (speaker || '?').trim();
+            return label ? label.charAt(0) : '?';
+        }
+
+        function formatTranscriptTime(isoOrDate) {
+            const d = isoOrDate ? new Date(isoOrDate) : new Date();
+            if (Number.isNaN(d.getTime())) return '';
+            return d.toTimeString().slice(0, 8);
+        }
+
+        function parseTranscriptSegments(text) {
+            if (!text) return [];
+            const segments = [];
+            for (const rawLine of text.split('\n')) {
+                const line = rawLine.trim();
+                if (!line) continue;
+                const m = line.match(/^\[([^\]]+)\]\s*(.*)$/);
+                if (m) {
+                    const speaker = m[1];
+                    const content = m[2].trim();
+                    const last = segments[segments.length - 1];
+                    if (last && last.speaker === speaker) {
+                        last.text = last.text ? `${last.text} ${content}` : content;
+                    } else {
+                        segments.push({ speaker, text: content });
+                    }
+                } else {
+                    const last = segments[segments.length - 1];
+                    if (last && !last.speaker) {
+                        last.text = last.text ? `${last.text} ${line}` : line;
+                    } else {
+                        segments.push({ speaker: '', text: line });
+                    }
+                }
+            }
+            return segments;
+        }
+
+        function renderSpeakerTurnHtml(segment, options = {}) {
+            const { time = '', partialText = '', isPartial = false } = options;
+            const theme = speakerTheme(segment.speaker || '说话人1');
+            const name = segment.speaker || '未知说话人';
+            const avatarChar = speakerAvatarChar(name);
+            let bodyText = escapeHtml(segment.text || '');
+            if (partialText) {
+                bodyText = bodyText
+                    ? `${bodyText} <span class="current-fragment">${escapeHtml(partialText)}</span>`
+                    : `<span class="current-fragment">${escapeHtml(partialText)}</span>`;
+            }
+            const timeHtml = time
+                ? `<span class="speaker-turn-time">${escapeHtml(time)}</span>`
+                : '';
+            return `
+                <div class="speaker-turn${isPartial ? ' is-partial' : ''}">
+                    <div class="speaker-avatar" style="background:${theme.avatar}">${escapeHtml(avatarChar)}</div>
+                    <div class="speaker-turn-body">
+                        <div class="speaker-turn-header">
+                            <span class="speaker-turn-name" style="color:${theme.name}">${escapeHtml(name)}</span>
+                            ${timeHtml}
+                        </div>
+                        <div class="speaker-turn-text">${bodyText || '&nbsp;'}</div>
+                    </div>
+                </div>`;
+        }
+
+        function renderTranscriptHtml(text, times = []) {
+            if (!text) return '';
+            const segments = parseTranscriptSegments(text);
+            if (!segments.length) return '';
+            return `<div class="transcript-by-speaker">${segments.map((seg, i) =>
+                renderSpeakerTurnHtml(seg, { time: times[i] || '' })
+            ).join('')}</div>`;
+        }
+
+        function setRealtimeTranscriptStatus(text) {
+            realtimeTranscriptEl.textContent = text || '';
+            realtimeTranscriptEl.className = 'total-text transcript-by-speaker';
+        }
+
+        function scrollRealtimeTranscriptToBottom() {
+            const container = realtimeTranscriptEl.closest('.result-container');
+            if (container) container.scrollTop = container.scrollHeight;
+        }
+
+        function renderRealtimeTranscript(
+            completedText,
+            partialText = '',
+            partialSpeakerLabel = '',
+            timestamp = null,
+            isSentenceEnd = false
+        ) {
+            if (!completedText && !partialText) {
+                realtimeTranscriptEl.innerHTML = '';
+                return;
+            }
+
+            const segments = completedText ? parseTranscriptSegments(completedText) : [];
+
+            while (realtimeSegmentTimes.length < segments.length) {
+                realtimeSegmentTimes.push('');
+            }
+            realtimeSegmentTimes.length = segments.length;
+
+            if (isSentenceEnd && segments.length > 0) {
+                realtimeSegmentTimes[segments.length - 1] = formatTranscriptTime(timestamp);
+            }
+
+            const partialBody = stripSpeakerPrefix(partialText || '').trim();
+            let partialSegment = null;
+
+            if (partialBody) {
+                const last = segments[segments.length - 1];
+                if (last && partialSpeakerLabel && last.speaker === partialSpeakerLabel) {
+                    partialSegment = { index: segments.length - 1, text: partialBody };
+                } else if (partialSpeakerLabel) {
+                    segments.push({ speaker: partialSpeakerLabel, text: '' });
+                    partialSegment = { index: segments.length - 1, text: partialBody };
+                } else if (last) {
+                    partialSegment = { index: segments.length - 1, text: partialBody };
+                } else {
+                    segments.push({ speaker: '', text: '' });
+                    partialSegment = { index: 0, text: partialBody };
+                }
+            }
+
+            const html = segments.map((seg, i) => {
+                const isPartialTurn = partialSegment && partialSegment.index === i;
+                const time = realtimeSegmentTimes[i]
+                    || (isPartialTurn ? formatTranscriptTime(timestamp) : '');
+                return renderSpeakerTurnHtml(seg, {
+                    time,
+                    partialText: isPartialTurn ? partialSegment.text : '',
+                    isPartial: isPartialTurn,
+                });
+            }).join('');
+
+            realtimeTranscriptEl.innerHTML = html
+                ? `<div class="transcript-by-speaker">${html}</div>`
+                : '';
+            scrollRealtimeTranscriptToBottom();
+        }
+
+        // 处理 WebSocket 消息
+        function handleWebSocketMessage(data) {
+            console.log('收到消息:', data);
+            
+            if (data.type === 'result') {
+                if (data.is_partial) {
+                    renderRealtimeTranscript(
+                        data.total_text || '',
+                        data.text || '',
+                        data.speaker_label || '',
+                        data.timestamp,
+                        false
+                    );
+                } else {
+                    renderRealtimeTranscript(
+                        data.total_text || '',
+                        '',
+                        '',
+                        data.timestamp,
+                        true
+                    );
+                }
+            } else if (data.type === 'generating_transcript') {
+                setRealtimeTranscriptStatus(data.message || '正在整理说话人分离转写...');
+                stopBtn.disabled = true;
+                stopBtn.innerHTML = '<span class="loading"></span>整理中...';
+            } else if (data.type === 'transcribe_complete') {
+                if (data.file_id) {
+                    pendingFileId = data.file_id;
+                    lastRealtimeFileId = data.file_id;
+                }
+                if (data.total_text) {
+                    renderRealtimeTranscript(data.total_text);
+                }
+                setRealtimeTranscriptStatus('转写完成，正在生成文字与图文速览...');
+            } else if (data.type === 'generating_summary') {
+                if (data.file_id) {
+                    pendingFileId = data.file_id;
+                }
+                setRealtimeTranscriptStatus(data.message || '正在生成文字与图文速览...');
+                stopBtn.disabled = true;
+                stopBtn.innerHTML = '<span class="loading"></span>生成中...';
+                // 兜底：WebSocket 长时间无响应时通过 HTTP 拉取结果
+                if (pendingFileId) {
+                    if (pollFallbackTimer) clearTimeout(pollFallbackTimer);
+                    pollFallbackTimer = setTimeout(() => {
+                        if (sessionEnding && pendingFileId) {
+                            pollMeetingSummary(pendingFileId);
+                        }
+                    }, 15000);
+                }
+            } else if (data.type === 'heartbeat') {
+                console.log('服务端处理中:', data.stage);
+            } else if (data.type === 'session_end') {
+                applySessionResult(data);
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.close();
+                }
+            } else if (data.type === 'room_state') {
+                collabRoomStatus = data.status || collabRoomStatus;
+                collabParticipants = data.participants || [];
+                renderCollabParticipants(collabParticipants);
+                if (data.merged_transcript) {
+                    renderRealtimeTranscript(data.merged_transcript);
+                }
+                if (collabRole === 'viewer') {
+                    setRealtimeTranscriptStatus('观看模式 · 实时同步转写');
+                } else if (collabRoomStatus === 'waiting') {
+                    setRealtimeTranscriptStatus('等待主持人开始会议…');
+                } else if (collabRoomStatus === 'live') {
+                    setRealtimeTranscriptStatus('会议进行中，可开始录音');
+                }
+            } else if (data.type === 'transcript_update') {
+                if (data.merged_transcript) {
+                    renderRealtimeTranscript(data.merged_transcript);
+                }
+            } else if (data.type === 'participant_event') {
+                if (data.event === 'join' || data.event === 'leave' || data.event === 'recording_start') {
+                    console.log('参与者事件:', data);
+                }
+            } else if (data.type === 'room_status') {
+                collabRoomStatus = data.status || collabRoomStatus;
+                if (collabRoomStatus === 'live' && collabRole !== 'viewer') {
+                    setRealtimeTranscriptStatus('会议已开始，可点击开始录音');
+                    if (collabRole !== 'viewer') startBtn.disabled = false;
+                }
+            } else if (data.type === 'tingwu_ready') {
+                console.log('听悟通道就绪');
+            } else if (data.type === 'error') {
+                showErrorAlert(data.message || '转写出现问题，请稍后重试');
+            }
+        }
+        
+        // 更新状态显示
+        function updateStatus(text, connected) {
+            statusEl.textContent = text;
+            statusEl.className = 'status ' + (connected ? 'connected' : 'disconnected');
+        }
+        
+        const TARGET_SAMPLE_RATE = 16000;
+        const SILENCE_RMS_THRESHOLD = 0.003;
+        const SEND_BUFFER_SAMPLES = 9600; // 约 600ms @ 16kHz PCM，与听悟推流分包建议对齐
+
+        function calcRms(samples) {
+            let sum = 0;
+            for (let i = 0; i < samples.length; i++) {
+                sum += samples[i] * samples[i];
+            }
+            return Math.sqrt(sum / samples.length);
+        }
+
+        function resampleTo16k(samples, fromRate) {
+            if (fromRate === TARGET_SAMPLE_RATE) {
+                return samples;
+            }
+            const ratio = fromRate / TARGET_SAMPLE_RATE;
+            const newLength = Math.round(samples.length / ratio);
+            const result = new Float32Array(newLength);
+            for (let i = 0; i < newLength; i++) {
+                const srcIndex = i * ratio;
+                const idx = Math.floor(srcIndex);
+                const frac = srcIndex - idx;
+                const s0 = samples[idx] || 0;
+                const s1 = samples[idx + 1] || 0;
+                result[i] = s0 * (1 - frac) + s1 * frac;
+            }
+            return result;
+        }
+
+        /** 将 float32 采样转为 16kHz PCM 二进制（WebSocket 二进制帧，避免 JSON 数组开销） */
+        function floatToPcmArrayBuffer(float32Samples) {
+            const pcmData = new Int16Array(float32Samples.length);
+            for (let i = 0; i < float32Samples.length; i++) {
+                pcmData[i] = Math.max(-32768, Math.min(32767, float32Samples[i] * 32768));
+            }
+            return pcmData.buffer;
+        }
+
+        // 开始录音
+        async function startRecording() {
+            let stream = null;
+            try {
+                if (!authToken) {
+                    showAuthOverlay();
+                    showErrorAlert('请先登录后再开始录音');
+                    return;
+                }
+
+                const micCheck = canUseMicrophone();
+                if (!micCheck.ok) {
+                    showErrorAlert(micCheck.reason.replace(/<[^>]+>/g, ''));
+                    updateMicrophoneHint();
+                    return;
+                }
+
+                sessionEnding = false;
+                pendingFileId = null;
+                pollAbort = true;
+                if (pollFallbackTimer) {
+                    clearTimeout(pollFallbackTimer);
+                    pollFallbackTimer = null;
+                }
+                document.getElementById('realtimeSummary').style.display = 'none';
+                const rtMd = document.getElementById('realtimeSummaryMarkdown');
+                const rtVis = document.getElementById('realtimeSummaryVisual');
+                if (rtMd) rtMd.textContent = '';
+                if (rtVis) rtVis.innerHTML = '';
+                lastRealtimeVisual = null;
+                lastRealtimeFileId = null;
+                realtimeSegmentTimes = [];
+                setRealtimeTranscriptStatus('');
+
+                // 获取会议名称（必填）
+                const meetingName = document.getElementById('meetingNameInput').value.trim();
+                if (!meetingName && !isCollabMode) {
+                    showErrorAlert('请先填写会议名称');
+                    document.getElementById('meetingNameInput').focus();
+                    return;
+                }
+
+                if (isCollabMode) {
+                    if (collabRole === 'viewer') {
+                        showErrorAlert('观看者无法录音');
+                        return;
+                    }
+                    if (collabRoomStatus === 'waiting' && collabRole !== 'host') {
+                        showErrorAlert('请等待主持人开始会议');
+                        return;
+                    }
+                } else if (!await persistSpeakerCountSetting()) {
+                    return;
+                }
+
+                // 必须在用户点击后尽快请求麦克风（浏览器安全策略）
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                    },
+                });
+
+                // 连接 WebSocket 并等待就绪后再采集
+                if (!isCollabMode || !collabWsReady || !ws || ws.readyState !== WebSocket.OPEN) {
+                    connectWebSocket(meetingName);
+                    await waitForWebSocketOpen(ws);
+                }
+
+                // 使用设备实际采样率，由服务端重采样到 16kHz
+                audioContext = new AudioContext();
+                if (audioContext.state === 'suspended') {
+                    await audioContext.resume();
+                }
+                const sourceSampleRate = audioContext.sampleRate;
+                const source = audioContext.createMediaStreamSource(stream);
+                const processor = audioContext.createScriptProcessor(4096, 1, 1);
+                let pcmSendBuffer = [];
+                
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+
+                function flushPcmSendBuffer(force) {
+                    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+                    if (!force && pcmSendBuffer.length < SEND_BUFFER_SAMPLES) return;
+                    if (pcmSendBuffer.length === 0) return;
+
+                    const take = force
+                        ? pcmSendBuffer.splice(0, pcmSendBuffer.length)
+                        : pcmSendBuffer.splice(0, SEND_BUFFER_SAMPLES);
+                    ws.send(floatToPcmArrayBuffer(new Float32Array(take)));
+                }
+
+                processor.onaudioprocess = (e) => {
+                    if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    const resampled = resampleTo16k(inputData, sourceSampleRate);
+
+                    for (let i = 0; i < resampled.length; i++) {
+                        pcmSendBuffer.push(resampled[i]);
+                    }
+
+                    // 有语音时尽快发送；静音也依赖定时 flush，避免听悟 IDLE_TIMEOUT
+                    const hasSpeech = calcRms(resampled) >= SILENCE_RMS_THRESHOLD;
+                    if (hasSpeech && pcmSendBuffer.length >= SEND_BUFFER_SAMPLES) {
+                        flushPcmSendBuffer(false);
+                    }
+                };
+
+                // 麦克风就绪后再启动听悟，并周期性发送音频（含静音）保活
+                ws.send(JSON.stringify({ type: 'record_start' }));
+
+                const flushTimer = setInterval(() => {
+                    if (!isRecording) return;
+                    flushPcmSendBuffer(true);
+                }, 500);
+
+                mediaRecorder = { stream, processor, source, pcmSendBuffer, flushTimer };
+                isRecording = true;
+                
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                setRealtimeTranscriptStatus('正在录音...');
+                
+                console.log('开始录音');
+                
+            } catch (error) {
+                console.error('录音启动失败:', error);
+                stopMediaStream(stream);
+                if (!isCollabMode && ws && ws.readyState === WebSocket.OPEN) {
+                    ws.close();
+                }
+                showErrorAlert(describeMicError(error));
+            }
+        }
+
+        function endCollabMeeting() {
+            if (collabRole !== 'host') {
+                showErrorAlert('仅主持人可结束会议');
+                return;
+            }
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                showErrorAlert('未连接到会议，请刷新后重试');
+                return;
+            }
+            isRecording = false;
+            cleanupMediaOnly();
+            sessionEnding = true;
+            const endBtn = document.getElementById('endMeetingBtn');
+            if (endBtn) endBtn.disabled = true;
+            stopBtn.disabled = true;
+            stopBtn.innerHTML = '<span class="loading"></span>结束中...';
+            setRealtimeTranscriptStatus('正在结束会议并生成纪要…');
+            ws.send(JSON.stringify({ type: 'end_meeting' }));
+        }
+        
+        // 停止录音
+        function stopRecording() {
+            if (sessionEnding) return;
+            isRecording = false;
+            
+            if (mediaRecorder) {
+                if (
+                    mediaRecorder.pcmSendBuffer &&
+                    mediaRecorder.pcmSendBuffer.length > 0 &&
+                    ws &&
+                    ws.readyState === WebSocket.OPEN
+                ) {
+                    const tail = mediaRecorder.pcmSendBuffer.splice(
+                        0, mediaRecorder.pcmSendBuffer.length
+                    );
+                    ws.send(floatToPcmArrayBuffer(new Float32Array(tail)));
+                }
+                cleanupMediaOnly();
+            }
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                if (isCollabMode) {
+                    ws.send(JSON.stringify({ type: 'record_stop' }));
+                    startBtn.disabled = false;
+                    stopBtn.disabled = true;
+                    setRealtimeTranscriptStatus('已停止录音，转写继续同步');
+                } else {
+                    sessionEnding = true;
+                    ws.send(JSON.stringify({ type: 'end' }));
+                    stopBtn.disabled = true;
+                    stopBtn.innerHTML = '<span class="loading"></span>生成中...';
+                    setRealtimeTranscriptStatus('正在生成会议纪要，请稍候...');
+                }
+                // 保持连接直到收到 session_end，不在此处关闭 WebSocket
+            } else {
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+                setRealtimeTranscriptStatus('录音已停止');
+            }
+            
+            console.log('停止录音');
+        }
+        
+        // 拖拽上传功能
+        const uploadArea = document.getElementById('uploadArea');
+        
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+        
+        // 文件选择处理
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file) {
+                handleFile(file);
+            }
+        }
+        
+        function handleFile(file) {
+            selectedFile = file;
+            
+            const fileInfo = document.getElementById('fileInfo');
+            const fileName = document.getElementById('fileName');
+            const fileSize = document.getElementById('fileSize');
+            const uploadBtn = document.getElementById('uploadBtn');
+            
+            fileName.textContent = file.name;
+            fileSize.textContent = formatFileSize(file.size);
+            
+            fileInfo.classList.add('show');
+            uploadBtn.disabled = false;
+        }
+        
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+        
+        // 上传文件
+        async function uploadFile() {
+            if (!selectedFile) {
+                showErrorAlert('请先选择文件');
+                return;
+            }
+            
+            const uploadBtn = document.getElementById('uploadBtn');
+            const progressFill = document.getElementById('progressFill');
+            const transcriptResult = document.getElementById('transcriptResult');
+            const summaryResult = document.getElementById('summaryResult');
+            const transcriptText = document.getElementById('transcriptText');
+            
+            // 获取会议名称（必填）
+            const meetingName = document.getElementById('batchMeetingNameInput').value.trim();
+            if (!meetingName) {
+                showErrorAlert('请先填写会议名称');
+                document.getElementById('batchMeetingNameInput').focus();
+                return;
+            }
+            
+            uploadBtn.disabled = true;
+            uploadBtn.innerHTML = '<span class="loading"></span>处理中...';
+            progressFill.style.width = '30%';
+            
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+            formData.append('meeting_name', meetingName);
+            
+            try {
+                const response = await authFetch('/api/meeting/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                progressFill.style.width = '70%';
+                
+                const result = await response.json();
+                
+                progressFill.style.width = '100%';
+                
+                if (result.success) {
+                    lastBatchFileId = result.file_id || null;
+                    lastBatchSummaryTitle = document.getElementById('batchMeetingNameInput').value.trim();
+                    // 显示转写文本
+                    transcriptText.textContent = result.transcript;
+                    transcriptResult.style.display = 'block';
+                    
+                    displayDualSummary('batch', {
+                        summary: result.summary,
+                        summary_visual: result.summary_visual,
+                        summary_visual_status: result.summary_visual_status,
+                    });
+                    
+                    uploadBtn.innerHTML = '✓ 处理完成';
+                    uploadBtn.style.background = '#4caf50';
+                    
+                    setTimeout(() => {
+                        uploadBtn.disabled = false;
+                        uploadBtn.innerHTML = '开始处理';
+                        uploadBtn.style.background = '';
+                    }, 2000);
+                    
+                } else {
+                    showErrorAlert(result.error || '处理失败，请稍后重试');
+                    uploadBtn.disabled = false;
+                    uploadBtn.innerHTML = '开始处理';
+                }
+                
+            } catch (error) {
+                console.error('上传失败:', error);
+                showErrorAlert('上传失败，请稍后重试');
+                uploadBtn.disabled = false;
+                uploadBtn.innerHTML = '开始处理';
+            } finally {
+                setTimeout(() => {
+                    progressFill.style.width = '0%';
+                }, 1000);
+            }
+        }
+        
+        // 页面加载完成
+        window.onload = () => {
+            checkAuth();
+            updateMicrophoneHint();
+            document.getElementById('loginPassword').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+            document.getElementById('registerPassword2').addEventListener('keydown', e => { if (e.key === 'Enter') doRegister(); });
+        };
+        
+        // 清除日期筛选
+        function clearDateFilter() {
+            document.getElementById('startDateFilter').value = '';
+            document.getElementById('endDateFilter').value = '';
+            loadHistory();
+        }
+        
+        // 加载历史会议
+        async function loadHistory() {
+            const listEl = document.getElementById('historyList');
+            listEl.innerHTML = '<p style="text-align: center; color: #999;">加载中...</p>';
+            
+            // 获取日期筛选参数
+            const startDate = document.getElementById('startDateFilter').value;
+            const endDate = document.getElementById('endDateFilter').value;
+            
+            try {
+                // 构建查询参数
+                const params = new URLSearchParams();
+                if (startDate) params.append('start_date', startDate);
+                if (endDate) params.append('end_date', endDate);
+                
+                const response = await authFetch(`/api/meetings/list?${params.toString()}`);
+                const data = await response.json();
+                
+                if (data.success && data.meetings.length > 0) {
+                    let html = '';
+                    const isRoot = currentUser && currentUser.role === 'root';
+                    data.meetings.forEach(meeting => {
+                        const date = new Date(meeting.created_at).toLocaleString('zh-CN');
+                        
+                        // 显示会议名称
+                        let displayName = meeting.meeting_name || meeting.original_filename || '未命名会议';
+                        const collabBadge = meeting.is_collaborative
+                            ? '<span style="background:#667eea;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;margin-left:8px;">协作</span>'
+                            : '';
+                        const safeName = displayName.replace(/'/g, "\\'");
+                        const deleteBtn = isRoot ? `
+                            <button class="btn-danger" style="padding:4px 10px;font-size:12px;margin-left:8px;"
+                                onclick="event.stopPropagation(); adminDeleteMeeting('${meeting.file_id}', '${safeName}')">删除</button>` : '';
+                        
+                        html += `
+                            <div style="border: 1px solid #e0e0e0; border-radius: 10px; padding: 15px; margin-bottom: 15px; cursor: pointer; transition: all 0.3s;" 
+                                 onmouseover="this.style.boxShadow='0 4px 12px rgba(0,0,0,0.1)'" 
+                                 onmouseout="this.style.boxShadow='none'"
+                                 onclick="showMeetingDetail('${meeting.file_id}')">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                    <strong style="color: #667eea; font-size: 16px;">${displayName}${collabBadge}</strong>
+                                    <span style="color: #999; font-size: 12px;">${date}${deleteBtn}</span>
+                                </div>
+                                <div style="color: #666; font-size: 14px; margin-bottom: 8px;">
+                                    ${meeting.transcript_length ? `文本长度: ${meeting.transcript_length} 字符 | ` : ''}
+                                    ${meeting.has_summary ? '✅ 文字总结' : ''}${meeting.has_visual_summary ? ' ✅ 图文' : ''}${!meeting.has_summary && !meeting.has_visual_summary ? '❌ 无总结' : ''}
+                                </div>
+                                <div style="color: #999; font-size: 13px; background: #f5f5f5; padding: 8px; border-radius: 5px;">
+                                    ${(meeting.preview || '').substring(0, 150)}...
+                                </div>
+                            </div>
+                        `;
+                    });
+                    listEl.innerHTML = html;
+                } else {
+                    listEl.innerHTML = '<p style="text-align: center; color: #999;">暂无会议记录</p>';
+                }
+            } catch (error) {
+                console.error('获取历史会议失败:', error);
+                listEl.innerHTML = '<p style="text-align: center; color: #f44336;">加载失败</p>';
+            }
+        }
+        
+        // 显示会议详情（在历史面板内）
+        async function showMeetingDetail(fileId) {
+            const listEl = document.getElementById('historyList');
+            listEl.innerHTML = '<p style="text-align: center; color: #999;">加载中...</p>';
+            
+            try {
+                const response = await authFetch(`/api/meetings/${fileId}`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    const isRoot = currentUser && currentUser.role === 'root';
+                    const deleteBtn = isRoot ? `
+                        <button class="btn-danger" style="margin-left:10px;" onclick="adminDeleteMeeting('${fileId}', '该会议')">删除会议</button>` : '';
+                    let html = `
+                        <div style="margin-bottom: 20px;">
+                            <button onclick="loadHistory()" class="btn-primary" style="background: #666;">← 返回列表</button>
+                            ${deleteBtn}
+                        </div>
+                        
+                        <div style="margin-bottom: 30px;">
+                            <h3 style="color: #667eea; margin-bottom: 15px;">📝 转写文本</h3>
+                            <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; line-height: 1.8;">${renderTranscriptHtml(data.transcript) || escapeHtml(data.transcript || '')}</div>
+                        </div>
+                    `;
+                    
+                    if (data.summary || data.summary_visual) {
+                        html += `
+                            <div class="summary-container" style="margin-bottom:30px;">
+                                <div class="summary-header">
+                                    <div class="summary-title" style="margin-bottom:0;">📊 AI 智能速览</div>
+                                    <div class="summary-export-actions">
+                                        <button class="btn-export" onclick="exportHistorySummary('${fileId}')">📥 导出 Word</button>
+                                        <button type="button" class="btn-export-visual" ${data.summary_visual ? '' : 'disabled'} onclick="exportHistoryVisual('${fileId}')">📥 下载图文</button>
+                                    </div>
+                                </div>
+                                <div class="summary-view-tabs">
+                                    <button type="button" id="historyTabMarkdown" class="summary-view-tab active" onclick="switchSummaryTab('history','markdown')">文字速览</button>
+                                    <button type="button" id="historyTabVisual" class="summary-view-tab" onclick="switchSummaryTab('history','visual')">图文速览</button>
+                                </div>
+                                <div id="historySummaryMarkdown" class="summary-content"></div>
+                                <div id="historySummaryVisual" class="visual-summary-root" style="display:none;"></div>
+                                <p class="visual-disclaimer">图文内容由 AI 根据转写整理，如有出入以转写原文为准。</p>
+                            </div>
+                        `;
+                    }
+                    
+                    listEl.innerHTML = html;
+                    if (data.summary || data.summary_visual) {
+                        displayDualSummary('history', data);
+                    }
+                } else {
+                    listEl.innerHTML = `<p style="text-align: center; color: #f44336;">${data.error || '加载失败'}</p>`;
+                }
+            } catch (error) {
+                console.error('获取会议详情失败:', error);
+                listEl.innerHTML = '<p style="text-align: center; color: #f44336;">加载失败</p>';
+            }
+        }
+    </script>
+</body>
+</html>

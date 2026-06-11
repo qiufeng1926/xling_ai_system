@@ -1,0 +1,85 @@
+# =========================
+# xling 统一门户 monorepo
+# =========================
+
+# ----- 环境变量 / 密钥（勿提交） -----
+.env
+.env.*
+!.env.example
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+*.so
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ----- Node / 前端 -----
+node_modules/
+dist/
+dist-ssr/
+*.local
+.npm
+.pnpm-store/
+*.tsbuildinfo
+
+# ----- IDE / 编辑器 -----
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ----- 系统文件 -----
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# ----- 日志 -----
+logs/
+**/logs/
+*.log
+
+# ----- 会议 AI：运行产物 -----
+meeting_ai/output/summaries/*.md
+meeting_ai/output/summaries/*.json
+meeting_ai/output/transcripts/*.txt
+meeting_ai/upload/*.mp3
+meeting_ai/upload/*.mp4
+meeting_ai/upload/*.wav
+meeting_ai/upload/*.m4a
+meeting_ai/*.db
+
+# ----- 达人聚合：登录态 / Cookie（勿提交） -----
+Information_Aggregation/backend/cookies/*.json
+Information_Aggregation/backend/cookies/*.txt
+
+# ----- 数据库 / 本地数据 -----
+*.sqlite
+*.sqlite3
+*.db
+
+# ----- 临时 / 缓存 -----
+*.tmp
+*.temp
+.cache/
+tmp/
+temp/
