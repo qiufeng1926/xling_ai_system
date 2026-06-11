@@ -9,7 +9,6 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from api.auth_utils import get_current_user, get_db
-from api.permissions import can_access_meeting
 from db.models import PermissionRequest, User, Meeting, MeetingDownloadLog
 from db.session import delete_meeting_with_files
 from utils.password import hash_password
@@ -224,11 +223,6 @@ def admin_delete_meeting(
     meeting = db.query(Meeting).filter(Meeting.file_id == file_id).first()
     if not meeting:
         raise HTTPException(status_code=404, detail='会议不存在')
-    owner = None
-    if meeting.user_id:
-        owner = db.query(User).filter(User.id == meeting.user_id).first()
-    if not can_access_meeting(current_user, meeting, owner):
-        raise HTTPException(status_code=403, detail='无权删除该会议记录')
 
     deleted = delete_meeting_with_files(file_id)
     if not deleted:

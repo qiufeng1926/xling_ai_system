@@ -4,7 +4,7 @@
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, false
 from sqlalchemy.orm import Session
 from db.models import (
     init_database,
@@ -222,7 +222,7 @@ def check_meeting_access(file_id: str, viewer: User) -> tuple[bool, bool]:
         owner = None
         if meeting.user_id:
             owner = session.query(User).filter(User.id == meeting.user_id).first()
-        return True, can_access_meeting(viewer, meeting, owner)
+        return True, can_access_meeting(viewer, meeting, owner, session=session)
 
 
 def get_meeting_owner(user_id: int | None) -> User | None:
@@ -243,11 +243,13 @@ def _other_root_user_ids(session: Session, viewer: User) -> list[int]:
     ]
 
 
-def _apply_viewer_meeting_filter(query, session: Session, viewer: User):
-    """按用户角色过滤可见会议"""
+def _non_collaborative_meeting_access(session: Session, viewer: User):
+    """非协作会议的可见性条件（不含 is_collaborative=True 的记录）。"""
+    non_collab = Meeting.is_collaborative == False
+
     if viewer.is_root():
         if viewer.can_view_all_roots:
-            return query
+            return non_collab
         other_root_ids = _other_root_user_ids(session, viewer)
         conditions = [
             Meeting.user_id == viewer.id,
@@ -259,10 +261,10 @@ def _apply_viewer_meeting_filter(query, session: Session, viewer: User):
             )
         else:
             conditions.append(Meeting.user_id.isnot(None))
-        return query.filter(or_(*conditions))
+        return and_(non_collab, or_(*conditions))
 
-    if viewer.role == 'admin':
-        root_ids = [r[0] for r in session.query(User.id).filter(User.role == 'root').all()]
+    if viewer.role == "admin":
+        root_ids = [r[0] for r in session.query(User.id).filter(User.role == "root").all()]
         cutoff = datetime.now() - timedelta(days=ROOT_MEETING_VIEW_DAYS)
         conditions = [
             Meeting.user_id == viewer.id,
@@ -278,12 +280,29 @@ def _apply_viewer_meeting_filter(query, session: Session, viewer: User):
             conditions.append(
                 and_(Meeting.user_id.in_(root_ids), Meeting.created_at >= cutoff)
             )
-        return query.filter(or_(*conditions))
+        return and_(non_collab, or_(*conditions))
 
     if viewer.can_view_all:
-        return query
+        return non_collab
 
-    return query.filter(Meeting.user_id == viewer.id)
+    return and_(non_collab, Meeting.user_id == viewer.id)
+
+
+def _apply_viewer_meeting_filter(query, session: Session, viewer: User):
+    """按用户角色过滤可见会议；协作会议仅参会人员可见。"""
+    from services.collaborative_service import participant_collaborative_file_ids
+
+    collab_file_ids = participant_collaborative_file_ids(session, viewer.username)
+    if collab_file_ids:
+        collab_access = and_(
+            Meeting.is_collaborative == True,
+            Meeting.file_id.in_(collab_file_ids),
+        )
+    else:
+        collab_access = false()
+
+    non_collab_access = _non_collaborative_meeting_access(session, viewer)
+    return query.filter(or_(collab_access, non_collab_access))
 
 
 def get_all_meetings(

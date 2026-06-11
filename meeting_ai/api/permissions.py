@@ -1,6 +1,8 @@
 """会议访问权限判断"""
 from datetime import datetime, timedelta
 
+from sqlalchemy.orm import Session
+
 from db.models import Meeting, User
 
 ROOT_MEETING_VIEW_DAYS = 3
@@ -15,8 +17,28 @@ def _is_other_root_meeting(viewer: User, meeting: Meeting, owner: User | None) -
     )
 
 
-def can_access_meeting(viewer: User, meeting: Meeting, owner: User | None) -> bool:
+def can_access_meeting(
+    viewer: User,
+    meeting: Meeting,
+    owner: User | None,
+    *,
+    session: Session | None = None,
+) -> bool:
     """判断用户是否有权查看某条会议记录"""
+    if getattr(meeting, "is_collaborative", False):
+        from services.collaborative_service import is_meeting_participant
+
+        if session is not None:
+            return is_meeting_participant(session, meeting, viewer.username)
+
+        from db.session import SessionFactory
+
+        db = SessionFactory()
+        try:
+            return is_meeting_participant(db, meeting, viewer.username)
+        finally:
+            db.close()
+
     if meeting.user_id == viewer.id:
         return True
 
@@ -27,13 +49,13 @@ def can_access_meeting(viewer: User, meeting: Meeting, owner: User | None) -> bo
 
     owner_role = owner.role if owner else None
 
-    if owner_role == 'root':
-        if viewer.role != 'admin' or not viewer.can_view_root_meetings:
+    if owner_role == "root":
+        if viewer.role != "admin" or not viewer.can_view_root_meetings:
             return False
         cutoff = datetime.now() - timedelta(days=ROOT_MEETING_VIEW_DAYS)
         return meeting.created_at is not None and meeting.created_at >= cutoff
 
-    if viewer.role == 'admin' or viewer.can_view_all:
+    if viewer.role == "admin" or viewer.can_view_all:
         return True
 
     return False

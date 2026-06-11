@@ -116,12 +116,97 @@ def _resolve_role(db: Session, room: CollaborativeRoom, username: str) -> str | 
     return None
 
 
+def _is_room_participant(db: Session, room_id: int, username: str) -> bool:
+    return (
+        db.query(RoomParticipant)
+        .filter(
+            RoomParticipant.room_id == room_id,
+            _username_match(RoomParticipant.username, username),
+        )
+        .first()
+        is not None
+    )
+
+
+def is_meeting_participant(db: Session, meeting, username: str) -> bool:
+    """协作会议：仅主持人或 room_participants 中的用户算参会人员。"""
+    if not getattr(meeting, "is_collaborative", False):
+        return False
+
+    username = _normalize_username(username)
+    if not username:
+        return False
+
+    host_username = getattr(meeting, "host_username", None) or ""
+    if host_username and _normalize_username(host_username).lower() == username.lower():
+        return True
+
+    room = None
+    room_code = getattr(meeting, "room_code", None)
+    if room_code:
+        room = get_room_by_code(db, room_code)
+    if not room and getattr(meeting, "file_id", None):
+        room = (
+            db.query(CollaborativeRoom)
+            .filter(CollaborativeRoom.file_id == meeting.file_id)
+            .first()
+        )
+
+    if not room:
+        return False
+
+    if _normalize_username(room.host_username).lower() == username.lower():
+        return True
+
+    return _is_room_participant(db, room.id, username)
+
+
+def participant_collaborative_file_ids(db: Session, username: str) -> list[str]:
+    """当前用户作为参会人员可查看的协作会议 file_id 列表。"""
+    username = _normalize_username(username)
+    if not username:
+        return []
+
+    uname_lower = username.lower()
+    file_ids: set[str] = set()
+
+    for (file_id,) in (
+        db.query(CollaborativeRoom.file_id)
+        .filter(func.lower(CollaborativeRoom.host_username) == uname_lower)
+        .all()
+    ):
+        if file_id:
+            file_ids.add(file_id)
+
+    part_room_ids = [
+        row[0]
+        for row in db.query(RoomParticipant.room_id)
+        .filter(_username_match(RoomParticipant.username, username))
+        .all()
+    ]
+    if part_room_ids:
+        for (file_id,) in (
+            db.query(CollaborativeRoom.file_id)
+            .filter(CollaborativeRoom.id.in_(part_room_ids))
+            .all()
+        ):
+            if file_id:
+                file_ids.add(file_id)
+
+    return list(file_ids)
+
+
 def can_access_room(db: Session, room: CollaborativeRoom, username: str) -> bool:
+    """进行中房间：主持人、已参会者可查看；待开始/进行中时待接受邀请者可进入以完成加入。"""
     username = _normalize_username(username)
     if _normalize_username(room.host_username).lower() == username.lower():
         return True
-    inv = _find_invitation(db, room.id, username, status=("pending", "accepted"))
-    return inv is not None
+    if _is_room_participant(db, room.id, username):
+        return True
+    if room.status in ("waiting", "live"):
+        inv = _find_invitation(db, room.id, username, status="pending")
+        return inv is not None
+    return False
 
 
 def invite_users(

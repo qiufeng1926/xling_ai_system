@@ -54,7 +54,7 @@ def get_room(room_code: str, db: Session = Depends(get_db), user: User = Depends
     if not room:
         raise HTTPException(status_code=404, detail="会议不存在")
     if not svc.can_access_room(db, room, user.username):
-        raise HTTPException(status_code=403, detail="无权查看该会议")
+        raise HTTPException(status_code=403, detail="无权查看该会议（仅参会人员可查看）")
     return {"success": True, **svc.build_room_state(db, room, user.username)}
 
 
