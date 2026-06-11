@@ -42,17 +42,26 @@ def list_applicable_request_types(user: CurrentUser):
     return ResponseBase(data=PermissionService.list_request_types_for_user(user))
 
 
+@router.get("/access-requests/stats", response_model=ResponseBase[dict])
+def access_request_stats(db: DbSession, user: CurrentUser):
+    return ResponseBase(data=PermissionService.get_access_request_stats(db, user))
+
+
 @router.get("/access-requests", response_model=ResponseBase[PageResult[ViewAccessRequestOut]])
 def list_access_requests(
     db: DbSession,
     user: CurrentUser,
     status: str | None = None,
     request_type: str | None = None,
+    scope: str | None = Query(
+        None,
+        description="mine=仅我的申请；review=待我审批范围（审核员）。默认：审核员为 review，普通用户为 mine",
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
     items, total = PermissionService.list_access_requests(
-        db, user, status, request_type, page, page_size
+        db, user, status, request_type, page, page_size, scope=scope
     )
     return ResponseBase(
         data=PageResult(

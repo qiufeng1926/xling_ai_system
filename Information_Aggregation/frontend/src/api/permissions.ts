@@ -22,8 +22,19 @@ export interface RequestTypeOption {
   label: string
 }
 
+export interface AccessRequestStats {
+  my_pending: number
+  my_total: number
+  pending_for_review: number
+  can_review: boolean
+}
+
 export function getApplicableRequestTypes() {
   return request.get<any, ApiResponse<RequestTypeOption[]>>('/permissions/access-requests/types')
+}
+
+export function getAccessRequestStats() {
+  return request.get<any, ApiResponse<AccessRequestStats>>('/permissions/access-requests/stats')
 }
 
 export function submitAccessRequest(request_type: string, reason?: string) {
@@ -36,6 +47,7 @@ export function submitAccessRequest(request_type: string, reason?: string) {
 export function getAccessRequests(params: {
   status?: string
   request_type?: string
+  scope?: 'mine' | 'review'
   page?: number
   page_size?: number
 }) {

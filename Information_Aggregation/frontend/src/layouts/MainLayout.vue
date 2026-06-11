@@ -78,7 +78,14 @@
           </el-menu-item>
           <el-menu-item v-if="showAccessReview" :index="INFLUENCER_ROUTES.accessReview">
             <el-icon><Stamp /></el-icon>
-            <span>权限管理</span>
+            <span class="menu-item-with-badge">
+              {{ accessMenuLabel }}
+              <el-badge
+                v-if="accessBadgeCount > 0"
+                :value="accessBadgeCount"
+                class="menu-badge"
+              />
+            </span>
           </el-menu-item>
         </el-sub-menu>
       </el-menu>
@@ -88,6 +95,22 @@
       <el-header class="layout-header">
         <div class="header-title">{{ currentTitle }}</div>
         <div class="header-right">
+          <el-button
+            v-if="pendingAccessReviewCount > 0"
+            type="warning"
+            link
+            @click="router.push(INFLUENCER_ROUTES.accessReview)"
+          >
+            {{ pendingAccessReviewCount }} 条权限申请待审批
+          </el-button>
+          <el-button
+            v-if="myPendingAccessCount > 0"
+            type="warning"
+            link
+            @click="router.push(INFLUENCER_ROUTES.accessReview)"
+          >
+            您有 {{ myPendingAccessCount }} 条权限申请待审核
+          </el-button>
           <el-button
             v-if="pendingInviteCount > 0"
             type="primary"
@@ -113,6 +136,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { listMyRooms } from '@/api/meetingRooms'
+import { getAccessRequestStats } from '@/api/permissions'
 import {
   ROLE_LABELS,
   canManageUsers,
@@ -174,7 +198,14 @@ const accessMenuLabel = computed(() => (isUser(userStore.userInfo?.role) ? '权�
 const influencerMenuLabel = computed(() => (isUser(userStore.userInfo?.role) ? '我的达人' : '达人库'))
 
 const pendingInviteCount = ref(0)
+const pendingAccessReviewCount = ref(0)
+const myPendingAccessCount = ref(0)
 let invitePollTimer: ReturnType<typeof setInterval> | null = null
+
+const accessBadgeCount = computed(() => {
+  if (canReviewAccess(role.value)) return pendingAccessReviewCount.value
+  return myPendingAccessCount.value
+})
 
 async function refreshPendingInvites() {
   if (!userStore.token) {
@@ -189,10 +220,30 @@ async function refreshPendingInvites() {
   }
 }
 
+async function refreshAccessRequestStats() {
+  if (!userStore.token) {
+    pendingAccessReviewCount.value = 0
+    myPendingAccessCount.value = 0
+    return
+  }
+  try {
+    const res = await getAccessRequestStats()
+    pendingAccessReviewCount.value = res.data.pending_for_review || 0
+    myPendingAccessCount.value = res.data.my_pending || 0
+  } catch {
+    pendingAccessReviewCount.value = 0
+    myPendingAccessCount.value = 0
+  }
+}
+
 onMounted(() => {
   userStore.fetchUserInfo()
   refreshPendingInvites()
-  invitePollTimer = setInterval(refreshPendingInvites, 30000)
+  refreshAccessRequestStats()
+  invitePollTimer = setInterval(() => {
+    refreshPendingInvites().catch(() => {})
+    refreshAccessRequestStats().catch(() => {})
+  }, 30000)
 })
 
 onUnmounted(() => {

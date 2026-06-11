@@ -26,6 +26,49 @@ from app.utils.user_permissions import can_apply_request_type, effective_permiss
 
 class PermissionService:
     @staticmethod
+    def _apply_reviewer_list_scope(query, viewer: User):
+        """审核员可见的申请范围（不含 status 过滤）。"""
+        if not can_review_access(viewer):
+            return query.filter(ViewAccessRequest.id < 0)
+
+        viewer_role = normalize_role(viewer.role)
+        if viewer_role == ADMIN:
+            types = [REQ_VIEW_LIBRARY, REQ_VIEW_ALL_MEETINGS]
+            if bool(getattr(viewer, "approve_meeting_download", False)):
+                types.append(REQ_DOWNLOAD_MEETINGS)
+            return query.filter(ViewAccessRequest.request_type.in_(types))
+        return query
+
+    @staticmethod
+    def get_access_request_stats(db: Session, viewer: User) -> dict:
+        my_pending = (
+            db.query(ViewAccessRequest)
+            .filter(
+                ViewAccessRequest.user_id == viewer.id,
+                ViewAccessRequest.status == "pending",
+            )
+            .count()
+        )
+        my_total = (
+            db.query(ViewAccessRequest)
+            .filter(ViewAccessRequest.user_id == viewer.id)
+            .count()
+        )
+
+        pending_for_review = 0
+        if can_review_access(viewer):
+            q = db.query(ViewAccessRequest).filter(ViewAccessRequest.status == "pending")
+            q = PermissionService._apply_reviewer_list_scope(q, viewer)
+            pending_for_review = q.count()
+
+        return {
+            "my_pending": my_pending,
+            "my_total": my_total,
+            "pending_for_review": pending_for_review,
+            "can_review": can_review_access(viewer),
+        }
+
+    @staticmethod
     def create_access_request(db: Session, user: User, data: ViewAccessRequestCreate) -> ViewAccessRequest:
         ok, message = can_apply_request_type(user, data.request_type)
         if not ok:
@@ -62,6 +105,7 @@ class PermissionService:
         request_type: str | None = None,
         page: int = 1,
         page_size: int = 20,
+        scope: str | None = None,
     ) -> tuple[list[dict], int]:
         Applicant = aliased(User)
         Reviewer = aliased(User)
@@ -78,16 +122,14 @@ class PermissionService:
             .outerjoin(Reviewer, ViewAccessRequest.reviewer_id == Reviewer.id)
         )
 
-        if not can_review_access(viewer):
+        if scope == "mine":
             query = query.filter(ViewAccessRequest.user_id == viewer.id)
+        elif scope == "review":
+            query = PermissionService._apply_reviewer_list_scope(query, viewer)
+        elif can_review_access(viewer):
+            query = PermissionService._apply_reviewer_list_scope(query, viewer)
         else:
-            viewer_role = normalize_role(viewer.role)
-            if viewer_role == ADMIN:
-                query = query.filter(
-                    ViewAccessRequest.request_type.in_(
-                        (REQ_VIEW_LIBRARY, REQ_VIEW_ALL_MEETINGS, REQ_DOWNLOAD_MEETINGS)
-                    )
-                )
+            query = query.filter(ViewAccessRequest.user_id == viewer.id)
 
         if status:
             query = query.filter(ViewAccessRequest.status == status)
