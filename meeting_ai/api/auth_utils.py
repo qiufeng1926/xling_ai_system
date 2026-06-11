@@ -33,7 +33,10 @@ def decode_access_token(token: str) -> dict:
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='登录已过期，请重新登录')
     except jwt.InvalidTokenError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='无效的登录凭证')
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='无效的登录凭证（请确认 meeting_ai 的 JWT_SECRET 与门户 SECRET_KEY 一致）',
+        )
 
 
 def get_db():
