@@ -6,7 +6,8 @@
         <p class="meeting-hub__desc">创建多人会议、邀请同事录音或观看，转写自动合并。</p>
       </div>
       <div class="meeting-hub__actions">
-        <el-button @click="router.push('/meeting/solo')">单人录制</el-button>
+        <el-button @click="router.push(MEETING_ROUTES.records)">会议记录</el-button>
+        <el-button @click="router.push(MEETING_ROUTES.solo)">单人录制</el-button>
         <el-button type="primary" @click="router.push('/meeting/create')">创建会议</el-button>
       </div>
     </div>
@@ -68,6 +69,8 @@ import {
   type CollaborativeRoom,
   type RoomInvitation,
 } from '@/api/meetingRooms'
+
+import { MEETING_ROUTES } from '@/constants/routes'
 
 const router = useRouter()
 const hosted = ref<CollaborativeRoom[]>([])

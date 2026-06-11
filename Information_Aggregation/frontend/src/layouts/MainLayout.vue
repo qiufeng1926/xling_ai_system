@@ -61,6 +61,10 @@
             <el-icon><Microphone /></el-icon>
             <span>单人录制</span>
           </el-menu-item>
+          <el-menu-item :index="MEETING_ROUTES.records">
+            <el-icon><Document /></el-icon>
+            <span>会议记录</span>
+          </el-menu-item>
         </el-sub-menu>
 
         <el-sub-menu index="module-platform">
@@ -134,6 +138,7 @@ const activeMenu = computed(() => {
   if (path.startsWith('/influencer/users')) return INFLUENCER_ROUTES.users
   if (path.startsWith('/influencer/access-review')) return INFLUENCER_ROUTES.accessReview
   if (path.startsWith('/meeting/solo')) return MEETING_ROUTES.solo
+  if (path.startsWith('/meeting/records')) return MEETING_ROUTES.records
   if (path.startsWith('/meeting/create')) return MEETING_ROUTES.create
   if (path.startsWith('/meeting/room')) return MEETING_ROUTES.home
   if (path.startsWith('/meeting')) return MEETING_ROUTES.home

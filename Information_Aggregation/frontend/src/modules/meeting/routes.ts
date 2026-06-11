@@ -25,4 +25,16 @@ export const meetingRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/MeetingEmbed.vue'),
     meta: { title: '单人录制', module: 'meeting' },
   },
+  {
+    path: 'records',
+    name: 'MeetingHistory',
+    component: () => import('@/views/meeting/MeetingHistory.vue'),
+    meta: { title: '会议记录', module: 'meeting' },
+  },
+  {
+    path: 'records/:fileId',
+    name: 'MeetingRecordDetail',
+    component: () => import('@/views/meeting/MeetingRecordDetail.vue'),
+    meta: { title: '会议详情', module: 'meeting' },
+  },
 ]

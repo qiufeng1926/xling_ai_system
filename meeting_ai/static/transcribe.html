@@ -1333,7 +1333,7 @@
         <div class="tabs">
             <button class="tab-btn active" onclick="switchTab('realtime')">🎙️ 实时转写</button>
             <button class="tab-btn" onclick="switchTab('batch')">📁 批量处理</button>
-            <button class="tab-btn" onclick="switchTab('history')">📋 历史会议</button>
+            <button class="tab-btn" id="historyTabBtn" onclick="switchTab('history')">📋 历史会议</button>
             <button class="tab-btn" id="accountTabBtn" onclick="switchTab('account')">👤 账户管理</button>
         </div>
         
@@ -1739,6 +1739,10 @@
             const accountTabBtn = document.getElementById('accountTabBtn');
             if (accountTabBtn) {
                 accountTabBtn.style.display = isPortalEmbedded() ? 'none' : '';
+            }
+            const historyTabBtn = document.getElementById('historyTabBtn');
+            if (historyTabBtn) {
+                historyTabBtn.style.display = (isPortalEmbedded() && !isCollabMode) ? 'none' : '';
             }
             if (isCollabMode) {
                 initCollabMode();
@@ -3342,7 +3346,11 @@
                 }
                 await new Promise(r => setTimeout(r, 2000));
             }
-            resetRealtimeSessionUI('纪要已生成，请到「历史会议」查看');
+            resetRealtimeSessionUI(
+                isPortalEmbedded()
+                    ? '纪要已生成，请到门户左侧「会议记录」查看'
+                    : '纪要已生成，请到「历史会议」查看'
+            );
         }
 
         function cleanupMediaOnly() {

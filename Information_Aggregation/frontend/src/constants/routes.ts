@@ -21,6 +21,8 @@ export const MEETING_ROUTES = {
   home: '/meeting',
   create: '/meeting/create',
   solo: '/meeting/solo',
+  records: '/meeting/records',
+  recordDetail: (fileId: string) => `/meeting/records/${fileId}`,
   room: (code: string) => `/meeting/room/${code}`,
 } as const
 
