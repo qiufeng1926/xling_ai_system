@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 
-from app.constants.roles import ADMIN, MANAGEABLE_ROLES, SUPER_ADMIN
+from app.constants.roles import ADMIN, MANAGEABLE_ROLES, SUPER_ADMIN, USER
 from app.models import User
 from app.schemas.user import UserCreate, UserUpdate
 from app.utils.access_control import normalize_role
