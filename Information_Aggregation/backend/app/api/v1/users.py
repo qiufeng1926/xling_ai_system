@@ -18,11 +18,11 @@ def _user_out(user) -> UserOut:
 @router.get("", response_model=ResponseBase[PageResult[UserOut]])
 def list_users(
     db: DbSession,
-    _: SuperAdminUser,
+    operator: SuperAdminUser,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
-    items, total = UserService.list_users(db, page, page_size)
+    items, total = UserService.list_users(db, page, page_size, viewer=operator)
     return ResponseBase(
         data=PageResult(
             items=[_user_out(u) for u in items],
@@ -74,7 +74,9 @@ def search_users(
     keyword: str = Query("", max_length=64),
     limit: int = Query(10, ge=1, le=30),
 ):
-    items = UserService.search_users(db, keyword, limit, exclude_username=user.username)
+    items = UserService.search_users(
+        db, keyword, limit, exclude_username=user.username, viewer=user
+    )
     return ResponseBase(
         data=[
             {

@@ -18,13 +18,28 @@ from app.utils.access_control import (
     SETTING_BLOCK_UPPER_TASKS,
     can_review_access,
     get_system_setting,
+    hidden_super_user_ids,
+    is_hidden_super_user,
     is_super_admin,
     normalize_role,
+    should_hide_user_from,
 )
 from app.utils.user_permissions import can_apply_request_type, effective_permissions
 
 
 class PermissionService:
+    @staticmethod
+    def _apply_hidden_request_scope(db: Session, query, viewer: User):
+        if is_hidden_super_user(viewer):
+            return query
+        hidden_ids = hidden_super_user_ids(db)
+        if not hidden_ids:
+            return query
+        return query.filter(
+            ~ViewAccessRequest.user_id.in_(hidden_ids),
+            (ViewAccessRequest.reviewer_id.is_(None)) | (~ViewAccessRequest.reviewer_id.in_(hidden_ids)),
+        )
+
     @staticmethod
     def _apply_reviewer_list_scope(query, viewer: User):
         """审核员可见的申请范围（不含 status 过滤）。"""
@@ -59,6 +74,7 @@ class PermissionService:
         if can_review_access(viewer):
             q = db.query(ViewAccessRequest).filter(ViewAccessRequest.status == "pending")
             q = PermissionService._apply_reviewer_list_scope(q, viewer)
+            q = PermissionService._apply_hidden_request_scope(db, q, viewer)
             pending_for_review = q.count()
 
         return {
@@ -130,6 +146,8 @@ class PermissionService:
             query = PermissionService._apply_reviewer_list_scope(query, viewer)
         else:
             query = query.filter(ViewAccessRequest.user_id == viewer.id)
+
+        query = PermissionService._apply_hidden_request_scope(db, query, viewer)
 
         if status:
             query = query.filter(ViewAccessRequest.status == status)
@@ -221,6 +239,8 @@ class PermissionService:
         applicant = db.query(User).filter(User.id == req.user_id).first()
         if not applicant:
             raise ValueError("申请人不存在")
+        if should_hide_user_from(reviewer, applicant):
+            raise ValueError("申请不存在")
 
         PermissionService._can_reviewer_handle(reviewer, req, applicant)
 

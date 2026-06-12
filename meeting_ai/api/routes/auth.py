@@ -14,6 +14,7 @@ from api.permissions import can_approve_download_requests
 from db.models import PermissionRequest, User
 from db.session import seed_default_users
 from utils.logger import get_logger
+from utils.hidden_user import hidden_super_user_ids, is_hidden_super_user
 
 router = APIRouter()
 logger = get_logger("auth_route")
@@ -193,6 +194,11 @@ def list_pending_requests(
     else:
         raise HTTPException(status_code=403, detail='无权查看审批列表')
 
+    if not is_hidden_super_user(current_user):
+        hidden_ids = hidden_super_user_ids(db)
+        if hidden_ids:
+            query = query.filter(~PermissionRequest.user_id.in_(hidden_ids))
+
     requests = query.order_by(PermissionRequest.created_at.asc()).all()
     return {'success': True, 'requests': [r.to_dict() for r in requests]}
 
@@ -219,6 +225,10 @@ def list_admin_review_history(
         .limit(min(limit, 200))
         .all()
     )
+    if not is_hidden_super_user(current_user):
+        hidden_ids = set(hidden_super_user_ids(db))
+        if hidden_ids:
+            requests = [r for r in requests if r.user_id not in hidden_ids]
     return {'success': True, 'requests': [r.to_dict() for r in requests]}
 
 
@@ -253,6 +263,8 @@ def review_request(
     applicant = db.query(User).filter(User.id == req.user_id).first()
     if not applicant:
         raise HTTPException(status_code=404, detail='申请人不存在')
+    if is_hidden_super_user(applicant) and not is_hidden_super_user(current_user):
+        raise HTTPException(status_code=404, detail='申请不存在')
 
     req.reviewer_id = current_user.id
     req.review_note = body.review_note.strip() or None

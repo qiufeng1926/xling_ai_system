@@ -56,7 +56,7 @@
           </el-button>
           <el-popconfirm title="确定删除该用户？" @confirm="handleDelete(row.id)">
             <template #reference>
-              <el-button link type="danger" :disabled="row.role === 'super_admin'">删除</el-button>
+              <el-button link type="danger" :disabled="!canDeleteUser(row)">删除</el-button>
             </template>
           </el-popconfirm>
         </template>
@@ -150,11 +150,12 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { createUser, deleteUser, getUsers, updateUser, type ManagedUser } from '@/api/users'
-import { ROLE_LABELS } from '@/utils/permission'
+import { ROLE_LABELS, isHiddenSuperUser } from '@/utils/permission'
 import { useUserStore } from '@/stores/user'
 
 const userStore = useUserStore()
 const currentUserId = computed(() => userStore.userInfo?.id)
+const currentUsername = computed(() => userStore.userInfo?.username || '')
 
 const loading = ref(false)
 const saving = ref(false)
@@ -201,7 +202,15 @@ function formatTime(v: string) {
 }
 
 function isOtherSuperAdmin(row: ManagedUser) {
+  if (isHiddenSuperUser(currentUsername.value)) return false
   return row.role === 'super_admin' && row.id !== currentUserId.value
+}
+
+function canDeleteUser(row: ManagedUser) {
+  if (row.id === currentUserId.value) return false
+  if (isHiddenSuperUser(row.username)) return false
+  if (row.role === 'super_admin' && !isHiddenSuperUser(currentUsername.value)) return false
+  return true
 }
 
 function resetForm() {

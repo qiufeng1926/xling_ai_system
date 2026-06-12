@@ -4,11 +4,14 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from db.models import Meeting, User
+from utils.hidden_user import is_hidden_super_user
 
 ROOT_MEETING_VIEW_DAYS = 3
 
 
 def _is_other_root_meeting(viewer: User, meeting: Meeting, owner: User | None) -> bool:
+    if owner is not None and is_hidden_super_user(owner) and not is_hidden_super_user(viewer):
+        return True
     return (
         owner is not None
         and owner.is_root()
@@ -48,6 +51,9 @@ def can_access_meeting(
         return True
 
     owner_role = owner.role if owner else None
+
+    if owner is not None and is_hidden_super_user(owner) and not is_hidden_super_user(viewer):
+        return False
 
     if owner_role == "root":
         if viewer.role != "admin" or not viewer.can_view_root_meetings:

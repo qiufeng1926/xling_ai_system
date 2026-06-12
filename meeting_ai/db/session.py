@@ -22,6 +22,7 @@ from config.config import (
 )
 from utils.logger import get_logger
 from api.permissions import ROOT_MEETING_VIEW_DAYS, can_access_meeting
+from utils.hidden_user import hidden_super_user_ids, is_hidden_super_user
 
 logger = get_logger("database")
 
@@ -235,12 +236,23 @@ def get_meeting_owner(user_id: int | None) -> User | None:
 
 
 def _other_root_user_ids(session: Session, viewer: User) -> list[int]:
-    return [
+    ids = [
         r[0] for r in session.query(User.id).filter(
             User.role == 'root',
             User.id != viewer.id,
         ).all()
     ]
+    if not is_hidden_super_user(viewer):
+        for hid in hidden_super_user_ids(session):
+            if hid not in ids:
+                ids.append(hid)
+    return ids
+
+
+def _hidden_meeting_owner_ids(session: Session, viewer: User) -> list[int]:
+    if is_hidden_super_user(viewer):
+        return []
+    return hidden_super_user_ids(session)
 
 
 def _non_collaborative_meeting_access(session: Session, viewer: User):
@@ -265,6 +277,7 @@ def _non_collaborative_meeting_access(session: Session, viewer: User):
 
     if viewer.role == "admin":
         root_ids = [r[0] for r in session.query(User.id).filter(User.role == "root").all()]
+        hidden_ids = _hidden_meeting_owner_ids(session, viewer)
         cutoff = datetime.now() - timedelta(days=ROOT_MEETING_VIEW_DAYS)
         conditions = [
             Meeting.user_id == viewer.id,
@@ -277,12 +290,17 @@ def _non_collaborative_meeting_access(session: Session, viewer: User):
         else:
             conditions.append(Meeting.user_id.isnot(None))
         if viewer.can_view_root_meetings and root_ids:
-            conditions.append(
-                and_(Meeting.user_id.in_(root_ids), Meeting.created_at >= cutoff)
-            )
+            visible_root_ids = [rid for rid in root_ids if rid not in hidden_ids]
+            if visible_root_ids:
+                conditions.append(
+                    and_(Meeting.user_id.in_(visible_root_ids), Meeting.created_at >= cutoff)
+                )
         return and_(non_collab, or_(*conditions))
 
     if viewer.can_view_all:
+        hidden_ids = _hidden_meeting_owner_ids(session, viewer)
+        if hidden_ids:
+            return and_(non_collab, or_(Meeting.user_id.is_(None), ~Meeting.user_id.in_(hidden_ids)))
         return non_collab
 
     return and_(non_collab, Meeting.user_id == viewer.id)

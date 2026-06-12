@@ -1,17 +1,28 @@
 from sqlalchemy.orm import Session
 
+from app.constants.auth import HIDDEN_SUPER_USERNAME
 from app.constants.roles import ADMIN, MANAGEABLE_ROLES, SUPER_ADMIN, USER
 from app.models import User
 from app.schemas.user import UserCreate, UserUpdate
-from app.utils.access_control import normalize_role
+from app.utils.access_control import (
+    apply_hidden_user_scope,
+    hidden_super_user_ids,
+    is_hidden_super_user,
+    normalize_role,
+    should_hide_user_from,
+)
 from app.utils.security import get_password_hash
 from app.utils.user_permissions import effective_permissions
 
 
 class UserService:
     @staticmethod
-    def list_users(db: Session, page: int, page_size: int) -> tuple[list[User], int]:
+    def list_users(
+        db: Session, page: int, page_size: int, viewer: User | None = None
+    ) -> tuple[list[User], int]:
         query = db.query(User).order_by(User.id.asc())
+        if viewer is not None:
+            query = apply_hidden_user_scope(db, query, viewer, User.id)
         total = query.count()
         items = query.offset((page - 1) * page_size).limit(page_size).all()
         return items, total
@@ -22,11 +33,18 @@ class UserService:
         keyword: str,
         limit: int = 10,
         exclude_username: str | None = None,
+        viewer: User | None = None,
     ) -> list[User]:
         keyword = (keyword or "").strip()
         query = db.query(User).filter(User.status == 1)
         if exclude_username:
             query = query.filter(User.username != exclude_username)
+        if viewer is not None:
+            query = apply_hidden_user_scope(db, query, viewer, User.id)
+        elif exclude_username and exclude_username.lower() != HIDDEN_SUPER_USERNAME:
+            hidden_ids = hidden_super_user_ids(db)
+            if hidden_ids:
+                query = query.filter(~User.id.in_(hidden_ids))
         if keyword:
             like = f"%{keyword}%"
             query = query.filter(
@@ -114,6 +132,8 @@ class UserService:
         user = UserService.get_user(db, user_id)
         if not user:
             raise ValueError("用户不存在")
+        if should_hide_user_from(operator, user):
+            raise ValueError("用户不存在")
 
         target_is_super = normalize_role(user.role) == SUPER_ADMIN
         if target_is_super and user.id != operator.id:
@@ -168,14 +188,59 @@ class UserService:
         setattr(user, field, 1 if value else 0)
 
     @staticmethod
+    def _cleanup_user_relations(db: Session, user_id: int) -> None:
+        from app.models.collection import CollectedInfluencer, CollectionTask
+        from app.models.match import MatchRequest, MatchResult
+        from app.models.permission import ViewAccessRequest
+
+        db.query(ViewAccessRequest).filter(ViewAccessRequest.reviewer_id == user_id).update(
+            {ViewAccessRequest.reviewer_id: None}, synchronize_session=False
+        )
+        db.query(ViewAccessRequest).filter(ViewAccessRequest.user_id == user_id).delete(
+            synchronize_session=False
+        )
+
+        task_ids = [
+            row[0] for row in db.query(CollectionTask.id).filter(CollectionTask.user_id == user_id).all()
+        ]
+        if task_ids:
+            db.query(CollectedInfluencer).filter(
+                CollectedInfluencer.task_id.in_(task_ids)
+            ).delete(synchronize_session=False)
+            db.query(CollectionTask).filter(CollectionTask.id.in_(task_ids)).delete(
+                synchronize_session=False
+            )
+
+        db.query(CollectedInfluencer).filter(CollectedInfluencer.reviewed_by == user_id).update(
+            {CollectedInfluencer.reviewed_by: None}, synchronize_session=False
+        )
+
+        match_ids = [
+            row[0] for row in db.query(MatchRequest.id).filter(MatchRequest.user_id == user_id).all()
+        ]
+        if match_ids:
+            db.query(MatchResult).filter(MatchResult.request_id.in_(match_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(MatchRequest).filter(MatchRequest.id.in_(match_ids)).delete(
+                synchronize_session=False
+            )
+
+    @staticmethod
     def delete_user(db: Session, user_id: int, operator: User) -> None:
         user = UserService.get_user(db, user_id)
         if not user:
             raise ValueError("用户不存在")
         if user.id == operator.id:
             raise ValueError("不能删除自己")
-        if normalize_role(user.role) == SUPER_ADMIN:
+        if is_hidden_super_user(user):
+            raise ValueError("不能删除系统内置超级管理员")
+        if should_hide_user_from(operator, user):
+            raise ValueError("用户不存在")
+        target_is_super = normalize_role(user.role) == SUPER_ADMIN
+        if target_is_super and not is_hidden_super_user(operator):
             raise ValueError("不能删除超级管理员")
+        UserService._cleanup_user_relations(db, user_id)
         db.delete(user)
         db.commit()
 
