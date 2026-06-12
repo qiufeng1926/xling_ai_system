@@ -1539,7 +1539,7 @@
                 <div class="auth-field">
                     <label>申请类型</label>
                     <select id="applyType">
-                        <option value="view_all">申请查看全部会议</option>
+                        <option value="view_all" disabled>浏览他人会议请在会议记录中逐条申请</option>
                         <option value="admin">申请成为管理员</option>
                     </select>
                 </div>
@@ -2053,12 +2053,12 @@
 
             if (currentUser.role === 'admin') {
                 accountHtml +=
-                    `可查看其他用户会议：<strong>是</strong><br>` +
+                    `浏览他人会议：<strong>${currentUser.can_view_all ? '是' : '否'}</strong><br>` +
                     `可查看超级管理员会议：<strong>${currentUser.can_view_root_meetings ? '是（限3天内）' : '否'}</strong>`;
             } else if (currentUser.role === 'root') {
-                accountHtml += `可查看全部会议：<strong>是</strong>`;
+                accountHtml += `浏览他人会议：<strong>是</strong>`;
             } else {
-                accountHtml += `可查看全部会议：<strong>${currentUser.can_view_all ? '是' : '否'}</strong>`;
+                accountHtml += `浏览他人会议：<strong>${currentUser.can_view_all ? '是' : '否'}</strong>`;
             }
             document.getElementById('accountInfo').innerHTML = accountHtml;
 
@@ -2073,6 +2073,9 @@
                 applySection.style.display = 'none';
             } else if (currentUser.role === 'admin') {
                 const opts = [];
+                if (!currentUser.can_view_all) {
+                    opts.push('<option value="view_all" disabled>浏览他人会议请在会议记录中逐条申请</option>');
+                }
                 if (!currentUser.can_view_root_meetings) {
                     opts.push('<option value="view_root_meetings">申请查看超级管理员会议（限3天内，需超级管理员审批）</option>');
                 }
@@ -2090,7 +2093,7 @@
             } else {
                 const opts = [];
                 if (!currentUser.can_view_all) {
-                    opts.push('<option value="view_all">申请查看全部会议（需管理员审批）</option>');
+                    opts.push('<option value="view_all" disabled>浏览他人会议请在会议记录中逐条申请</option>');
                 }
                 opts.push('<option value="admin">申请成为管理员（需超级管理员审批）</option>');
                 if (!currentUser.can_download) {
@@ -2099,8 +2102,8 @@
                 applySection.style.display = 'block';
                 applyType.innerHTML = opts.join('');
                 applyHint.textContent = currentUser.can_view_all
-                    ? '您已拥有查看全部会议权限，仍可申请下载或管理员权限。'
-                    : '普通用户默认只能查看自己创建的会议记录。';
+                    ? '您已拥有浏览他人会议权限，仍可申请下载或管理员权限。'
+                    : '默认只能浏览自己录制或参与的协作会议；查看他人会议需向超级管理员申请。';
             }
 
             const reviewSection = document.getElementById('reviewSection');
@@ -2320,7 +2323,7 @@
         }
 
         const REQUEST_TYPE_LABELS = {
-            view_all: '查看全部会议',
+            view_all: '浏览他人会议',
             admin: '成为管理员',
             view_root_meetings: '查看超级管理员会议',
             download: '下载/导出会议文件',
@@ -2432,23 +2435,30 @@
             if (u.role === 'user') {
                 return `
                     <div class="auth-field">
-                        <label>查阅会议权限</label>
+                        <label>浏览他人会议</label>
                         <select id="adminCanViewAll_${u.id}">
                             <option value="0" ${!u.can_view_all ? 'selected' : ''}>仅查看自己的会议</option>
-                            <option value="1" ${u.can_view_all ? 'selected' : ''}>可查看全部会议</option>
+                            <option value="1" ${u.can_view_all ? 'selected' : ''}>可浏览他人会议</option>
                         </select>
                     </div>`;
             }
             if (u.role === 'admin') {
                 return `
                     <div class="auth-field">
-                        <label>查阅会议权限</label>
+                        <label>浏览他人会议</label>
+                        <select id="adminCanViewAll_${u.id}">
+                            <option value="0" ${!u.can_view_all ? 'selected' : ''}>仅查看自己的会议</option>
+                            <option value="1" ${u.can_view_all ? 'selected' : ''}>可浏览他人会议</option>
+                        </select>
+                    </div>
+                    <div class="auth-field">
+                        <label>查阅超级管理员会议</label>
                         <select id="adminCanViewRoot_${u.id}">
                             <option value="0" ${!u.can_view_root_meetings ? 'selected' : ''}>不可查看超级管理员会议</option>
                             <option value="1" ${u.can_view_root_meetings ? 'selected' : ''}>可查看超级管理员会议（限最近3天）</option>
                         </select>
                     </div>
-                    <p style="color:#999;font-size:12px;margin:0;">管理员默认可查看其他普通用户的会议。</p>`;
+                    <p style="color:#999;font-size:12px;margin:0;">管理员默认可查看协作会议与自有会议。</p>`;
             }
             return '<p style="color:#999;margin:0;">该角色无需设置查阅会议权限。</p>';
         }
@@ -2482,11 +2492,12 @@
             const isSelf = currentUser && u.id === currentUser.id;
             let permInfo = '';
             if (u.role === 'admin') {
-                permInfo = `查阅：可查看其他用户会议；超级管理员会议 ${u.can_view_root_meetings ? '可查看（限3天）' : '不可查看'}`;
+                permInfo = `浏览他人会议：${u.can_view_all ? '允许' : '仅自己的会议'}`;
+                permInfo += `；超级管理员会议 ${u.can_view_root_meetings ? '可查看（限3天）' : '不可查看'}`;
                 permInfo += `；下载：${u.can_download ? '允许' : '禁止'}`;
                 permInfo += `；审批下载：${u.can_approve_download ? '已授权' : '未授权'}`;
             } else if (u.role === 'user') {
-                permInfo = `查阅：${u.can_view_all ? '可查看全部会议' : '仅自己的会议'}`;
+                permInfo = `浏览他人会议：${u.can_view_all ? '允许' : '仅自己的会议'}`;
                 permInfo += `；下载：${u.can_download ? '允许' : '禁止'}`;
             }
 
@@ -2631,8 +2642,10 @@
                 const el = document.getElementById('adminCanViewAll_' + userId);
                 body.can_view_all = el && el.value === '1';
             } else if (user.role === 'admin') {
-                const el = document.getElementById('adminCanViewRoot_' + userId);
-                body.can_view_root_meetings = el && el.value === '1';
+                const viewAllEl = document.getElementById('adminCanViewAll_' + userId);
+                const rootEl = document.getElementById('adminCanViewRoot_' + userId);
+                body.can_view_all = viewAllEl && viewAllEl.value === '1';
+                body.can_view_root_meetings = rootEl && rootEl.value === '1';
             } else {
                 showErrorAlert('该用户无需设置查阅会议权限');
                 return;
@@ -4081,24 +4094,34 @@
                     const isRoot = currentUser && currentUser.role === 'root';
                     data.meetings.forEach(meeting => {
                         const date = new Date(meeting.created_at).toLocaleString('zh-CN');
+                        const locked = meeting.can_access === false;
                         
                         // 显示会议名称
                         let displayName = meeting.meeting_name || meeting.original_filename || '未命名会议';
                         const collabBadge = meeting.is_collaborative
                             ? '<span style="background:#667eea;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;margin-left:8px;">协作</span>'
                             : '';
+                        const lockBadge = locked
+                            ? '<span style="background:#ff9800;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;margin-left:8px;">需申请权限</span>'
+                            : '';
                         const safeName = displayName.replace(/'/g, "\\'");
                         const deleteBtn = isRoot ? `
                             <button class="btn-danger" style="padding:4px 10px;font-size:12px;margin-left:8px;"
                                 onclick="event.stopPropagation(); adminDeleteMeeting('${meeting.file_id}', '${safeName}')">删除</button>` : '';
+                        const previewText = locked
+                            ? '暂无浏览权限，请向超级管理员申请「浏览他人会议」'
+                            : `${(meeting.preview || '').substring(0, 150)}${meeting.preview ? '...' : ''}`;
+                        const clickHandler = locked
+                            ? `onclick="alert('暂无浏览权限，请前往账号中心申请「浏览他人会议」')"`
+                            : `onclick="showMeetingDetail('${meeting.file_id}')"`;
                         
                         html += `
-                            <div style="border: 1px solid #e0e0e0; border-radius: 10px; padding: 15px; margin-bottom: 15px; cursor: pointer; transition: all 0.3s;" 
-                                 onmouseover="this.style.boxShadow='0 4px 12px rgba(0,0,0,0.1)'" 
+                            <div style="border: 1px solid #e0e0e0; border-radius: 10px; padding: 15px; margin-bottom: 15px; cursor: ${locked ? 'not-allowed' : 'pointer'}; opacity: ${locked ? '0.92' : '1'}; transition: all 0.3s;" 
+                                 onmouseover="this.style.boxShadow='${locked ? 'none' : '0 4px 12px rgba(0,0,0,0.1)'}'" 
                                  onmouseout="this.style.boxShadow='none'"
-                                 onclick="showMeetingDetail('${meeting.file_id}')">
+                                 ${clickHandler}>
                                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                    <strong style="color: #667eea; font-size: 16px;">${displayName}${collabBadge}</strong>
+                                    <strong style="color: ${locked ? '#999' : '#667eea'}; font-size: 16px;">${displayName}${collabBadge}${lockBadge}</strong>
                                     <span style="color: #999; font-size: 12px;">${date}${deleteBtn}</span>
                                 </div>
                                 <div style="color: #666; font-size: 14px; margin-bottom: 8px;">
@@ -4106,7 +4129,7 @@
                                     ${meeting.has_summary ? '✅ 文字总结' : ''}${meeting.has_visual_summary ? ' ✅ 图文' : ''}${!meeting.has_summary && !meeting.has_visual_summary ? '❌ 无总结' : ''}
                                 </div>
                                 <div style="color: #999; font-size: 13px; background: #f5f5f5; padding: 8px; border-radius: 5px;">
-                                    ${(meeting.preview || '').substring(0, 150)}...
+                                    ${previewText}
                                 </div>
                             </div>
                         `;
@@ -4171,6 +4194,12 @@
                     if (data.summary || data.summary_visual) {
                         displayDualSummary('history', data);
                     }
+                } else if (data.error && data.error.includes('无权')) {
+                    listEl.innerHTML = `
+                        <div style="text-align:center;padding:30px 20px;">
+                            <p style="color:#666;margin-bottom:16px;">无权查看该会议内容。查看他人会议需向超级管理员申请「浏览他人会议」权限。</p>
+                            <button onclick="loadHistory()" class="btn-primary" style="background:#666;">← 返回列表</button>
+                        </div>`;
                 } else {
                     listEl.innerHTML = `<p style="text-align: center; color: #f44336;">${data.error || '加载失败'}</p>`;
                 }

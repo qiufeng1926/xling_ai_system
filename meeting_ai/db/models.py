@@ -34,7 +34,7 @@ class User(Base):
             'username': self.username,
             'nickname': self.nickname,
             'role': self.role,
-            'can_view_all': self.can_view_all or self.role in ('admin', 'root'),
+            'can_view_all': self.can_view_all or self.role == 'root',
             'can_view_root_meetings': self.can_view_root_meetings,
             'can_view_all_roots': self.can_view_all_roots,
             'can_download': self.can_download or self.role == 'root',
@@ -46,7 +46,7 @@ class User(Base):
         return data
 
     def can_view_all_meetings(self) -> bool:
-        return self.role in ('admin', 'root') or self.can_view_all
+        return self.is_root() or self.can_view_all
 
     def is_admin(self) -> bool:
         return self.role in ('admin', 'root')
@@ -128,6 +128,114 @@ class PermissionRequest(Base):
             'status': self.status,
             'reviewer_id': self.reviewer_id,
             'reviewer_username': self.reviewer.username if self.reviewer else None,
+            'review_note': self.review_note,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'reviewed_at': self.reviewed_at.isoformat() if self.reviewed_at else None,
+        }
+
+
+class MeetingViewGrant(Base):
+    """单条会议浏览授权（审批通过或超管直接下发）"""
+    __tablename__ = 'meeting_view_grants'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    username = Column(String(64), nullable=True, index=True, comment='申请人门户用户名，用于跨会话匹配')
+    file_id = Column(String(64), nullable=False, index=True)
+    granted_by = Column(Integer, ForeignKey('users.id'), nullable=True)
+    granted_at = Column(DateTime, nullable=False, default=datetime.now)
+
+    __table_args__ = (
+        Index('idx_meeting_view_grant_user_file', 'user_id', 'file_id', unique=True),
+        Index('idx_meeting_view_grant_username_file', 'username', 'file_id'),
+    )
+
+
+class MeetingViewRequest(Base):
+    """单条会议浏览权限申请"""
+    __tablename__ = 'meeting_view_requests'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    file_id = Column(String(64), nullable=False, index=True)
+    meeting_name = Column(String(255), nullable=True)
+    reason = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default='pending')
+    reviewer_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    review_note = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    reviewed_at = Column(DateTime, nullable=True)
+
+    applicant = relationship('User', foreign_keys=[user_id])
+    reviewer = relationship('User', foreign_keys=[reviewer_id])
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'username': self.applicant.username if self.applicant else None,
+            'nickname': self.applicant.nickname if self.applicant else None,
+            'file_id': self.file_id,
+            'meeting_name': self.meeting_name,
+            'reason': self.reason,
+            'status': self.status,
+            'reviewer_id': self.reviewer_id,
+            'reviewer_username': self.reviewer.username if self.reviewer else None,
+            'reviewer_nickname': self.reviewer.nickname if self.reviewer else None,
+            'review_note': self.review_note,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'reviewed_at': self.reviewed_at.isoformat() if self.reviewed_at else None,
+        }
+
+
+class MeetingDownloadGrant(Base):
+    """单条会议下载授权"""
+    __tablename__ = 'meeting_download_grants'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    username = Column(String(64), nullable=True, index=True, comment='申请人门户用户名')
+    file_id = Column(String(64), nullable=False, index=True)
+    granted_by = Column(Integer, ForeignKey('users.id'), nullable=True)
+    granted_at = Column(DateTime, nullable=False, default=datetime.now)
+
+    __table_args__ = (
+        Index('idx_meeting_download_grant_user_file', 'user_id', 'file_id', unique=True),
+        Index('idx_meeting_download_grant_username_file', 'username', 'file_id'),
+    )
+
+
+class MeetingDownloadRequest(Base):
+    """单条会议下载权限申请"""
+    __tablename__ = 'meeting_download_requests'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    file_id = Column(String(64), nullable=False, index=True)
+    meeting_name = Column(String(255), nullable=True)
+    reason = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default='pending')
+    reviewer_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    review_note = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    reviewed_at = Column(DateTime, nullable=True)
+
+    applicant = relationship('User', foreign_keys=[user_id])
+    reviewer = relationship('User', foreign_keys=[reviewer_id])
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'username': self.applicant.username if self.applicant else None,
+            'nickname': self.applicant.nickname if self.applicant else None,
+            'file_id': self.file_id,
+            'meeting_name': self.meeting_name,
+            'reason': self.reason,
+            'status': self.status,
+            'reviewer_id': self.reviewer_id,
+            'reviewer_username': self.reviewer.username if self.reviewer else None,
+            'reviewer_nickname': self.reviewer.nickname if self.reviewer else None,
             'review_note': self.review_note,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'reviewed_at': self.reviewed_at.isoformat() if self.reviewed_at else None,
@@ -459,6 +567,84 @@ def migrate_schema(engine):
                 conn.execute(text(f"ALTER TABLE meetings ADD COLUMN {col} {col_def}"))
                 conn.commit()
                 print(f"[OK] meetings 表已添加 {col} 字段")
+
+        result = conn.execute(text("""
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'meeting_view_grants'
+            AND COLUMN_NAME = 'username'
+        """))
+        if result.scalar() == 0:
+            conn.execute(text(
+                "ALTER TABLE meeting_view_grants ADD COLUMN username VARCHAR(64) NULL "
+                "COMMENT '申请人门户用户名' AFTER user_id"
+            ))
+            conn.commit()
+            conn.execute(text(
+                "UPDATE meeting_view_grants g "
+                "JOIN users u ON g.user_id = u.id "
+                "SET g.username = u.username "
+                "WHERE g.username IS NULL"
+            ))
+            conn.commit()
+            try:
+                conn.execute(text(
+                    "CREATE INDEX idx_meeting_view_grant_username_file "
+                    "ON meeting_view_grants (username, file_id)"
+                ))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            print("[OK] meeting_view_grants 表已添加 username 字段")
+
+        try:
+            conn.execute(text("""
+                INSERT INTO meeting_view_grants (user_id, username, file_id, granted_by, granted_at)
+                SELECT r.user_id, u.username, r.file_id, r.reviewer_id, COALESCE(r.reviewed_at, NOW())
+                FROM meeting_view_requests r
+                JOIN users u ON r.user_id = u.id
+                LEFT JOIN meeting_view_grants g
+                    ON g.user_id = r.user_id AND g.file_id = r.file_id
+                WHERE r.status = 'approved' AND g.id IS NULL
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        try:
+            conn.execute(text(
+                "UPDATE meeting_view_grants g "
+                "JOIN users u ON g.user_id = u.id "
+                "SET g.username = u.username "
+                "WHERE g.username IS NULL OR g.username = ''"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        try:
+            conn.execute(text("""
+                INSERT INTO meeting_download_grants (user_id, username, file_id, granted_by, granted_at)
+                SELECT r.user_id, u.username, r.file_id, r.reviewer_id, COALESCE(r.reviewed_at, NOW())
+                FROM meeting_download_requests r
+                JOIN users u ON r.user_id = u.id
+                LEFT JOIN meeting_download_grants g
+                    ON g.user_id = r.user_id AND g.file_id = r.file_id
+                WHERE r.status = 'approved' AND g.id IS NULL
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        try:
+            conn.execute(text(
+                "UPDATE meeting_download_grants g "
+                "JOIN users u ON g.user_id = u.id "
+                "SET g.username = u.username "
+                "WHERE g.username IS NULL OR g.username = ''"
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
 
 
 def init_database(database_url: str):

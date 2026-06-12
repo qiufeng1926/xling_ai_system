@@ -76,7 +76,7 @@ def migrate_rbac(db: Session) -> None:
         )
         db.execute(
             text(
-                "UPDATE users SET view_library=1, view_all_meetings=1 WHERE role='admin'"
+                "UPDATE users SET view_library=1 WHERE role='admin'"
             )
         )
         db.commit()

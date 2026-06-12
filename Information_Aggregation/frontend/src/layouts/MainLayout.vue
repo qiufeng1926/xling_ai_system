@@ -1,7 +1,7 @@
 <template>
   <el-container class="layout-container">
     <el-aside width="240px" class="layout-aside">
-      <div class="logo">xling</div>
+      <div class="logo">xlink</div>
       <el-menu
         :default-active="activeMenu"
         :default-openeds="defaultOpeneds"
@@ -137,6 +137,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { listMyRooms } from '@/api/meetingRooms'
 import { getAccessRequestStats } from '@/api/permissions'
+import { getMeetingViewRequestStats } from '@/api/meetings'
 import {
   ROLE_LABELS,
   canManageUsers,
@@ -184,7 +185,7 @@ const currentTitle = computed(() => {
   if (route.path.startsWith('/influencer/influencers') && isUser(userStore.userInfo?.role)) {
     return '我的达人'
   }
-  return (route.meta.title as string) || 'xling'
+  return (route.meta.title as string) || 'xlink'
 })
 
 const role = computed(() => normalizeRole(userStore.userInfo?.role))
@@ -230,6 +231,15 @@ async function refreshAccessRequestStats() {
     const res = await getAccessRequestStats()
     pendingAccessReviewCount.value = res.data.pending_for_review || 0
     myPendingAccessCount.value = res.data.my_pending || 0
+    try {
+      const meetingStats = await getMeetingViewRequestStats()
+      myPendingAccessCount.value += meetingStats.my_pending || 0
+      if (canReviewAccess(userStore.userInfo?.role)) {
+        pendingAccessReviewCount.value += meetingStats.pending_for_review || 0
+      }
+    } catch {
+      // meeting 服务不可用时静默忽略
+    }
   } catch {
     pendingAccessReviewCount.value = 0
     myPendingAccessCount.value = 0

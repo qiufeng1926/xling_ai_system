@@ -10,9 +10,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from api.auth_utils import get_current_user, get_db
-from api.permissions import can_download_files
+from api.permissions import can_download_meeting
 from config.config import output_dir
-from db.models import User
+from db.models import Meeting, User
 from db.session import check_meeting_access, get_meeting_by_file_id, log_meeting_download
 from utils.docx_export import build_export_filename, markdown_to_docx
 from utils.visual_export import (
@@ -26,11 +26,22 @@ router = APIRouter()
 logger = get_logger("export_route")
 
 
-def _require_download_permission(user: User) -> None:
-    if not can_download_files(user):
+def _require_meeting_download_permission(user: User, file_id: str, db: Session) -> None:
+    meeting = db.query(Meeting).filter(Meeting.file_id == file_id).first()
+    if not meeting:
+        raise HTTPException(status_code=404, detail='会议不存在')
+    owner = None
+    if meeting.user_id:
+        owner = db.query(User).filter(User.id == meeting.user_id).first()
+    exists, allowed = check_meeting_access(file_id, user)
+    if not exists:
+        raise HTTPException(status_code=404, detail='会议不存在')
+    if not allowed:
+        raise HTTPException(status_code=403, detail='无权导出该会议')
+    if not can_download_meeting(user, meeting, owner, session=db):
         raise HTTPException(
             status_code=403,
-            detail='暂无下载/导出权限，请在账户管理中向超级管理员申请',
+            detail='暂无该会议的下载/导出权限，请在会议记录中申请',
         )
 
 
@@ -149,7 +160,7 @@ async def export_meeting_summary_docx(
     db: Session = Depends(get_db),
 ):
     """导出指定会议的 AI 总结为 Word 文档"""
-    _require_download_permission(current_user)
+    _require_meeting_download_permission(current_user, file_id, db)
     exists, allowed = check_meeting_access(file_id, current_user)
     if not exists:
         raise HTTPException(status_code=404, detail="会议不存在")
@@ -176,7 +187,10 @@ async def export_summary_content_docx(
     db: Session = Depends(get_db),
 ):
     """根据总结正文直接导出 Word（用于刚生成尚未跳转历史的场景）"""
-    _require_download_permission(current_user)
+    from api.permissions import can_download_files
+
+    if not can_download_files(current_user):
+        raise HTTPException(status_code=403, detail='暂无下载/导出权限，请在会议记录中申请')
     title = body.title.strip()
     log_meeting_download(
         db,
@@ -196,7 +210,7 @@ async def export_meeting_visual(
     db: Session = Depends(get_db),
 ):
     """导出指定会议的图文速览（html 或 json）"""
-    _require_download_permission(current_user)
+    _require_meeting_download_permission(current_user, file_id, db)
     exists, allowed = check_meeting_access(file_id, current_user)
     if not exists:
         raise HTTPException(status_code=404, detail='会议不存在')
@@ -229,7 +243,10 @@ async def export_visual_content(
     db: Session = Depends(get_db),
 ):
     """根据图文 JSON 直接导出（用于刚生成尚未入库的场景）"""
-    _require_download_permission(current_user)
+    from api.permissions import can_download_files
+
+    if not can_download_files(current_user):
+        raise HTTPException(status_code=403, detail='暂无下载/导出权限，请在会议记录中申请')
     title = body.title.strip()
     fmt = (format or 'html').lower()
     export_type = 'visual_json' if fmt == 'json' else 'visual_html'

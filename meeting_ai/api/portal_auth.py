@@ -60,7 +60,7 @@ def _portal_permissions(payload: dict) -> dict[str, bool]:
         }
     if portal_role == "admin":
         return {
-            "view_all_meetings": True,
+            "view_all_meetings": False,
             "view_root_meetings": False,
             "view_all_root_meetings": False,
             "download_meetings": False,

@@ -116,7 +116,7 @@ class UserService:
             role=role,
             status=1,
             view_library=1 if role == ADMIN else 0,
-            view_all_meetings=1 if role == ADMIN else 0,
+            view_all_meetings=0,
             view_root_meetings=0,
             view_all_root_meetings=0,
             download_meetings=0,
@@ -156,8 +156,6 @@ class UserService:
             if new_role == ADMIN and old_role == USER:
                 if data.view_library is None and not user.view_library:
                     user.view_library = 1
-                if data.view_all_meetings is None and not user.view_all_meetings:
-                    user.view_all_meetings = 1
 
         if data.nickname is not None:
             user.nickname = data.nickname

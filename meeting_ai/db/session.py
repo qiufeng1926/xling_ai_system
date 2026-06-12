@@ -13,6 +13,8 @@ from db.models import (
     User,
     PermissionRequest,
     MeetingDownloadLog,
+    MeetingViewRequest,
+    MeetingDownloadRequest,
 )
 from config.config import (
     database_url,
@@ -21,7 +23,7 @@ from config.config import (
     seed_root_password,
 )
 from utils.logger import get_logger
-from api.permissions import ROOT_MEETING_VIEW_DAYS, can_access_meeting
+from api.permissions import ROOT_MEETING_VIEW_DAYS, can_access_meeting, can_download_meeting
 from utils.hidden_user import hidden_super_user_ids, is_hidden_super_user
 
 logger = get_logger("database")
@@ -306,6 +308,15 @@ def _non_collaborative_meeting_access(session: Session, viewer: User):
     return and_(non_collab, Meeting.user_id == viewer.id)
 
 
+def _meeting_list_query(session: Session, viewer: User):
+    """会议列表：展示全部记录（仍排除隐身超管账号的会议）。"""
+    query = session.query(Meeting)
+    hidden_ids = _hidden_meeting_owner_ids(session, viewer)
+    if hidden_ids:
+        query = query.filter(or_(Meeting.user_id.is_(None), ~Meeting.user_id.in_(hidden_ids)))
+    return query
+
+
 def _apply_viewer_meeting_filter(query, session: Session, viewer: User):
     """按用户角色过滤可见会议；协作会议仅参会人员可见。"""
     from services.collaborative_service import participant_collaborative_file_ids
@@ -321,6 +332,53 @@ def _apply_viewer_meeting_filter(query, session: Session, viewer: User):
 
     non_collab_access = _non_collaborative_meeting_access(session, viewer)
     return query.filter(or_(collab_access, non_collab_access))
+
+
+def _latest_meeting_view_request_map(
+    session: Session,
+    viewer_id: int,
+    file_ids: list[str],
+) -> dict[str, str]:
+    """返回 file_id -> 最新申请状态（pending/approved/rejected）"""
+    if not file_ids:
+        return {}
+    rows = (
+        session.query(MeetingViewRequest)
+        .filter(
+            MeetingViewRequest.user_id == viewer_id,
+            MeetingViewRequest.file_id.in_(file_ids),
+        )
+        .order_by(MeetingViewRequest.created_at.desc())
+        .all()
+    )
+    result: dict[str, str] = {}
+    for row in rows:
+        if row.file_id not in result:
+            result[row.file_id] = row.status
+    return result
+
+
+def _latest_meeting_download_request_map(
+    session: Session,
+    viewer_id: int,
+    file_ids: list[str],
+) -> dict[str, str]:
+    if not file_ids:
+        return {}
+    rows = (
+        session.query(MeetingDownloadRequest)
+        .filter(
+            MeetingDownloadRequest.user_id == viewer_id,
+            MeetingDownloadRequest.file_id.in_(file_ids),
+        )
+        .order_by(MeetingDownloadRequest.created_at.desc())
+        .all()
+    )
+    result: dict[str, str] = {}
+    for row in rows:
+        if row.file_id not in result:
+            result[row.file_id] = row.status
+    return result
 
 
 def get_all_meetings(
@@ -340,7 +398,7 @@ def get_all_meetings(
         query = session.query(Meeting)
 
         if viewer is not None:
-            query = _apply_viewer_meeting_filter(query, session, viewer)
+            query = _meeting_list_query(session, viewer)
         elif not can_view_all and user_id is not None:
             query = query.filter(Meeting.user_id == user_id)
         elif not can_view_all:
@@ -369,7 +427,38 @@ def get_all_meetings(
             .offset(offset)
             .all()
         )
-        return [meeting.to_list_dict() for meeting in meetings], total
+        items: list[dict] = []
+        request_status_map: dict[str, str] = {}
+        download_request_status_map: dict[str, str] = {}
+        if viewer is not None:
+            file_ids = [m.file_id for m in meetings]
+            request_status_map = _latest_meeting_view_request_map(session, viewer.id, file_ids)
+            download_request_status_map = _latest_meeting_download_request_map(session, viewer.id, file_ids)
+        for meeting in meetings:
+            row = meeting.to_list_dict()
+            owner = None
+            if meeting.user_id:
+                owner = session.query(User).filter(User.id == meeting.user_id).first()
+            if viewer is not None:
+                allowed = can_access_meeting(viewer, meeting, owner, session=session)
+                row["can_access"] = allowed
+                row["can_download"] = can_download_meeting(viewer, meeting, owner, session=session)
+                if not allowed:
+                    row["preview"] = ""
+                    row["access_request_status"] = request_status_map.get(meeting.file_id)
+                else:
+                    row["access_request_status"] = None
+                if row["can_download"]:
+                    row["download_request_status"] = None
+                else:
+                    row["download_request_status"] = download_request_status_map.get(meeting.file_id)
+            else:
+                row["can_access"] = True
+                row["can_download"] = True
+                row["access_request_status"] = None
+                row["download_request_status"] = None
+            items.append(row)
+        return items, total
 
 
 def _remove_file_if_exists(path: str | None):

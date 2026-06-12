@@ -25,6 +25,7 @@ from api.routes.admin import router as admin_router
 from api.routes.export import router as export_router
 from api.routes.settings import router as settings_router
 from api.routes.collaborative import router as collaborative_router
+from api.routes.meeting_access import router as meeting_access_router
 
 
 @asynccontextmanager
@@ -113,6 +114,12 @@ app.include_router(
     collaborative_router,
     prefix="/api",
     tags=["协作会议"]
+)
+
+app.include_router(
+    meeting_access_router,
+    prefix="/api",
+    tags=["会议浏览权限"]
 )
 
 

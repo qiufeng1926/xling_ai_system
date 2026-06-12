@@ -19,7 +19,7 @@ ALL_REQUEST_TYPES = (
 
 REQUEST_TYPE_LABELS = {
     REQ_VIEW_LIBRARY: "查阅达人库",
-    REQ_VIEW_ALL_MEETINGS: "查阅全部会议",
+    REQ_VIEW_ALL_MEETINGS: "浏览他人会议",
     REQ_DOWNLOAD_MEETINGS: "会议导出/下载",
     REQ_VIEW_ROOT_MEETINGS: "查阅超管会议（限3天）",
     REQ_PROMOTE_ADMIN: "升级为管理员",

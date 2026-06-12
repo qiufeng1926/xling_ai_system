@@ -30,7 +30,17 @@
       </div>
     </div>
 
-    <template v-if="detail">
+    <el-empty
+      v-if="permissionDenied"
+      description="无权查看该会议内容"
+    >
+      <p class="meeting-detail__denied-tip">
+        您只能浏览自己录制或参与的协作会议。查看他人会议请在会议记录列表中勾选并申请浏览权限。
+      </p>
+      <el-button type="primary" @click="router.push(MEETING_ROUTES.records)">返回会议记录</el-button>
+    </el-empty>
+
+    <template v-else-if="detail">
       <el-card shadow="never" class="meeting-detail__section">
         <template #header>转写文本</template>
         <el-scrollbar max-height="420px">
@@ -88,6 +98,7 @@ const router = useRouter()
 const userStore = useUserStore()
 
 const loading = ref(false)
+const permissionDenied = ref(false)
 const deleting = ref(false)
 const exportingSummary = ref(false)
 const exportingVisual = ref(false)
@@ -97,8 +108,8 @@ const summaryTab = ref<'markdown' | 'visual'>('markdown')
 const fileId = computed(() => String(route.params.fileId || ''))
 
 const canDownload = computed(() => {
-  const role = userStore.userInfo?.role
-  if (isSuperAdmin(role)) return true
+  if (isSuperAdmin(userStore.userInfo?.role)) return true
+  if (detail.value?.can_download) return true
   return !!userStore.userInfo?.permissions?.download_meetings
 })
 
@@ -106,16 +117,23 @@ const canDelete = computed(() => isSuperAdmin(userStore.userInfo?.role))
 
 async function loadDetail() {
   loading.value = true
+  permissionDenied.value = false
   try {
     const res = await getMeetingDetail(fileId.value)
     if (!res.success) {
+      if (res.error?.includes('无权')) {
+        permissionDenied.value = true
+        return
+      }
       throw new Error(res.error || '加载失败')
     }
     detail.value = res
     summaryTab.value = res.summary ? 'markdown' : 'visual'
   } catch (err: any) {
     ElMessage.error(err?.message || '加载会议详情失败')
-    router.push(MEETING_ROUTES.records)
+    if (!permissionDenied.value) {
+      router.push(MEETING_ROUTES.records)
+    }
   } finally {
     loading.value = false
   }
@@ -208,5 +226,12 @@ onMounted(async () => {
   margin: 12px 0 0;
   color: #909399;
   font-size: 12px;
+}
+.meeting-detail__denied-tip {
+  margin: 0 0 16px;
+  max-width: 420px;
+  color: #606266;
+  font-size: 14px;
+  line-height: 1.6;
 }
 </style>

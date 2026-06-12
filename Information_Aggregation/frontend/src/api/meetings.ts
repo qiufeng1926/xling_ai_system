@@ -16,6 +16,10 @@ export interface MeetingListItem {
   summary_visual_status: string | null
   preview: string
   is_collaborative: boolean
+  can_access?: boolean
+  access_request_status?: 'pending' | 'approved' | 'rejected' | null
+  can_download?: boolean
+  download_request_status?: 'pending' | 'approved' | 'rejected' | null
   room_code: string | null
   host_username: string | null
 }
@@ -63,6 +67,7 @@ export interface MeetingDetail {
   summary_visual_status: string | null
   transcript_file?: string | null
   summary_file?: string | null
+  can_download?: boolean
   error?: string
 }
 
@@ -75,6 +80,123 @@ export interface MeetingListQuery {
 
 export function listMeetings(params: MeetingListQuery = {}) {
   return meetingRequest.get('/meetings/list', { params }) as Promise<MeetingListResponse>
+}
+
+export interface MeetingViewAccessRequest {
+  id: number
+  user_id: number
+  username: string | null
+  nickname: string | null
+  file_id: string
+  meeting_name: string | null
+  reason: string | null
+  status: string
+  reviewer_id: number | null
+  reviewer_username: string | null
+  reviewer_nickname: string | null
+  review_note: string | null
+  created_at: string | null
+  reviewed_at: string | null
+}
+
+export interface MeetingAccessApplyResult {
+  success: boolean
+  created: MeetingViewAccessRequest[]
+  skipped: Array<{ file_id: string; reason: string }>
+  message: string
+}
+
+export type MeetingPermissionRequest = MeetingViewAccessRequest
+
+export interface MeetingAccessRequestStats {
+  success: boolean
+  my_pending: number
+  pending_for_review: number
+  view?: { my_pending: number; pending_for_review: number }
+  download?: { my_pending: number; pending_for_review: number }
+}
+
+export function applyMeetingViewAccess(fileIds: string[], reason?: string) {
+  return meetingRequest.post('/meetings/access-requests', {
+    file_ids: fileIds,
+    reason,
+  }) as Promise<MeetingAccessApplyResult>
+}
+
+export function getMyMeetingViewRequests(status?: string) {
+  return meetingRequest.get('/meetings/access-requests/mine', {
+    params: status ? { status } : undefined,
+  }) as Promise<{ success: boolean; requests: MeetingViewAccessRequest[] }>
+}
+
+export function getMeetingViewRequestStats() {
+  return meetingRequest.get('/meetings/access-requests/stats') as Promise<MeetingAccessRequestStats>
+}
+
+export function getPendingMeetingViewRequests(status = 'pending') {
+  return meetingRequest.get('/meetings/access-requests/pending', {
+    params: { status },
+  }) as Promise<{ success: boolean; requests: MeetingViewAccessRequest[] }>
+}
+
+export function reviewMeetingViewRequest(
+  requestId: number,
+  approve: boolean,
+  reviewNote?: string
+) {
+  return meetingRequest.post(`/meetings/access-requests/${requestId}/review`, {
+    action: approve ? 'approve' : 'reject',
+    review_note: reviewNote,
+  }) as Promise<{ success: boolean; request: MeetingViewAccessRequest }>
+}
+
+export function applyMeetingDownloadAccess(fileIds: string[], reason?: string) {
+  return meetingRequest.post('/meetings/download-requests', {
+    file_ids: fileIds,
+    reason,
+  }) as Promise<MeetingAccessApplyResult>
+}
+
+export function getMyMeetingDownloadRequests(status?: string) {
+  return meetingRequest.get('/meetings/download-requests/mine', {
+    params: status ? { status } : undefined,
+  }) as Promise<{ success: boolean; requests: MeetingPermissionRequest[] }>
+}
+
+export function getPendingMeetingDownloadRequests(status = 'pending') {
+  return meetingRequest.get('/meetings/download-requests/pending', {
+    params: { status },
+  }) as Promise<{ success: boolean; requests: MeetingPermissionRequest[] }>
+}
+
+export function reviewMeetingDownloadRequest(
+  requestId: number,
+  approve: boolean,
+  reviewNote?: string
+) {
+  return meetingRequest.post(`/meetings/download-requests/${requestId}/review`, {
+    action: approve ? 'approve' : 'reject',
+    review_note: reviewNote,
+  }) as Promise<{ success: boolean; request: MeetingPermissionRequest }>
+}
+
+export function batchReviewMeetingPermissionRequests(
+  kind: 'view' | 'download',
+  requestIds: number[],
+  approve: boolean,
+  reviewNote?: string
+) {
+  return meetingRequest.post('/meetings/permission-requests/batch-review', {
+    kind,
+    request_ids: requestIds,
+    action: approve ? 'approve' : 'reject',
+    review_note: reviewNote,
+  }) as Promise<{
+    success: boolean
+    reviewed: MeetingPermissionRequest[]
+    errors: Array<{ request_id: number; reason: string }>
+    message: string
+  }>
 }
 
 export function getMeetingDetail(fileId: string) {

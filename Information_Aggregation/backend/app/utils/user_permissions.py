@@ -62,14 +62,10 @@ def can_apply_request_type(user: User, request_type: str) -> tuple[bool, str]:
         return True, ""
 
     if request_type == REQ_VIEW_ALL_MEETINGS:
-        if perms["view_all_meetings"]:
-            return False, "您已拥有查看全部会议的权限"
-        return True, ""
+        return False, "请在会议记录中选择具体会议申请浏览权限"
 
     if request_type == REQ_DOWNLOAD_MEETINGS:
-        if role == SUPER_ADMIN or perms["download_meetings"]:
-            return False, "您已拥有会议导出/下载权限"
-        return True, ""
+        return False, "请在会议记录中选择具体会议申请下载权限"
 
     if request_type == REQ_VIEW_ROOT_MEETINGS:
         if role != ADMIN:

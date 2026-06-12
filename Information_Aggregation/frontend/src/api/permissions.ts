@@ -83,7 +83,7 @@ export function updatePermissionSettings(block_upper_role_tasks: boolean) {
 
 export const PERMISSION_LABELS: Record<string, string> = {
   view_library: '查阅达人库',
-  view_all_meetings: '查阅全部会议',
+  view_all_meetings: '浏览他人会议',
   view_root_meetings: '查阅超管会议',
   view_all_root_meetings: '查阅全部超管会议',
   download_meetings: '会议导出/下载',
@@ -92,8 +92,10 @@ export const PERMISSION_LABELS: Record<string, string> = {
 
 export const REQUEST_TYPE_LABELS: Record<string, string> = {
   view_library: '查阅达人库',
-  view_all_meetings: '查阅全部会议',
+  view_all_meetings: '浏览他人会议',
   download_meetings: '会议导出/下载',
   view_root_meetings: '查阅超管会议（限3天）',
   promote_admin: '升级为管理员',
+  view_meeting: '浏览会议',
+  download_meeting: '下载会议',
 }

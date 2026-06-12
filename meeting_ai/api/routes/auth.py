@@ -105,8 +105,8 @@ def apply_permission(
     if body.request_type == 'admin' and current_user.is_admin():
         raise HTTPException(status_code=400, detail='您已是管理员')
 
-    if body.request_type == 'view_all' and current_user.can_view_all_meetings():
-        raise HTTPException(status_code=400, detail='您已拥有查看全部会议的权限')
+    if body.request_type == 'view_all':
+        raise HTTPException(status_code=400, detail='请在会议记录中选择具体会议申请浏览权限')
 
     if body.request_type == 'view_root_meetings':
         if current_user.role != 'admin':
@@ -115,10 +115,7 @@ def apply_permission(
             raise HTTPException(status_code=400, detail='您已拥有查看超级管理员会议的权限')
 
     if body.request_type == 'download':
-        if current_user.is_root():
-            raise HTTPException(status_code=400, detail='超级管理员默认可下载，无需申请')
-        if current_user.can_download_files():
-            raise HTTPException(status_code=400, detail='您已拥有下载/导出权限')
+        raise HTTPException(status_code=400, detail='请在会议记录中选择具体会议申请下载权限')
 
     pending = db.query(PermissionRequest).filter(
         PermissionRequest.user_id == current_user.id,
@@ -176,13 +173,13 @@ def list_pending_requests(
             )
         )
     elif current_user.is_admin():
-        pending_filters = [
-            and_(User.role == 'user', PermissionRequest.request_type == 'view_all'),
-        ]
+        pending_filters = []
         if current_user.can_approve_download_requests():
             pending_filters.append(
                 and_(User.role != 'root', PermissionRequest.request_type == 'download'),
             )
+        if not pending_filters:
+            return {'success': True, 'requests': []}
         query = (
             db.query(PermissionRequest)
             .join(User, PermissionRequest.user_id == User.id)
@@ -246,8 +243,8 @@ def review_request(
         raise HTTPException(status_code=400, detail='该申请已处理')
 
     if req.request_type == 'view_all':
-        if not current_user.is_admin():
-            raise HTTPException(status_code=403, detail='仅管理员可审批查看权限申请')
+        if not current_user.is_root():
+            raise HTTPException(status_code=403, detail='仅超级管理员可审批查看权限申请')
     elif req.request_type == 'admin':
         if not current_user.is_root():
             raise HTTPException(status_code=403, detail='仅超级管理员可审批管理员申请')
@@ -276,7 +273,6 @@ def review_request(
             applicant.can_view_all = True
         elif req.request_type == 'admin':
             applicant.role = 'admin'
-            applicant.can_view_all = True
         elif req.request_type == 'view_root_meetings':
             applicant.can_view_root_meetings = True
         elif req.request_type == 'download':

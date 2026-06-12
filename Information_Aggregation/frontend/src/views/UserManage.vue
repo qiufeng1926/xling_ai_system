@@ -18,7 +18,7 @@
           <span v-else>-</span>
         </template>
       </el-table-column>
-      <el-table-column label="全部会议" width="90" align="center">
+      <el-table-column label="他人会议" width="90" align="center">
         <template #default="{ row }">
           <el-tag v-if="perm(row, 'view_all_meetings')" type="success" size="small">是</el-tag>
           <span v-else>-</span>
@@ -115,7 +115,7 @@
           </el-form-item>
 
           <el-divider content-position="left">会议 AI 模块</el-divider>
-          <el-form-item v-if="form.role === 'user' || form.role === 'admin'" label="查阅全部会议">
+          <el-form-item v-if="form.role === 'user' || form.role === 'admin'" label="浏览他人会议">
             <el-switch v-model="form.view_all_meetings" />
           </el-form-item>
           <el-form-item v-if="form.role === 'user' || form.role === 'admin'" label="会议导出/下载">

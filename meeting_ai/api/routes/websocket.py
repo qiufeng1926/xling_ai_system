@@ -588,13 +588,24 @@ async def get_meeting(file_id: str, current_user: User = Depends(get_current_use
     logger.info(f"获取会议详情请求", extra={'request_id': request_id, 'input_params': input_params})
     
     try:
-        from db.session import check_meeting_access
+        from db.session import check_meeting_access, get_db_session
+        from api.permissions import can_download_meeting
+        from db.models import Meeting, User
 
         exists, allowed = check_meeting_access(file_id, current_user)
         if not exists:
             return {"success": False, "error": "会议不存在"}
         if not allowed:
             return {"success": False, "error": "无权查看该会议"}
+
+        can_download = False
+        with get_db_session() as session:
+            meeting_row = session.query(Meeting).filter(Meeting.file_id == file_id).first()
+            if meeting_row:
+                owner = None
+                if meeting_row.user_id:
+                    owner = session.query(User).filter(User.id == meeting_row.user_id).first()
+                can_download = can_download_meeting(current_user, meeting_row, owner, session=session)
 
         import json as json_lib
         from db.session import get_meeting_by_file_id
@@ -683,7 +694,8 @@ async def get_meeting(file_id: str, current_user: User = Depends(get_current_use
             "summary_visual": summary_visual,
             "summary_visual_status": summary_visual_status,
             "transcript_file": transcript_file,
-            "summary_file": summary_file
+            "summary_file": summary_file,
+            "can_download": can_download,
         }
         
     except Exception as e:

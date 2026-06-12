@@ -48,7 +48,7 @@ class PermissionService:
 
         viewer_role = normalize_role(viewer.role)
         if viewer_role == ADMIN:
-            types = [REQ_VIEW_LIBRARY, REQ_VIEW_ALL_MEETINGS]
+            types = [REQ_VIEW_LIBRARY]
             if bool(getattr(viewer, "approve_meeting_download", False)):
                 types.append(REQ_DOWNLOAD_MEETINGS)
             return query.filter(ViewAccessRequest.request_type.in_(types))
@@ -192,8 +192,8 @@ class PermissionService:
             return
 
         if req_type == REQ_VIEW_ALL_MEETINGS:
-            if viewer_role not in (SUPER_ADMIN, ADMIN):
-                raise ValueError("无权审核该申请")
+            if viewer_role != SUPER_ADMIN:
+                raise ValueError("仅超级管理员可审批该申请")
             return
 
         if req_type == REQ_DOWNLOAD_MEETINGS:
@@ -261,7 +261,6 @@ class PermissionService:
             elif req.request_type == REQ_PROMOTE_ADMIN:
                 applicant.role = ADMIN
                 applicant.view_library = 1
-                applicant.view_all_meetings = 1
 
         db.commit()
         db.refresh(req)

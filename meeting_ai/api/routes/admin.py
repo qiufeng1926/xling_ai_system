@@ -80,10 +80,7 @@ def update_user(
         user.nickname = body.nickname.strip()
     if body.role is not None:
         user.role = body.role
-        if body.role == 'admin':
-            user.can_view_all = True
-        elif body.role == 'user' and body.can_view_all is None:
-            user.can_view_all = False
+        if body.role == 'user' and body.can_view_all is None:
             user.can_view_root_meetings = False
             user.can_approve_download = False
     if body.can_view_all is not None:
@@ -151,6 +148,21 @@ def delete_user(
 
     db.query(Meeting).filter(Meeting.user_id == user.id).update(
         {Meeting.user_id: None}, synchronize_session=False
+    )
+
+    from db.models import MeetingViewGrant, MeetingViewRequest, MeetingDownloadGrant, MeetingDownloadRequest
+
+    db.query(MeetingViewGrant).filter(MeetingViewGrant.user_id == user.id).delete(
+        synchronize_session=False
+    )
+    db.query(MeetingViewRequest).filter(MeetingViewRequest.user_id == user.id).delete(
+        synchronize_session=False
+    )
+    db.query(MeetingDownloadGrant).filter(MeetingDownloadGrant.user_id == user.id).delete(
+        synchronize_session=False
+    )
+    db.query(MeetingDownloadRequest).filter(MeetingDownloadRequest.user_id == user.id).delete(
+        synchronize_session=False
     )
 
     db.delete(user)
