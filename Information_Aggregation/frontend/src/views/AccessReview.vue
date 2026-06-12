@@ -149,7 +149,7 @@
       </el-table>
     </el-card>
 
-    <el-card v-if="isSuperAdminUser" shadow="never" class="section">
+    <el-card v-if="canReviewMeetingViewPerm" shadow="never" class="section">
       <template #header>
         <div class="header-row">
           <span>会议浏览申请审批</span>
@@ -336,7 +336,7 @@ import {
   type MeetingPermissionRequest,
 } from '@/api/meetings'
 import { useUserStore } from '@/stores/user'
-import { canReviewAccess, canReviewMeetingDownload, isSuperAdmin } from '@/utils/permission'
+import { canReviewAccess, canReviewMeetingDownload, canReviewMeetingView, isSuperAdmin } from '@/utils/permission'
 
 const NOTIFY_KEY = 'xling_perm_result_notified'
 
@@ -363,6 +363,9 @@ const canReview = computed(() => canReviewAccess(userStore.userInfo?.role))
 const isSuperAdminUser = computed(() => isSuperAdmin(userStore.userInfo?.role))
 const canReviewMeetingDownloadPerm = computed(() =>
   canReviewMeetingDownload(userStore.userInfo?.role, userStore.userInfo?.permissions)
+)
+const canReviewMeetingViewPerm = computed(() =>
+  canReviewMeetingView(userStore.userInfo?.role, userStore.userInfo?.permissions)
 )
 
 const meetingViewReviewLoading = ref(false)
@@ -444,7 +447,11 @@ async function loadStats() {
     stats.value.my_pending += meetingStats.my_pending || 0
     meetingViewPendingCount.value = meetingStats.view?.pending_for_review ?? 0
     meetingDownloadPendingCount.value = meetingStats.download?.pending_for_review ?? 0
-    if (canReview.value) {
+    if (
+      canReview.value ||
+      canReviewMeetingViewPerm.value ||
+      canReviewMeetingDownloadPerm.value
+    ) {
       stats.value.pending_for_review += meetingStats.pending_for_review || 0
     }
   } catch {
@@ -514,7 +521,7 @@ async function loadMyRequests() {
 }
 
 async function loadMeetingViewReviewData() {
-  if (!isSuperAdminUser.value) return
+  if (!canReviewMeetingViewPerm.value) return
   meetingViewReviewLoading.value = true
   try {
     const res = await getPendingMeetingViewRequests(meetingViewStatusFilter.value)
@@ -555,6 +562,7 @@ async function loadReviewData() {
 }
 
 async function refreshAll(notifyReviewer = false) {
+  await userStore.fetchUserInfo()
   const data = await loadStats()
   await loadMyRequests()
   if (canReview.value) {
@@ -563,7 +571,7 @@ async function refreshAll(notifyReviewer = false) {
       notifyPendingForReviewer(data.pending_for_review)
     }
   }
-  if (isSuperAdminUser.value) {
+  if (canReviewMeetingViewPerm.value) {
     await loadMeetingViewReviewData()
   }
   if (canReviewMeetingDownloadPerm.value) {

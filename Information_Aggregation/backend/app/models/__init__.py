@@ -41,6 +41,7 @@ class User(Base):
     view_all_root_meetings: Mapped[int] = mapped_column(default=0)
     download_meetings: Mapped[int] = mapped_column(default=0)
     approve_meeting_download: Mapped[int] = mapped_column(default=0)
+    approve_meeting_view: Mapped[int] = mapped_column(default=0)
     status: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

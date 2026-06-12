@@ -47,8 +47,8 @@ def get_db():
         session.close()
 
 
-def _user_from_payload(db: Session, payload: dict) -> User:
-    user = resolve_user_from_payload(db, payload)
+def _user_from_payload(db: Session, payload: dict, bearer_token: str | None = None) -> User:
+    user = resolve_user_from_payload(db, payload, bearer_token=bearer_token)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='用户不存在')
     return user
@@ -60,8 +60,9 @@ def get_current_user(
 ) -> User:
     if credentials is None or not credentials.credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='请先登录')
-    payload = decode_access_token(credentials.credentials)
-    return _user_from_payload(db, payload)
+    token = credentials.credentials
+    payload = decode_access_token(token)
+    return _user_from_payload(db, payload, bearer_token=token)
 
 
 def get_current_user_optional(
@@ -74,7 +75,7 @@ def get_current_user_optional(
         payload = decode_access_token(credentials.credentials)
     except HTTPException:
         return None
-    return resolve_user_from_payload(db, payload)
+    return resolve_user_from_payload(db, payload, bearer_token=credentials.credentials)
 
 
 def get_user_from_token(token: str, db: Session) -> User | None:
@@ -84,4 +85,4 @@ def get_user_from_token(token: str, db: Session) -> User | None:
         payload = decode_access_token(token)
     except HTTPException:
         return None
-    return resolve_user_from_payload(db, payload)
+    return resolve_user_from_payload(db, payload, bearer_token=token)

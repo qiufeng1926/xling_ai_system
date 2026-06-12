@@ -92,6 +92,7 @@ export const PERMISSION_LABELS: Record<string, string> = {
   view_all_root_meetings: '查阅全部超管会议',
   download_meetings: '会议导出/下载',
   approve_meeting_download: '审批会议下载',
+  approve_meeting_view: '审批会议浏览',
 }
 
 export const REQUEST_TYPE_LABELS: Record<string, string> = {

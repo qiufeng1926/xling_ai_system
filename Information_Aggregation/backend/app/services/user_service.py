@@ -91,6 +91,7 @@ class UserService:
             view_all_root_meetings=0,
             download_meetings=0,
             approve_meeting_download=0,
+            approve_meeting_view=0,
         )
         db.add(user)
         db.commit()
@@ -121,6 +122,7 @@ class UserService:
             view_all_root_meetings=0,
             download_meetings=0,
             approve_meeting_download=0,
+            approve_meeting_view=0,
         )
         db.add(user)
         db.commit()
@@ -168,6 +170,7 @@ class UserService:
             UserService._apply_bool_field(user, "view_root_meetings", data.view_root_meetings)
             UserService._apply_bool_field(user, "download_meetings", data.download_meetings)
             UserService._apply_bool_field(user, "approve_meeting_download", data.approve_meeting_download)
+            UserService._apply_bool_field(user, "approve_meeting_view", data.approve_meeting_view)
 
         if target_is_super and data.view_all_root_meetings is not None:
             user.view_all_root_meetings = 1 if data.view_all_root_meetings else 0
@@ -282,6 +285,7 @@ class UserService:
             "view_all_root_meetings": bool(getattr(user, "view_all_root_meetings", False)),
             "download_meetings": bool(getattr(user, "download_meetings", False)),
             "approve_meeting_download": bool(getattr(user, "approve_meeting_download", False)),
+            "approve_meeting_view": bool(getattr(user, "approve_meeting_view", False)),
         }
 
     @staticmethod

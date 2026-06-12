@@ -39,6 +39,15 @@
           <span v-else>—</span>
         </template>
       </el-table-column>
+      <el-table-column v-if="hasAdminInList" label="审批浏览" width="90" align="center">
+        <template #default="{ row }">
+          <el-tag v-if="row.role === 'admin' && perm(row, 'approve_meeting_view')" type="success" size="small">
+            是
+          </el-tag>
+          <span v-else-if="row.role === 'admin'">-</span>
+          <span v-else>—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="80">
         <template #default="{ row }">
           <el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">
@@ -129,6 +138,10 @@
             <el-switch v-model="form.approve_meeting_download" />
             <span class="field-hint">可审批普通用户的会议导出申请</span>
           </el-form-item>
+          <el-form-item v-if="form.role === 'admin'" label="审批会议浏览">
+            <el-switch v-model="form.approve_meeting_view" />
+            <span class="field-hint">可审批普通用户的单条会议浏览申请</span>
+          </el-form-item>
         </template>
 
         <template v-if="editing && editing.role === 'super_admin'">
@@ -178,6 +191,7 @@ type PermKey =
   | 'view_root_meetings'
   | 'download_meetings'
   | 'approve_meeting_download'
+  | 'approve_meeting_view'
 
 function perm(row: ManagedUser, key: PermKey) {
   return row.permissions?.[key] ?? row[key]
@@ -195,6 +209,7 @@ const form = reactive({
   view_all_root_meetings: false,
   download_meetings: false,
   approve_meeting_download: false,
+  approve_meeting_view: false,
 })
 
 function formatTime(v: string) {
@@ -225,6 +240,7 @@ function resetForm() {
   form.view_all_root_meetings = false
   form.download_meetings = false
   form.approve_meeting_download = false
+  form.approve_meeting_view = false
 }
 
 async function loadData() {
@@ -261,6 +277,7 @@ function openEdit(row: ManagedUser) {
   form.view_all_root_meetings = row.view_all_root_meetings
   form.download_meetings = row.download_meetings
   form.approve_meeting_download = row.approve_meeting_download
+  form.approve_meeting_view = row.approve_meeting_view
   showDialog.value = true
 }
 
@@ -299,6 +316,7 @@ async function handleSave() {
         view_all_root_meetings: form.view_all_root_meetings,
         download_meetings: form.download_meetings,
         approve_meeting_download: form.approve_meeting_download,
+        approve_meeting_view: form.approve_meeting_view,
         password: form.password || undefined,
       })
       ElMessage.success('用户已更新')

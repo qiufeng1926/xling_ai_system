@@ -19,6 +19,7 @@ class UserOut(BaseModel):
     view_all_root_meetings: bool = False
     download_meetings: bool = False
     approve_meeting_download: bool = False
+    approve_meeting_view: bool = False
     permissions: dict[str, bool] = Field(default_factory=dict)
     created_at: datetime
 
@@ -40,6 +41,7 @@ class UserUpdate(BaseModel):
     view_all_root_meetings: bool | None = None
     download_meetings: bool | None = None
     approve_meeting_download: bool | None = None
+    approve_meeting_view: bool | None = None
     password: str | None = None
 
     @field_validator("password")

@@ -84,6 +84,9 @@ jwt_secret_default = "meeting-ai-jwt-secret-change-in-production"
 jwt_secret = _env("JWT_SECRET", jwt_secret_default) or jwt_secret_default
 jwt_expire_hours = int(_env("JWT_EXPIRE_HOURS", "72") or "72")
 
+# xling 门户 API（用于实时拉取用户权限，避免 JWT 内 perms 过期）
+portal_api_url = _env("PORTAL_API_URL", "http://127.0.0.1:8000") or ""
+
 # CORS（逗号分隔；生产环境勿使用 *）
 cors_origins = _env("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000") or ""
 

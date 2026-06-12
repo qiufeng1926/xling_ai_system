@@ -22,6 +22,7 @@ class User(Base):
     can_view_all_roots = Column(Boolean, nullable=False, default=False, comment='超级管理员是否可查看其他超级管理员的会议')
     can_download = Column(Boolean, nullable=False, default=False, comment='是否可下载/导出会议文件')
     can_approve_download = Column(Boolean, nullable=False, default=False, comment='管理员是否可审批下载权限申请')
+    can_approve_view = Column(Boolean, nullable=False, default=False, comment='管理员是否可审批浏览权限申请')
     created_at = Column(DateTime, nullable=False, default=datetime.now, comment='创建时间')
     updated_at = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now, comment='更新时间')
 
@@ -39,6 +40,7 @@ class User(Base):
             'can_view_all_roots': self.can_view_all_roots,
             'can_download': self.can_download or self.role == 'root',
             'can_approve_download': self.can_approve_download or self.role == 'root',
+            'can_approve_view': self.can_approve_view or self.role == 'root',
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
         if include_sensitive:
@@ -62,7 +64,10 @@ class User(Base):
         return self.is_root() or self.can_download
 
     def can_approve_download_requests(self) -> bool:
-        return self.is_root() or (self.role == 'admin' and self.can_approve_download)
+        return self.is_root() or bool(self.can_approve_download)
+
+    def can_approve_view_requests(self) -> bool:
+        return self.is_root() or bool(self.can_approve_view)
 
 
 class MeetingDownloadLog(Base):
@@ -541,6 +546,7 @@ def migrate_schema(engine):
         for col, col_def in (
             ('can_download', "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否可下载/导出会议文件'"),
             ('can_approve_download', "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '管理员是否可审批下载权限申请'"),
+            ('can_approve_view', "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '管理员是否可审批浏览权限申请'"),
         ):
             result = conn.execute(text(f"""
                 SELECT COUNT(*) FROM information_schema.COLUMNS

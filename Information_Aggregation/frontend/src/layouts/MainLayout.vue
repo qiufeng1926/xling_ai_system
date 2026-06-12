@@ -142,6 +142,8 @@ import {
   ROLE_LABELS,
   canManageUsers,
   canReviewAccess,
+  canReviewMeetingDownload,
+  canReviewMeetingView,
   canUseMatch,
   isUser,
   normalizeRole,
@@ -228,13 +230,18 @@ async function refreshAccessRequestStats() {
     return
   }
   try {
+    await userStore.fetchUserInfo()
     const res = await getAccessRequestStats()
     pendingAccessReviewCount.value = res.data.pending_for_review || 0
     myPendingAccessCount.value = res.data.my_pending || 0
     try {
       const meetingStats = await getMeetingViewRequestStats()
       myPendingAccessCount.value += meetingStats.my_pending || 0
-      if (canReviewAccess(userStore.userInfo?.role)) {
+      if (
+        canReviewAccess(userStore.userInfo?.role) ||
+        canReviewMeetingView(userStore.userInfo?.role, userStore.userInfo?.permissions) ||
+        canReviewMeetingDownload(userStore.userInfo?.role, userStore.userInfo?.permissions)
+      ) {
         pendingAccessReviewCount.value += meetingStats.pending_for_review || 0
       }
     } catch {

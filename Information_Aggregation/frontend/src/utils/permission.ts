@@ -43,7 +43,12 @@ export function isAdminOrAbove(role?: string | null) {
 
 export function canReviewMeetingDownload(role?: string | null, permissions?: Record<string, boolean>) {
   if (isSuperAdmin(role)) return true
-  return isAdmin(role) && !!permissions?.approve_meeting_download
+  return !!permissions?.approve_meeting_download
+}
+
+export function canReviewMeetingView(role?: string | null, permissions?: Record<string, boolean>) {
+  if (isSuperAdmin(role)) return true
+  return !!permissions?.approve_meeting_view
 }
 
 export function canManageUsers(role?: string | null) {

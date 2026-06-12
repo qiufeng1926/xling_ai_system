@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import httpx
 from sqlalchemy.orm import Session
 
+from config.config import portal_api_url
 from db.models import User
 from utils.password import hash_password
 
@@ -22,6 +24,7 @@ PERM_TO_MEETING_FIELD = {
     "view_all_root_meetings": "can_view_all_roots",
     "download_meetings": "can_download",
     "approve_meeting_download": "can_approve_download",
+    "approve_meeting_view": "can_approve_view",
 }
 
 
@@ -57,6 +60,7 @@ def _portal_permissions(payload: dict) -> dict[str, bool]:
             "view_all_root_meetings": False,
             "download_meetings": True,
             "approve_meeting_download": True,
+            "approve_meeting_view": True,
         }
     if portal_role == "admin":
         return {
@@ -65,6 +69,7 @@ def _portal_permissions(payload: dict) -> dict[str, bool]:
             "view_all_root_meetings": False,
             "download_meetings": False,
             "approve_meeting_download": False,
+            "approve_meeting_view": False,
         }
     return {
         "view_all_meetings": False,
@@ -72,7 +77,44 @@ def _portal_permissions(payload: dict) -> dict[str, bool]:
         "view_all_root_meetings": False,
         "download_meetings": False,
         "approve_meeting_download": False,
+        "approve_meeting_view": False,
     }
+
+
+def fetch_live_portal_profile(bearer_token: str) -> dict | None:
+    """从门户 /auth/me 拉取最新角色与权限（超级管理员下发后立即生效）"""
+    base = (portal_api_url or "").strip().rstrip("/")
+    if not base or not bearer_token:
+        return None
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            resp = client.get(
+                f"{base}/api/v1/auth/me",
+                headers={"Authorization": f"Bearer {bearer_token}"},
+            )
+        if resp.status_code != 200:
+            return None
+        body = resp.json()
+        data = body.get("data")
+        if not isinstance(data, dict):
+            return None
+        perms = data.get("permissions")
+        if not isinstance(perms, dict):
+            return None
+        return {
+            "role": data.get("role") or "user",
+            "nickname": data.get("nickname"),
+            "permissions": {k: bool(v) for k, v in perms.items()},
+        }
+    except Exception:
+        return None
+
+
+def fetch_live_portal_permissions(bearer_token: str) -> dict[str, bool] | None:
+    profile = fetch_live_portal_profile(bearer_token)
+    if profile is None:
+        return None
+    return profile.get("permissions")
 
 
 def _apply_portal_permissions(user: User, perms: dict[str, bool]) -> None:
@@ -89,7 +131,12 @@ def _sync_portal_user_fields(user: User, *, nickname: str, meeting_role: str, pe
     _apply_portal_permissions(user, perms)
 
 
-def get_or_create_user_from_portal_token(db: Session, payload: dict) -> User | None:
+def get_or_create_user_from_portal_token(
+    db: Session,
+    payload: dict,
+    *,
+    bearer_token: str | None = None,
+) -> User | None:
     username = _normalize_portal_username(payload)
     if not username:
         return None
@@ -98,6 +145,12 @@ def get_or_create_user_from_portal_token(db: Session, payload: dict) -> User | N
     meeting_role = ROLE_TO_MEETING.get(portal_role, "user")
     nickname = (payload.get("nickname") or username).strip() or username
     perms = _portal_permissions(payload)
+    live_profile = fetch_live_portal_profile(bearer_token) if bearer_token else None
+    if live_profile is not None:
+        perms = live_profile["permissions"]
+        portal_role = live_profile.get("role") or portal_role
+        meeting_role = ROLE_TO_MEETING.get(portal_role, meeting_role)
+        nickname = (live_profile.get("nickname") or nickname).strip() or username
 
     user = db.query(User).filter(User.username == username).first()
     if user:
@@ -116,6 +169,7 @@ def get_or_create_user_from_portal_token(db: Session, payload: dict) -> User | N
         can_view_all_roots=bool(perms.get("view_all_root_meetings")),
         can_download=bool(perms.get("download_meetings")),
         can_approve_download=bool(perms.get("approve_meeting_download")),
+        can_approve_view=bool(perms.get("approve_meeting_view")),
     )
     db.add(user)
     db.commit()
@@ -123,9 +177,14 @@ def get_or_create_user_from_portal_token(db: Session, payload: dict) -> User | N
     return user
 
 
-def resolve_user_from_payload(db: Session, payload: dict) -> User | None:
+def resolve_user_from_payload(
+    db: Session,
+    payload: dict,
+    *,
+    bearer_token: str | None = None,
+) -> User | None:
     if is_portal_token(payload):
-        return get_or_create_user_from_portal_token(db, payload)
+        return get_or_create_user_from_portal_token(db, payload, bearer_token=bearer_token)
 
     sub = payload.get("sub")
     if sub is not None and str(sub).isdigit():

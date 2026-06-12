@@ -18,6 +18,7 @@ def effective_permissions(user: User) -> dict[str, bool]:
             "view_all_root_meetings": bool(getattr(user, "view_all_root_meetings", False)),
             "download_meetings": True,
             "approve_meeting_download": True,
+            "approve_meeting_view": True,
         }
 
     if role == ADMIN:
@@ -28,6 +29,7 @@ def effective_permissions(user: User) -> dict[str, bool]:
             "view_all_root_meetings": False,
             "download_meetings": bool(getattr(user, "download_meetings", False)),
             "approve_meeting_download": bool(getattr(user, "approve_meeting_download", False)),
+            "approve_meeting_view": bool(getattr(user, "approve_meeting_view", False)),
         }
 
     return {
@@ -37,6 +39,7 @@ def effective_permissions(user: User) -> dict[str, bool]:
         "view_all_root_meetings": False,
         "download_meetings": bool(getattr(user, "download_meetings", False)),
         "approve_meeting_download": False,
+        "approve_meeting_view": False,
     }
 
 

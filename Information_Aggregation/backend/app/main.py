@@ -50,6 +50,7 @@ def migrate_rbac(db: Session) -> None:
                 "view_all_root_meetings",
                 "download_meetings",
                 "approve_meeting_download",
+                "approve_meeting_view",
             ):
                 if col not in cols:
                     db.execute(text(f"ALTER TABLE users ADD COLUMN {col} TINYINT DEFAULT 0"))
@@ -99,7 +100,7 @@ def migrate_rbac(db: Session) -> None:
         db.execute(
             text(
                 "UPDATE users SET view_library=1, view_all_meetings=1, download_meetings=1, "
-                "approve_meeting_download=1 WHERE role='super_admin'"
+                "approve_meeting_download=1, approve_meeting_view=1 WHERE role='super_admin'"
             )
         )
         db.execute(

@@ -135,7 +135,14 @@ def can_download_meeting(
 
 
 def can_approve_download_requests(user: User) -> bool:
-    """是否可审批「下载权限」申请（超级管理员默认可；管理员需被授权）"""
+    """是否可审批「下载权限」申请（超级管理员默认可；被下发权限即可）"""
     if user.is_root():
         return True
-    return user.role == 'admin' and bool(getattr(user, 'can_approve_download', False))
+    return bool(getattr(user, 'can_approve_download', False))
+
+
+def can_approve_view_requests(user: User) -> bool:
+    """是否可审批「浏览权限」申请（超级管理员默认可；被下发权限即可）"""
+    if user.is_root():
+        return True
+    return bool(getattr(user, 'can_approve_view', False))

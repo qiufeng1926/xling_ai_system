@@ -10,6 +10,7 @@ from api.auth_utils import get_current_user, get_db
 from api.permissions import (
     can_access_meeting,
     can_approve_download_requests,
+    can_approve_view_requests,
     can_download_files,
     can_download_meeting,
 )
@@ -46,6 +47,12 @@ class MeetingPermissionBatchReviewRequest(BaseModel):
 def _require_root(current_user: User = Depends(get_current_user)) -> User:
     if not current_user.is_root():
         raise HTTPException(status_code=403, detail='仅超级管理员可执行此操作')
+    return current_user
+
+
+def _require_view_reviewer(current_user: User = Depends(get_current_user)) -> User:
+    if not can_approve_view_requests(current_user):
+        raise HTTPException(status_code=403, detail='无权审批会议浏览申请')
     return current_user
 
 
@@ -453,7 +460,7 @@ def meeting_permission_request_stats(
     )
     view_pending_for_review = 0
     download_pending_for_review = 0
-    if current_user.is_root():
+    if can_approve_view_requests(current_user):
         view_q = db.query(MeetingViewRequest).filter(MeetingViewRequest.status == 'pending')
         view_pending_for_review = _filter_view_query(db, current_user, view_q).count()
     if can_approve_download_requests(current_user):
@@ -479,7 +486,7 @@ def meeting_permission_request_stats(
 
 @router.get('/meetings/access-requests/pending')
 def list_pending_meeting_view_requests(
-    current_user: User = Depends(_require_root),
+    current_user: User = Depends(_require_view_reviewer),
     db: Session = Depends(get_db),
     status: str = Query('pending'),
     limit: int = Query(100, ge=1, le=200),
@@ -511,7 +518,7 @@ def list_pending_meeting_download_requests(
 def review_meeting_view_request(
     request_id: int,
     body: MeetingAccessReviewRequest,
-    current_user: User = Depends(_require_root),
+    current_user: User = Depends(_require_view_reviewer),
     db: Session = Depends(get_db),
 ):
     req = _review_view_request(
@@ -548,8 +555,8 @@ def batch_review_meeting_permission_requests(
     db: Session = Depends(get_db),
 ):
     if body.kind == 'view':
-        if not current_user.is_root():
-            raise HTTPException(status_code=403, detail='仅超级管理员可审批浏览申请')
+        if not can_approve_view_requests(current_user):
+            raise HTTPException(status_code=403, detail='无权审批会议浏览申请')
     elif not can_approve_download_requests(current_user):
         raise HTTPException(status_code=403, detail='无权审批会议下载申请')
 

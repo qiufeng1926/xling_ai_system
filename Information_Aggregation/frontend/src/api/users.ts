@@ -12,6 +12,7 @@ export interface ManagedUser {
   view_all_root_meetings: boolean
   download_meetings: boolean
   approve_meeting_download: boolean
+  approve_meeting_view: boolean
   permissions?: Record<string, boolean>
   created_at: string
 }
@@ -41,6 +42,7 @@ export function updateUser(
     view_all_root_meetings: boolean
     download_meetings: boolean
     approve_meeting_download: boolean
+    approve_meeting_view: boolean
     password: string
   }>
 ) {

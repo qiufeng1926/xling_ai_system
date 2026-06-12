@@ -47,6 +47,7 @@ class UpdateUserRequest(BaseModel):
     can_view_root_meetings: bool | None = None
     can_download: bool | None = None
     can_approve_download: bool | None = None
+    can_approve_view: bool | None = None
 
 
 @router.get('/admin/users')
@@ -83,6 +84,7 @@ def update_user(
         if body.role == 'user' and body.can_view_all is None:
             user.can_view_root_meetings = False
             user.can_approve_download = False
+            user.can_approve_view = False
     if body.can_view_all is not None:
         user.can_view_all = body.can_view_all
     if body.can_view_root_meetings is not None:
@@ -95,6 +97,10 @@ def update_user(
         if user.role != 'admin':
             raise HTTPException(status_code=400, detail='仅管理员可设置审批下载权限')
         user.can_approve_download = body.can_approve_download
+    if body.can_approve_view is not None:
+        if user.role != 'admin':
+            raise HTTPException(status_code=400, detail='仅管理员可设置审批浏览权限')
+        user.can_approve_view = body.can_approve_view
 
     user.updated_at = datetime.now()
     db.commit()
