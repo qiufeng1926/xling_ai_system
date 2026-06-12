@@ -141,6 +141,11 @@
             <el-button link type="danger" @click="handleReview(row, false)">拒绝</el-button>
           </template>
         </el-table-column>
+        <el-table-column v-if="isSuperAdminUser" label="管理" width="90" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="danger" @click="handleDeletePortalRequest(row)">删除</el-button>
+          </template>
+        </el-table-column>
       </el-table>
     </el-card>
 
@@ -152,6 +157,11 @@
             <el-tag v-if="meetingViewPendingCount > 0" type="danger" size="small">
               {{ meetingViewPendingCount }} 条待处理
             </el-tag>
+            <el-radio-group v-model="meetingViewStatusFilter" size="small" @change="loadMeetingViewReviewData">
+              <el-radio-button label="pending">待审核</el-radio-button>
+              <el-radio-button label="approved">已通过</el-radio-button>
+              <el-radio-button label="rejected">已拒绝</el-radio-button>
+            </el-radio-group>
             <el-button
               size="small"
               type="success"
@@ -193,10 +203,24 @@
         <el-table-column prop="created_at" label="申请时间" width="170">
           <template #default="{ row }">{{ formatTime(row.created_at || '') }}</template>
         </el-table-column>
+        <el-table-column label="审批人" width="120">
+          <template #default="{ row }">
+            {{ row.reviewer_nickname || row.reviewer_username || '—' }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="reviewed_at" label="审批时间" width="170">
+          <template #default="{ row }">{{ row.reviewed_at ? formatTime(row.reviewed_at) : '—' }}</template>
+        </el-table-column>
+        <el-table-column prop="review_note" label="审批备注" min-width="140" show-overflow-tooltip />
         <el-table-column v-if="meetingViewStatusFilter === 'pending'" label="操作" width="180" fixed="right">
           <template #default="{ row }">
             <el-button link type="success" @click="handleMeetingReview('view', row, true)">通过</el-button>
             <el-button link type="danger" @click="handleMeetingReview('view', row, false)">拒绝</el-button>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="isSuperAdminUser" label="管理" width="90" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="danger" @click="handleDeleteMeetingRequest('view', row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -210,6 +234,11 @@
             <el-tag v-if="meetingDownloadPendingCount > 0" type="danger" size="small">
               {{ meetingDownloadPendingCount }} 条待处理
             </el-tag>
+            <el-radio-group v-model="meetingDownloadStatusFilter" size="small" @change="loadMeetingDownloadReviewData">
+              <el-radio-button label="pending">待审核</el-radio-button>
+              <el-radio-button label="approved">已通过</el-radio-button>
+              <el-radio-button label="rejected">已拒绝</el-radio-button>
+            </el-radio-group>
             <el-button
               size="small"
               type="success"
@@ -251,10 +280,24 @@
         <el-table-column prop="created_at" label="申请时间" width="170">
           <template #default="{ row }">{{ formatTime(row.created_at || '') }}</template>
         </el-table-column>
+        <el-table-column label="审批人" width="120">
+          <template #default="{ row }">
+            {{ row.reviewer_nickname || row.reviewer_username || '—' }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="reviewed_at" label="审批时间" width="170">
+          <template #default="{ row }">{{ row.reviewed_at ? formatTime(row.reviewed_at) : '—' }}</template>
+        </el-table-column>
+        <el-table-column prop="review_note" label="审批备注" min-width="140" show-overflow-tooltip />
         <el-table-column v-if="meetingDownloadStatusFilter === 'pending'" label="操作" width="180" fixed="right">
           <template #default="{ row }">
             <el-button link type="success" @click="handleMeetingReview('download', row, true)">通过</el-button>
             <el-button link type="danger" @click="handleMeetingReview('download', row, false)">拒绝</el-button>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="isSuperAdminUser" label="管理" width="90" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="danger" @click="handleDeleteMeetingRequest('download', row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -270,6 +313,7 @@ import {
   getAccessRequests,
   getApplicableRequestTypes,
   getPermissionSettings,
+  deleteAccessRequest,
   REQUEST_TYPE_LABELS,
   reviewAccessRequest,
   submitAccessRequest,
@@ -280,6 +324,8 @@ import {
 } from '@/api/permissions'
 import {
   batchReviewMeetingPermissionRequests,
+  deleteMeetingDownloadRequestRecord,
+  deleteMeetingViewRequestRecord,
   getMeetingViewRequestStats,
   getMyMeetingDownloadRequests,
   getMyMeetingViewRequests,
@@ -650,6 +696,49 @@ async function handleBatchMeetingReview(kind: 'view' | 'download', approve: bool
   )
   const errTip = res.errors?.length ? `，${res.errors.length} 条失败` : ''
   ElMessage.success(`${res.message || '批量审批完成'}${errTip}`)
+  await refreshAll(false)
+}
+
+async function handleDeletePortalRequest(row: AccessRequest) {
+  if (row.request_type === 'view_meeting' || row.request_type === 'download_meeting') {
+    await handleDeleteMeetingRequest(
+      row.request_type === 'view_meeting' ? 'view' : 'download',
+      { id: row.id, meeting_name: row.request_type_label, username: row.username, nickname: row.nickname, user_id: row.user_id, file_id: '' }
+    )
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定永久删除该条「${row.request_type_label || REQUEST_TYPE_LABELS[row.request_type] || row.request_type}」申请记录？此操作不可恢复。`,
+      '删除申请记录',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  await deleteAccessRequest(row.id)
+  ElMessage.success('申请记录已删除')
+  await refreshAll(false)
+}
+
+async function handleDeleteMeetingRequest(kind: 'view' | 'download', row: MeetingPermissionRequest) {
+  const applicant = row.username || row.nickname || `用户#${row.user_id}`
+  const meetingName = row.meeting_name || row.file_id
+  try {
+    await ElMessageBox.confirm(
+      `确定永久删除用户「${applicant}」${kind === 'view' ? '浏览' : '下载'}会议「${meetingName}」的申请记录？此操作不可恢复。`,
+      '删除申请记录',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  if (kind === 'view') {
+    await deleteMeetingViewRequestRecord(row.id)
+  } else {
+    await deleteMeetingDownloadRequestRecord(row.id)
+  }
+  ElMessage.success('申请记录已删除')
   await refreshAll(false)
 }
 

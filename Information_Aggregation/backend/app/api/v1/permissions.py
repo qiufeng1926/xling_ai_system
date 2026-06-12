@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query, status
 
-from app.api.deps import AdminUser, CurrentUser, DbSession
+from app.api.deps import AdminUser, CurrentUser, DbSession, SuperAdminUser
 from app.schemas import PageResult, ResponseBase
 from app.schemas.user import (
     AccessReviewAction,
@@ -30,8 +30,8 @@ def submit_access_request(db: DbSession, user: CurrentUser, data: ViewAccessRequ
             review_note=req.review_note,
             created_at=req.created_at,
             reviewed_at=req.reviewed_at,
-            username=user.username,
-            nickname=user.nickname,
+            username=req.applicant_username or user.username,
+            nickname=req.applicant_nickname or user.nickname,
         ),
         message="申请已提交",
     )
@@ -102,10 +102,10 @@ def review_access_request(
             review_note=req.review_note,
             created_at=req.created_at,
             reviewed_at=req.reviewed_at,
-            username=applicant.username if applicant else None,
-            nickname=applicant.nickname if applicant else None,
-            reviewer_username=reviewer.username if reviewer else None,
-            reviewer_nickname=reviewer.nickname if reviewer else None,
+            username=req.applicant_username or (applicant.username if applicant else None),
+            nickname=req.applicant_nickname or (applicant.nickname if applicant else None),
+            reviewer_username=req.reviewer_username or (reviewer.username if reviewer else None),
+            reviewer_nickname=req.reviewer_nickname or (reviewer.nickname if reviewer else None),
         ),
         message="已通过申请" if data.approve else "已拒绝申请",
     )
@@ -136,3 +136,12 @@ def update_permission_settings(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return ResponseBase(data=SystemSettingOut(**settings), message="设置已更新")
+
+
+@router.delete("/access-requests/{request_id}", response_model=ResponseBase[None])
+def delete_access_request(db: DbSession, operator: SuperAdminUser, request_id: int):
+    try:
+        PermissionService.delete_access_request(db, request_id, operator)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return ResponseBase(message="申请记录已删除")

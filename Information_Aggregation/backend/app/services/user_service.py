@@ -186,17 +186,44 @@ class UserService:
         setattr(user, field, 1 if value else 0)
 
     @staticmethod
+    def _detach_permission_request_users(db: Session, user: User) -> None:
+        from app.models.permission import ViewAccessRequest
+
+        db.query(ViewAccessRequest).filter(
+            ViewAccessRequest.user_id == user.id,
+            ViewAccessRequest.applicant_username.is_(None),
+        ).update(
+            {
+                ViewAccessRequest.applicant_username: user.username,
+                ViewAccessRequest.applicant_nickname: user.nickname,
+            },
+            synchronize_session=False,
+        )
+        db.query(ViewAccessRequest).filter(
+            ViewAccessRequest.reviewer_id == user.id,
+            ViewAccessRequest.reviewer_username.is_(None),
+        ).update(
+            {
+                ViewAccessRequest.reviewer_username: user.username,
+                ViewAccessRequest.reviewer_nickname: user.nickname,
+            },
+            synchronize_session=False,
+        )
+        db.query(ViewAccessRequest).filter(ViewAccessRequest.user_id == user.id).update(
+            {ViewAccessRequest.user_id: None}, synchronize_session=False
+        )
+        db.query(ViewAccessRequest).filter(ViewAccessRequest.reviewer_id == user.id).update(
+            {ViewAccessRequest.reviewer_id: None}, synchronize_session=False
+        )
+
+    @staticmethod
     def _cleanup_user_relations(db: Session, user_id: int) -> None:
         from app.models.collection import CollectedInfluencer, CollectionTask
         from app.models.match import MatchRequest, MatchResult
-        from app.models.permission import ViewAccessRequest
 
-        db.query(ViewAccessRequest).filter(ViewAccessRequest.reviewer_id == user_id).update(
-            {ViewAccessRequest.reviewer_id: None}, synchronize_session=False
-        )
-        db.query(ViewAccessRequest).filter(ViewAccessRequest.user_id == user_id).delete(
-            synchronize_session=False
-        )
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            UserService._detach_permission_request_users(db, user)
 
         task_ids = [
             row[0] for row in db.query(CollectionTask.id).filter(CollectionTask.user_id == user_id).all()

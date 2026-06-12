@@ -101,15 +101,19 @@ class MeetingDownloadLog(Base):
 
 
 class PermissionRequest(Base):
-    """权限申请表"""
+    """权限申请表（永久保留，仅超级管理员可删除）"""
     __tablename__ = 'permission_requests'
 
     id = Column(Integer, primary_key=True, autoincrement=True, comment='主键ID')
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True, comment='申请人ID')
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True, comment='申请人ID')
+    applicant_username = Column(String(64), nullable=True, comment='申请人用户名快照')
+    applicant_nickname = Column(String(64), nullable=True, comment='申请人昵称快照')
     request_type = Column(String(20), nullable=False, comment='申请类型: view_all-查看全部会议, admin-成为管理员')
     reason = Column(Text, nullable=True, comment='申请理由')
     status = Column(String(20), nullable=False, default='pending', comment='状态: pending-待审批, approved-已通过, rejected-已拒绝')
     reviewer_id = Column(Integer, ForeignKey('users.id'), nullable=True, comment='审批人ID')
+    reviewer_username = Column(String(64), nullable=True, comment='审批人用户名快照')
+    reviewer_nickname = Column(String(64), nullable=True, comment='审批人昵称快照')
     review_note = Column(Text, nullable=True, comment='审批备注')
     created_at = Column(DateTime, nullable=False, default=datetime.now, comment='申请时间')
     reviewed_at = Column(DateTime, nullable=True, comment='审批时间')
@@ -121,13 +125,14 @@ class PermissionRequest(Base):
         return {
             'id': self.id,
             'user_id': self.user_id,
-            'username': self.applicant.username if self.applicant else None,
-            'nickname': self.applicant.nickname if self.applicant else None,
+            'username': self.applicant_username or (self.applicant.username if self.applicant else None),
+            'nickname': self.applicant_nickname or (self.applicant.nickname if self.applicant else None),
             'request_type': self.request_type,
             'reason': self.reason,
             'status': self.status,
             'reviewer_id': self.reviewer_id,
-            'reviewer_username': self.reviewer.username if self.reviewer else None,
+            'reviewer_username': self.reviewer_username or (self.reviewer.username if self.reviewer else None),
+            'reviewer_nickname': self.reviewer_nickname or (self.reviewer.nickname if self.reviewer else None),
             'review_note': self.review_note,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'reviewed_at': self.reviewed_at.isoformat() if self.reviewed_at else None,
@@ -152,16 +157,20 @@ class MeetingViewGrant(Base):
 
 
 class MeetingViewRequest(Base):
-    """单条会议浏览权限申请"""
+    """单条会议浏览权限申请（永久保留，仅超级管理员可删除）"""
     __tablename__ = 'meeting_view_requests'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)
+    applicant_username = Column(String(64), nullable=True)
+    applicant_nickname = Column(String(64), nullable=True)
     file_id = Column(String(64), nullable=False, index=True)
     meeting_name = Column(String(255), nullable=True)
     reason = Column(Text, nullable=True)
     status = Column(String(20), nullable=False, default='pending')
     reviewer_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    reviewer_username = Column(String(64), nullable=True)
+    reviewer_nickname = Column(String(64), nullable=True)
     review_note = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     reviewed_at = Column(DateTime, nullable=True)
@@ -173,15 +182,15 @@ class MeetingViewRequest(Base):
         return {
             'id': self.id,
             'user_id': self.user_id,
-            'username': self.applicant.username if self.applicant else None,
-            'nickname': self.applicant.nickname if self.applicant else None,
+            'username': self.applicant_username or (self.applicant.username if self.applicant else None),
+            'nickname': self.applicant_nickname or (self.applicant.nickname if self.applicant else None),
             'file_id': self.file_id,
             'meeting_name': self.meeting_name,
             'reason': self.reason,
             'status': self.status,
             'reviewer_id': self.reviewer_id,
-            'reviewer_username': self.reviewer.username if self.reviewer else None,
-            'reviewer_nickname': self.reviewer.nickname if self.reviewer else None,
+            'reviewer_username': self.reviewer_username or (self.reviewer.username if self.reviewer else None),
+            'reviewer_nickname': self.reviewer_nickname or (self.reviewer.nickname if self.reviewer else None),
             'review_note': self.review_note,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'reviewed_at': self.reviewed_at.isoformat() if self.reviewed_at else None,
@@ -206,16 +215,20 @@ class MeetingDownloadGrant(Base):
 
 
 class MeetingDownloadRequest(Base):
-    """单条会议下载权限申请"""
+    """单条会议下载权限申请（永久保留，仅超级管理员可删除）"""
     __tablename__ = 'meeting_download_requests'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)
+    applicant_username = Column(String(64), nullable=True)
+    applicant_nickname = Column(String(64), nullable=True)
     file_id = Column(String(64), nullable=False, index=True)
     meeting_name = Column(String(255), nullable=True)
     reason = Column(Text, nullable=True)
     status = Column(String(20), nullable=False, default='pending')
     reviewer_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    reviewer_username = Column(String(64), nullable=True)
+    reviewer_nickname = Column(String(64), nullable=True)
     review_note = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     reviewed_at = Column(DateTime, nullable=True)
@@ -227,15 +240,15 @@ class MeetingDownloadRequest(Base):
         return {
             'id': self.id,
             'user_id': self.user_id,
-            'username': self.applicant.username if self.applicant else None,
-            'nickname': self.applicant.nickname if self.applicant else None,
+            'username': self.applicant_username or (self.applicant.username if self.applicant else None),
+            'nickname': self.applicant_nickname or (self.applicant.nickname if self.applicant else None),
             'file_id': self.file_id,
             'meeting_name': self.meeting_name,
             'reason': self.reason,
             'status': self.status,
             'reviewer_id': self.reviewer_id,
-            'reviewer_username': self.reviewer.username if self.reviewer else None,
-            'reviewer_nickname': self.reviewer.nickname if self.reviewer else None,
+            'reviewer_username': self.reviewer_username or (self.reviewer.username if self.reviewer else None),
+            'reviewer_nickname': self.reviewer_nickname or (self.reviewer.nickname if self.reviewer else None),
             'review_note': self.review_note,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'reviewed_at': self.reviewed_at.isoformat() if self.reviewed_at else None,
@@ -645,6 +658,59 @@ def migrate_schema(engine):
             conn.commit()
         except Exception:
             conn.rollback()
+
+        audit_tables = (
+            ('permission_requests', 'user_id'),
+            ('meeting_view_requests', 'user_id'),
+            ('meeting_download_requests', 'user_id'),
+        )
+        snapshot_cols = (
+            ('applicant_username', 'VARCHAR(64) NULL'),
+            ('applicant_nickname', 'VARCHAR(64) NULL'),
+            ('reviewer_username', 'VARCHAR(64) NULL'),
+            ('reviewer_nickname', 'VARCHAR(64) NULL'),
+        )
+        for table, user_col in audit_tables:
+            for col, col_def in snapshot_cols:
+                result = conn.execute(text(f"""
+                    SELECT COUNT(*) FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{table}'
+                    AND COLUMN_NAME = '{col}'
+                """))
+                if result.scalar() == 0:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}"))
+                    conn.commit()
+                    print(f"[OK] {table} 表已添加 {col} 字段")
+
+            result = conn.execute(text(f"""
+                SELECT IS_NULLABLE FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{table}'
+                AND COLUMN_NAME = '{user_col}'
+            """))
+            row = result.fetchone()
+            if row and row[0] == 'NO':
+                conn.execute(text(f"ALTER TABLE {table} MODIFY {user_col} INT NULL"))
+                conn.commit()
+                print(f"[OK] {table}.{user_col} 已改为可空")
+
+            try:
+                conn.execute(text(f"""
+                    UPDATE {table} r
+                    JOIN users u ON r.user_id = u.id
+                    SET r.applicant_username = COALESCE(r.applicant_username, u.username),
+                        r.applicant_nickname = COALESCE(r.applicant_nickname, u.nickname)
+                    WHERE r.user_id IS NOT NULL
+                """))
+                conn.execute(text(f"""
+                    UPDATE {table} r
+                    JOIN users u ON r.reviewer_id = u.id
+                    SET r.reviewer_username = COALESCE(r.reviewer_username, u.username),
+                        r.reviewer_nickname = COALESCE(r.reviewer_nickname, u.nickname)
+                    WHERE r.reviewer_id IS NOT NULL
+                """))
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
 
 def init_database(database_url: str):

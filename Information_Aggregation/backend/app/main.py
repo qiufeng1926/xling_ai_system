@@ -62,6 +62,34 @@ def migrate_rbac(db: Session) -> None:
                         "VARCHAR(40) DEFAULT 'view_library'"
                     )
                 )
+            for col, col_def in (
+                ("applicant_username", "VARCHAR(64) NULL"),
+                ("applicant_nickname", "VARCHAR(64) NULL"),
+                ("reviewer_username", "VARCHAR(64) NULL"),
+                ("reviewer_nickname", "VARCHAR(64) NULL"),
+            ):
+                if col not in req_cols:
+                    db.execute(text(f"ALTER TABLE view_access_requests ADD COLUMN {col} {col_def}"))
+            db.execute(
+                text(
+                    "UPDATE view_access_requests r "
+                    "JOIN users u ON r.user_id = u.id "
+                    "SET r.applicant_username = COALESCE(r.applicant_username, u.username), "
+                    "r.applicant_nickname = COALESCE(r.applicant_nickname, u.nickname)"
+                )
+            )
+            db.execute(
+                text(
+                    "UPDATE view_access_requests r "
+                    "JOIN users u ON r.reviewer_id = u.id "
+                    "SET r.reviewer_username = COALESCE(r.reviewer_username, u.username), "
+                    "r.reviewer_nickname = COALESCE(r.reviewer_nickname, u.nickname)"
+                )
+            )
+            try:
+                db.execute(text("ALTER TABLE view_access_requests MODIFY user_id BIGINT NULL"))
+            except Exception:
+                pass
         db.execute(text("UPDATE users SET role='user' WHERE role='operator'"))
         if db.query(User).filter(User.role == SUPER_ADMIN).count() == 0:
             first_admin = db.query(User).filter(User.role == "admin").order_by(User.id.asc()).first()

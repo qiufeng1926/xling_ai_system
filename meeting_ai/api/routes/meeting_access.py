@@ -3,6 +3,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from api.auth_utils import get_current_user, get_db
@@ -68,15 +69,42 @@ def _filter_hidden_applicant_ids(db: Session, viewer: User) -> list[int] | None:
 def _filter_view_query(db: Session, viewer: User, query):
     hidden_ids = _filter_hidden_applicant_ids(db, viewer)
     if hidden_ids:
-        query = query.filter(~MeetingViewRequest.user_id.in_(hidden_ids))
+        query = query.filter(
+            or_(
+                MeetingViewRequest.user_id.is_(None),
+                ~MeetingViewRequest.user_id.in_(hidden_ids),
+            )
+        )
     return query
 
 
 def _filter_download_query(db: Session, viewer: User, query):
     hidden_ids = _filter_hidden_applicant_ids(db, viewer)
     if hidden_ids:
-        query = query.filter(~MeetingDownloadRequest.user_id.in_(hidden_ids))
+        query = query.filter(
+            or_(
+                MeetingDownloadRequest.user_id.is_(None),
+                ~MeetingDownloadRequest.user_id.in_(hidden_ids),
+            )
+        )
     return query
+
+
+def _resolve_applicant(req, db: Session) -> User | None:
+    if req.user_id:
+        user = db.query(User).filter(User.id == req.user_id).first()
+        if user:
+            return user
+    username = req.applicant_username
+    if username:
+        return db.query(User).filter(User.username == username).first()
+    return None
+
+
+def _set_reviewer_snapshot(req, reviewer: User) -> None:
+    req.reviewer_id = reviewer.id
+    req.reviewer_username = reviewer.username
+    req.reviewer_nickname = reviewer.nickname
 
 
 def _get_meeting_owner(db: Session, meeting: Meeting) -> User | None:
@@ -85,20 +113,25 @@ def _get_meeting_owner(db: Session, meeting: Meeting) -> User | None:
     return db.query(User).filter(User.id == meeting.user_id).first()
 
 
-def _approve_view_request(req: MeetingViewRequest, reviewer: User, applicant: User, db: Session) -> None:
+def _approve_view_request(req: MeetingViewRequest, reviewer: User, applicant: User | None, db: Session) -> None:
     req.status = 'approved'
+    if not applicant:
+        return
     existing = (
         db.query(MeetingViewGrant)
         .filter(
-            MeetingViewGrant.user_id == req.user_id,
             MeetingViewGrant.file_id == req.file_id,
+            or_(
+                MeetingViewGrant.user_id == applicant.id,
+                MeetingViewGrant.username == applicant.username,
+            ),
         )
         .first()
     )
     if not existing:
         db.add(
             MeetingViewGrant(
-                user_id=req.user_id,
+                user_id=applicant.id,
                 username=applicant.username,
                 file_id=req.file_id,
                 granted_by=reviewer.id,
@@ -108,20 +141,27 @@ def _approve_view_request(req: MeetingViewRequest, reviewer: User, applicant: Us
         existing.username = applicant.username
 
 
-def _approve_download_request(req: MeetingDownloadRequest, reviewer: User, applicant: User, db: Session) -> None:
+def _approve_download_request(
+    req: MeetingDownloadRequest, reviewer: User, applicant: User | None, db: Session
+) -> None:
     req.status = 'approved'
+    if not applicant:
+        return
     existing = (
         db.query(MeetingDownloadGrant)
         .filter(
-            MeetingDownloadGrant.user_id == req.user_id,
             MeetingDownloadGrant.file_id == req.file_id,
+            or_(
+                MeetingDownloadGrant.user_id == applicant.id,
+                MeetingDownloadGrant.username == applicant.username,
+            ),
         )
         .first()
     )
     if not existing:
         db.add(
             MeetingDownloadGrant(
-                user_id=req.user_id,
+                user_id=applicant.id,
                 username=applicant.username,
                 file_id=req.file_id,
                 granted_by=reviewer.id,
@@ -144,17 +184,19 @@ def _review_view_request(
     if req.status != 'pending':
         raise HTTPException(status_code=400, detail='该申请已处理')
 
-    applicant = db.query(User).filter(User.id == req.user_id).first()
-    if not applicant:
+    applicant = _resolve_applicant(req, db)
+    if not applicant and not req.applicant_username:
         raise HTTPException(status_code=404, detail='申请人不存在')
-    if is_hidden_super_user(applicant) and not is_hidden_super_user(reviewer):
+    if applicant and is_hidden_super_user(applicant) and not is_hidden_super_user(reviewer):
         raise HTTPException(status_code=404, detail='申请不存在')
 
-    req.reviewer_id = reviewer.id
+    _set_reviewer_snapshot(req, reviewer)
     req.review_note = review_note
     req.reviewed_at = datetime.now()
 
     if action == 'approve':
+        if not applicant:
+            raise HTTPException(status_code=400, detail='申请人账号已删除，无法授予权限')
         _approve_view_request(req, reviewer, applicant, db)
     else:
         req.status = 'rejected'
@@ -177,17 +219,19 @@ def _review_download_request(
     if req.status != 'pending':
         raise HTTPException(status_code=400, detail='该申请已处理')
 
-    applicant = db.query(User).filter(User.id == req.user_id).first()
-    if not applicant:
+    applicant = _resolve_applicant(req, db)
+    if not applicant and not req.applicant_username:
         raise HTTPException(status_code=404, detail='申请人不存在')
-    if is_hidden_super_user(applicant) and not is_hidden_super_user(reviewer):
+    if applicant and is_hidden_super_user(applicant) and not is_hidden_super_user(reviewer):
         raise HTTPException(status_code=404, detail='申请不存在')
 
-    req.reviewer_id = reviewer.id
+    _set_reviewer_snapshot(req, reviewer)
     req.review_note = review_note
     req.reviewed_at = datetime.now()
 
     if action == 'approve':
+        if not applicant:
+            raise HTTPException(status_code=400, detail='申请人账号已删除，无法授予权限')
         _approve_download_request(req, reviewer, applicant, db)
     else:
         req.status = 'rejected'
@@ -244,6 +288,8 @@ def apply_meeting_view_access(
 
         req = MeetingViewRequest(
             user_id=current_user.id,
+            applicant_username=current_user.username,
+            applicant_nickname=current_user.nickname,
             file_id=file_id,
             meeting_name=_meeting_display_name(meeting),
             reason=reason,
@@ -316,6 +362,8 @@ def apply_meeting_download_access(
 
         req = MeetingDownloadRequest(
             user_id=current_user.id,
+            applicant_username=current_user.username,
+            applicant_nickname=current_user.nickname,
             file_id=file_id,
             meeting_name=_meeting_display_name(meeting),
             reason=reason,
@@ -345,7 +393,12 @@ def list_my_meeting_view_requests(
     status: str | None = Query(None),
     limit: int = Query(50, ge=1, le=100),
 ):
-    query = db.query(MeetingViewRequest).filter(MeetingViewRequest.user_id == current_user.id)
+    query = db.query(MeetingViewRequest).filter(
+        or_(
+            MeetingViewRequest.user_id == current_user.id,
+            MeetingViewRequest.applicant_username == current_user.username,
+        )
+    )
     if status:
         query = query.filter(MeetingViewRequest.status == status)
     rows = query.order_by(MeetingViewRequest.created_at.desc()).limit(limit).all()
@@ -359,7 +412,12 @@ def list_my_meeting_download_requests(
     status: str | None = Query(None),
     limit: int = Query(50, ge=1, le=100),
 ):
-    query = db.query(MeetingDownloadRequest).filter(MeetingDownloadRequest.user_id == current_user.id)
+    query = db.query(MeetingDownloadRequest).filter(
+        or_(
+            MeetingDownloadRequest.user_id == current_user.id,
+            MeetingDownloadRequest.applicant_username == current_user.username,
+        )
+    )
     if status:
         query = query.filter(MeetingDownloadRequest.status == status)
     rows = query.order_by(MeetingDownloadRequest.created_at.desc()).limit(limit).all()
@@ -374,7 +432,10 @@ def meeting_permission_request_stats(
     view_my_pending = (
         db.query(MeetingViewRequest)
         .filter(
-            MeetingViewRequest.user_id == current_user.id,
+            or_(
+                MeetingViewRequest.user_id == current_user.id,
+                MeetingViewRequest.applicant_username == current_user.username,
+            ),
             MeetingViewRequest.status == 'pending',
         )
         .count()
@@ -382,7 +443,10 @@ def meeting_permission_request_stats(
     download_my_pending = (
         db.query(MeetingDownloadRequest)
         .filter(
-            MeetingDownloadRequest.user_id == current_user.id,
+            or_(
+                MeetingDownloadRequest.user_id == current_user.id,
+                MeetingDownloadRequest.applicant_username == current_user.username,
+            ),
             MeetingDownloadRequest.status == 'pending',
         )
         .count()
@@ -513,3 +577,37 @@ def batch_review_meeting_permission_requests(
         'errors': errors,
         'message': f'已处理 {len(reviewed)} 条申请',
     }
+
+
+@router.delete('/meetings/access-requests/{request_id}')
+def delete_meeting_view_request_record(
+    request_id: int,
+    current_user: User = Depends(_require_root),
+    db: Session = Depends(get_db),
+):
+    req = db.query(MeetingViewRequest).filter(MeetingViewRequest.id == request_id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail='申请记录不存在')
+    applicant = _resolve_applicant(req, db)
+    if applicant and is_hidden_super_user(applicant) and not is_hidden_super_user(current_user):
+        raise HTTPException(status_code=404, detail='申请记录不存在')
+    db.delete(req)
+    db.commit()
+    return {'success': True, 'message': '申请记录已删除'}
+
+
+@router.delete('/meetings/download-requests/{request_id}')
+def delete_meeting_download_request_record(
+    request_id: int,
+    current_user: User = Depends(_require_root),
+    db: Session = Depends(get_db),
+):
+    req = db.query(MeetingDownloadRequest).filter(MeetingDownloadRequest.id == request_id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail='申请记录不存在')
+    applicant = _resolve_applicant(req, db)
+    if applicant and is_hidden_super_user(applicant) and not is_hidden_super_user(current_user):
+        raise HTTPException(status_code=404, detail='申请记录不存在')
+    db.delete(req)
+    db.commit()
+    return {'success': True, 'message': '申请记录已删除'}

@@ -59,14 +59,20 @@ class PermissionService:
         my_pending = (
             db.query(ViewAccessRequest)
             .filter(
-                ViewAccessRequest.user_id == viewer.id,
                 ViewAccessRequest.status == "pending",
+            )
+            .filter(
+                (ViewAccessRequest.user_id == viewer.id)
+                | (ViewAccessRequest.applicant_username == viewer.username)
             )
             .count()
         )
         my_total = (
             db.query(ViewAccessRequest)
-            .filter(ViewAccessRequest.user_id == viewer.id)
+            .filter(
+                (ViewAccessRequest.user_id == viewer.id)
+                | (ViewAccessRequest.applicant_username == viewer.username)
+            )
             .count()
         )
 
@@ -104,6 +110,8 @@ class PermissionService:
 
         req = ViewAccessRequest(
             user_id=user.id,
+            applicant_username=user.username,
+            applicant_nickname=user.nickname,
             request_type=data.request_type,
             reason=data.reason,
             status="pending",
@@ -134,12 +142,19 @@ class PermissionService:
                 Reviewer.username,
                 Reviewer.nickname,
             )
-            .join(Applicant, ViewAccessRequest.user_id == Applicant.id)
+            .outerjoin(Applicant, ViewAccessRequest.user_id == Applicant.id)
             .outerjoin(Reviewer, ViewAccessRequest.reviewer_id == Reviewer.id)
         )
 
         if scope == "mine":
-            query = query.filter(ViewAccessRequest.user_id == viewer.id)
+            from sqlalchemy import or_
+
+            query = query.filter(
+                or_(
+                    ViewAccessRequest.user_id == viewer.id,
+                    ViewAccessRequest.applicant_username == viewer.username,
+                )
+            )
         elif scope == "review":
             query = PermissionService._apply_reviewer_list_scope(query, viewer)
         elif can_review_access(viewer):
@@ -171,10 +186,10 @@ class PermissionService:
                     "review_note": item.review_note,
                     "created_at": item.created_at,
                     "reviewed_at": item.reviewed_at,
-                    "username": username,
-                    "nickname": nickname,
-                    "reviewer_username": reviewer_username,
-                    "reviewer_nickname": reviewer_nickname,
+                    "username": item.applicant_username or username,
+                    "nickname": item.applicant_nickname or nickname,
+                    "reviewer_username": item.reviewer_username or reviewer_username,
+                    "reviewer_nickname": item.reviewer_nickname or reviewer_nickname,
                     "request_type_label": REQUEST_TYPE_LABELS.get(item.request_type, item.request_type),
                 }
             )
@@ -246,6 +261,8 @@ class PermissionService:
 
         req.status = "approved" if approve else "rejected"
         req.reviewer_id = reviewer.id
+        req.reviewer_username = reviewer.username
+        req.reviewer_nickname = reviewer.nickname
         req.review_note = review_note
         req.reviewed_at = datetime.now()
 
@@ -302,6 +319,21 @@ class PermissionService:
         db.commit()
         db.refresh(user)
         return user
+
+    @staticmethod
+    def delete_access_request(db: Session, request_id: int, operator: User) -> None:
+        if not is_super_admin(operator):
+            raise ValueError("仅超级管理员可删除申请记录")
+
+        req = db.query(ViewAccessRequest).filter(ViewAccessRequest.id == request_id).first()
+        if not req:
+            raise ValueError("申请记录不存在")
+        if req.user_id:
+            applicant = db.query(User).filter(User.id == req.user_id).first()
+            if applicant and should_hide_user_from(operator, applicant):
+                raise ValueError("申请记录不存在")
+        db.delete(req)
+        db.commit()
 
     @staticmethod
     def list_request_types_for_user(user: User) -> list[dict]:

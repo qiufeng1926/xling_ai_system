@@ -68,7 +68,7 @@ class ViewAccessRequestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    user_id: int
+    user_id: int | None
     request_type: str = "view_library"
     status: str
     reason: str | None

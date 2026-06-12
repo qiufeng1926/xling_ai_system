@@ -127,6 +127,8 @@ def apply_permission(
 
     req = PermissionRequest(
         user_id=current_user.id,
+        applicant_username=current_user.username,
+        applicant_nickname=current_user.nickname,
         request_type=body.request_type,
         reason=body.reason.strip() or None,
         status='pending',
@@ -144,7 +146,12 @@ def list_my_requests(
 ):
     requests = (
         db.query(PermissionRequest)
-        .filter(PermissionRequest.user_id == current_user.id)
+        .filter(
+            or_(
+                PermissionRequest.user_id == current_user.id,
+                PermissionRequest.applicant_username == current_user.username,
+            )
+        )
         .order_by(PermissionRequest.created_at.desc())
         .all()
     )
@@ -264,6 +271,8 @@ def review_request(
         raise HTTPException(status_code=404, detail='申请不存在')
 
     req.reviewer_id = current_user.id
+    req.reviewer_username = current_user.username
+    req.reviewer_nickname = current_user.nickname
     req.review_note = body.review_note.strip() or None
     req.reviewed_at = datetime.now()
 

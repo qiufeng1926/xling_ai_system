@@ -199,6 +199,20 @@ export function batchReviewMeetingPermissionRequests(
   }>
 }
 
+export function deleteMeetingViewRequestRecord(requestId: number) {
+  return meetingRequest.delete(`/meetings/access-requests/${requestId}`) as Promise<{
+    success: boolean
+    message: string
+  }>
+}
+
+export function deleteMeetingDownloadRequestRecord(requestId: number) {
+  return meetingRequest.delete(`/meetings/download-requests/${requestId}`) as Promise<{
+    success: boolean
+    message: string
+  }>
+}
+
 export function getMeetingDetail(fileId: string) {
   return meetingRequest.get(`/meetings/${encodeURIComponent(fileId)}`) as Promise<MeetingDetail>
 }

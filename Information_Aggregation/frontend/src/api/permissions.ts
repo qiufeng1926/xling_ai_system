@@ -2,7 +2,7 @@ import request, { type ApiResponse, type PageResult } from './request'
 
 export interface AccessRequest {
   id: number
-  user_id: number
+  user_id: number | null
   request_type: string
   request_type_label?: string
   status: string
@@ -61,6 +61,10 @@ export function reviewAccessRequest(requestId: number, approve: boolean, review_
     `/permissions/access-requests/${requestId}/review`,
     { approve, review_note }
   )
+}
+
+export function deleteAccessRequest(requestId: number) {
+  return request.delete<any, ApiResponse<null>>(`/permissions/access-requests/${requestId}`)
 }
 
 export function revokeLibraryAccess(userId: number) {

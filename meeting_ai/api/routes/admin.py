@@ -140,11 +140,31 @@ def delete_user(
         raise HTTPException(status_code=400, detail='不能删除超级管理员账号')
 
     db.query(PermissionRequest).filter(
-        PermissionRequest.reviewer_id == user.id
-    ).update({PermissionRequest.reviewer_id: None}, synchronize_session=False)
+        PermissionRequest.reviewer_id == user.id,
+        PermissionRequest.reviewer_username.is_(None),
+    ).update(
+        {
+            PermissionRequest.reviewer_username: user.username,
+            PermissionRequest.reviewer_nickname: user.nickname,
+        },
+        synchronize_session=False,
+    )
     db.query(PermissionRequest).filter(
-        PermissionRequest.user_id == user.id
-    ).delete(synchronize_session=False)
+        PermissionRequest.user_id == user.id,
+        PermissionRequest.applicant_username.is_(None),
+    ).update(
+        {
+            PermissionRequest.applicant_username: user.username,
+            PermissionRequest.applicant_nickname: user.nickname,
+        },
+        synchronize_session=False,
+    )
+    db.query(PermissionRequest).filter(PermissionRequest.reviewer_id == user.id).update(
+        {PermissionRequest.reviewer_id: None}, synchronize_session=False
+    )
+    db.query(PermissionRequest).filter(PermissionRequest.user_id == user.id).update(
+        {PermissionRequest.user_id: None}, synchronize_session=False
+    )
 
     db.query(Meeting).filter(Meeting.user_id == user.id).update(
         {Meeting.user_id: None}, synchronize_session=False
@@ -155,15 +175,37 @@ def delete_user(
     db.query(MeetingViewGrant).filter(MeetingViewGrant.user_id == user.id).delete(
         synchronize_session=False
     )
-    db.query(MeetingViewRequest).filter(MeetingViewRequest.user_id == user.id).delete(
-        synchronize_session=False
-    )
     db.query(MeetingDownloadGrant).filter(MeetingDownloadGrant.user_id == user.id).delete(
         synchronize_session=False
     )
-    db.query(MeetingDownloadRequest).filter(MeetingDownloadRequest.user_id == user.id).delete(
-        synchronize_session=False
-    )
+
+    for model in (MeetingViewRequest, MeetingDownloadRequest):
+        db.query(model).filter(
+            model.user_id == user.id,
+            model.applicant_username.is_(None),
+        ).update(
+            {
+                model.applicant_username: user.username,
+                model.applicant_nickname: user.nickname,
+            },
+            synchronize_session=False,
+        )
+        db.query(model).filter(
+            model.reviewer_id == user.id,
+            model.reviewer_username.is_(None),
+        ).update(
+            {
+                model.reviewer_username: user.username,
+                model.reviewer_nickname: user.nickname,
+            },
+            synchronize_session=False,
+        )
+        db.query(model).filter(model.reviewer_id == user.id).update(
+            {model.reviewer_id: None}, synchronize_session=False
+        )
+        db.query(model).filter(model.user_id == user.id).update(
+            {model.user_id: None}, synchronize_session=False
+        )
 
     db.delete(user)
     db.commit()
@@ -256,3 +298,37 @@ def admin_delete_meeting(
         raise HTTPException(status_code=404, detail='会议不存在')
     logger.info(f"超级管理员删除会议: file_id={file_id}, by={current_user.username}")
     return {'success': True, 'message': '会议记录已删除'}
+
+
+@router.delete('/admin/permission-records/{kind}/{record_id}')
+def delete_permission_record(
+    kind: str,
+    record_id: int,
+    current_user: User = Depends(require_root),
+    db: Session = Depends(get_db),
+):
+    """仅超级管理员可删除权限申请审计记录"""
+    if kind == 'legacy':
+        req = db.query(PermissionRequest).filter(PermissionRequest.id == record_id).first()
+    elif kind == 'view':
+        from db.models import MeetingViewRequest
+        req = db.query(MeetingViewRequest).filter(MeetingViewRequest.id == record_id).first()
+    elif kind == 'download':
+        from db.models import MeetingDownloadRequest
+        req = db.query(MeetingDownloadRequest).filter(MeetingDownloadRequest.id == record_id).first()
+    else:
+        raise HTTPException(status_code=400, detail='无效的记录类型')
+
+    if not req:
+        raise HTTPException(status_code=404, detail='申请记录不存在')
+
+    applicant_id = getattr(req, 'user_id', None)
+    if applicant_id:
+        applicant = db.query(User).filter(User.id == applicant_id).first()
+        if applicant and is_hidden_super_user(applicant) and not is_hidden_super_user(current_user):
+            raise HTTPException(status_code=404, detail='申请记录不存在')
+
+    db.delete(req)
+    db.commit()
+    logger.info(f"超级管理员删除权限申请记录: kind={kind}, id={record_id}, by={current_user.username}")
+    return {'success': True, 'message': '申请记录已删除'}
