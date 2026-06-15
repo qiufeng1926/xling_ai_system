@@ -24,7 +24,9 @@ meetingRequest.interceptors.response.use(
         : error.response?.status === 401
           ? '会议服务认证失败，请确认 meeting_ai 与门户 JWT_SECRET 一致'
           : error.message || '会议服务请求失败'
-    ElMessage.error(message)
+    if (!error.config?.silent) {
+      ElMessage.error(message)
+    }
     return Promise.reject(error)
   }
 )

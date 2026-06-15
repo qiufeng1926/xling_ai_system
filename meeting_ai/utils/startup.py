@@ -22,6 +22,15 @@ _INSECURE_JWT_SECRETS = frozenset(
 
 def validate_startup_config() -> None:
     """生产环境拒绝不安全配置；开发环境仅告警。"""
+    from utils.logger import get_logger
+
+    logger = get_logger("startup")
+    if app_env == "development":
+        logger.info(
+            "JWT 已加载（前缀=%s…，须与门户 SECRET_KEY 一致）",
+            (jwt_secret or "")[:12],
+        )
+
     issues: list[str] = []
 
     if not jwt_secret or jwt_secret in _INSECURE_JWT_SECRETS:

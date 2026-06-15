@@ -26,6 +26,15 @@ export const MEETING_ROUTES = {
   room: (code: string) => `/meeting/room/${code}`,
 } as const
 
+export const FEISHU_ROUTES = {
+  home: '/feishu',
+} as const
+
+export const WECOM_ROUTES = {
+  mail: '/wecom/mail',
+  approval: '/wecom/approval',
+} as const
+
 export const AUTH_ROUTES = {
   login: '/login',
   register: '/register',

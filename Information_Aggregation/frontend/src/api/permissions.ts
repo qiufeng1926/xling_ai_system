@@ -34,7 +34,9 @@ export function getApplicableRequestTypes() {
 }
 
 export function getAccessRequestStats() {
-  return request.get<any, ApiResponse<AccessRequestStats>>('/permissions/access-requests/stats')
+  return request.get<any, ApiResponse<AccessRequestStats>>('/permissions/access-requests/stats', {
+    silent: true,
+  })
 }
 
 export function submitAccessRequest(request_type: string, reason?: string) {

@@ -1,10 +1,13 @@
 from pathlib import Path
 from urllib.parse import quote_plus
 
+from dotenv import load_dotenv
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+# 强制以 backend/.env 为准，避免 shell/conda 中的旧 SECRET_KEY 覆盖文件配置
+load_dotenv(BACKEND_DIR / ".env", override=True)
 
 DEFAULT_SECRET_KEY = "change-me-in-production-use-a-long-random-string"
 WEAK_SECRET_KEYS = frozenset(
@@ -17,7 +20,11 @@ MIN_SECRET_KEY_LENGTH = 32
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=str(BACKEND_DIR / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     APP_NAME: str = "达人信息聚合系统"
     DEBUG: bool = False
@@ -109,6 +116,19 @@ class Settings(BaseSettings):
     PUGONGYING_COOKIE: str = ""
     PUGONGYING_COOKIE_FILE: str = ""
     PUGONGYING_STORAGE_STATE: str = "cookies/pugongying_state.json"
+
+    # 企业微信（自建应用 Secret，需开通「邮件」权限并配置应用邮箱）
+    WECOM_CORP_ID: str = ""
+    WECOM_CORP_SECRET: str = ""
+    WECOM_API_BASE: str = "https://qyapi.weixin.qq.com"
+    WECOM_DEFAULT_TEMPLATE_ID: str = ""
+    WECOM_PUBLIC_BASE_URL: str = ""
+    # 接收消息服务器 URL 校验（与管理后台 Token / EncodingAESKey 一致）
+    WECOM_CALLBACK_TOKEN: str = ""
+    WECOM_ENCODING_AES_KEY: str = ""
+    # 网页授权可信域名校验文件（可选，文件名如 WW_verify_xxx.txt）
+    WECOM_DOMAIN_VERIFY_FILENAME: str = ""
+    WECOM_DOMAIN_VERIFY_CONTENT: str = ""
 
     # Playwright 配置
     PLAYWRIGHT_HEADLESS: bool = False

@@ -1,9 +1,10 @@
 """单条会议浏览/下载权限申请与审批"""
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from api.auth_utils import get_current_user, get_db
@@ -431,11 +432,7 @@ def list_my_meeting_download_requests(
     return {'success': True, 'requests': [row.to_dict() for row in rows]}
 
 
-@router.get('/meetings/access-requests/stats')
-def meeting_permission_request_stats(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def _collect_meeting_permission_stats(current_user: User, db: Session) -> dict:
     view_my_pending = (
         db.query(MeetingViewRequest)
         .filter(
@@ -482,6 +479,20 @@ def meeting_permission_request_stats(
             'pending_for_review': download_pending_for_review,
         },
     }
+
+
+@router.get('/meetings/access-requests/stats')
+def meeting_permission_request_stats(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return _collect_meeting_permission_stats(current_user, db)
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='会议权限统计不可用，请重启 meeting_ai 以完成数据库迁移后重试',
+        ) from exc
 
 
 @router.get('/meetings/access-requests/pending')

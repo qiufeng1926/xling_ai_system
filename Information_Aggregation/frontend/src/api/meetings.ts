@@ -130,7 +130,9 @@ export function getMyMeetingViewRequests(status?: string) {
 }
 
 export function getMeetingViewRequestStats() {
-  return meetingRequest.get('/meetings/access-requests/stats') as Promise<MeetingAccessRequestStats>
+  return meetingRequest.get('/meetings/access-requests/stats', {
+    silent: true,
+  }) as Promise<MeetingAccessRequestStats>
 }
 
 export function getPendingMeetingViewRequests(status = 'pending') {

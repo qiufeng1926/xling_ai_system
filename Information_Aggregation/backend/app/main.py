@@ -2,9 +2,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
-from app.api.v1 import auth, agencies, collection, influencers, match, permissions, tags, users
+from app.api.v1 import auth, agencies, collection, influencers, match, permissions, tags, users, wecom_approval, wecom_callback, wecom_mail
 from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.middleware.request_log import RequestLogMiddleware
@@ -223,6 +224,18 @@ app.include_router(agencies.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
 app.include_router(permissions.router, prefix="/api/v1")
 app.include_router(match.router, prefix="/api/v1")
+app.include_router(wecom_mail.router, prefix="/api/v1")
+app.include_router(wecom_approval.router, prefix="/api/v1")
+app.include_router(wecom_callback.router, prefix="/api/v1")
+
+
+_verify_name = (settings.WECOM_DOMAIN_VERIFY_FILENAME or "").strip().lstrip("/")
+_verify_content = (settings.WECOM_DOMAIN_VERIFY_CONTENT or "").strip()
+if _verify_name and _verify_content:
+
+    @app.get(f"/{_verify_name}", response_class=PlainTextResponse, include_in_schema=False)
+    def wecom_trusted_domain_verify_file():
+        return PlainTextResponse(content=_verify_content, media_type="text/plain")
 
 
 @app.get("/health")

@@ -59,7 +59,9 @@ request.interceptors.response.use(
       localStorage.removeItem('token')
       router.push(AUTH_ROUTES.login)
     }
-    ElMessage.error(formatApiError(error.response?.data?.detail) || error.message || '网络错误')
+    if (!error.config?.silent) {
+      ElMessage.error(formatApiError(error.response?.data?.detail) || error.message || '网络错误')
+    }
     return Promise.reject(error)
   }
 )

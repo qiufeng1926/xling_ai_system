@@ -3,9 +3,9 @@ import os
 from pathlib import Path
 
 
-load_dotenv()
-
 _project_root = Path(__file__).resolve().parent.parent
+# 强制以项目 .env 为准，避免 conda/系统环境变量中的旧 JWT_SECRET 覆盖文件配置
+load_dotenv(_project_root / ".env", override=True)
 
 
 def _env(key: str, default: str | None = None) -> str | None:

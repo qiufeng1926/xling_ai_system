@@ -7,7 +7,10 @@ from sqlalchemy.orm import Session
 
 from config.config import portal_api_url
 from db.models import User
+from utils.logger import get_logger
 from utils.password import hash_password
+
+logger = get_logger("portal_auth")
 
 PORTAL_ISSUER = "xling"
 PORTAL_ROLES = frozenset({"super_admin", "admin", "user"})
@@ -154,9 +157,13 @@ def get_or_create_user_from_portal_token(
 
     user = db.query(User).filter(User.username == username).first()
     if user:
-        _sync_portal_user_fields(user, nickname=nickname, meeting_role=meeting_role, perms=perms)
-        db.commit()
-        db.refresh(user)
+        try:
+            _sync_portal_user_fields(user, nickname=nickname, meeting_role=meeting_role, perms=perms)
+            db.commit()
+            db.refresh(user)
+        except Exception as exc:
+            db.rollback()
+            logger.warning("同步门户用户到 meeting_ai 失败（username=%s）: %s", username, exc)
         return user
 
     user = User(
@@ -172,8 +179,13 @@ def get_or_create_user_from_portal_token(
         can_approve_view=bool(perms.get("approve_meeting_view")),
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    try:
+        db.commit()
+        db.refresh(user)
+    except Exception as exc:
+        db.rollback()
+        logger.warning("创建 meeting_ai 门户用户失败（username=%s）: %s", username, exc)
+        return None
     return user
 
 
