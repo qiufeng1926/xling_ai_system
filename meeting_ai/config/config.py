@@ -111,6 +111,10 @@ tingwu_audio_format = _env("TINGWU_AUDIO_FORMAT", "pcm")
 tingwu_sample_rate = int(_env("TINGWU_SAMPLE_RATE", "16000") or "16000")
 # 说话人分离（CreateTask Parameters.Transcription.DiarizationEnabled）
 tingwu_diarization_enabled = _env_bool("TINGWU_DIARIZATION_ENABLED", "true")
+# 听悟大模型摘要（全文摘要、发言总结、问答回顾、思维导图）
+tingwu_summarization_enabled = _env_bool("TINGWU_SUMMARIZATION_ENABLED", "true")
+TINGWU_SUMMARIZATION_TYPES = ("Paragraph", "Conversational", "QuestionsAnswering", "MindMap")
+tingwu_summarization_poll_seconds = float(_env("TINGWU_SUMMARIZATION_POLL_SECONDS", "120") or "120")
 TINGWU_SPEAKER_COUNT_ENV_KEY = "TINGWU_DIARIZATION_SPEAKER_COUNT"
 
 

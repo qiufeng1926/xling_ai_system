@@ -607,6 +607,49 @@
             text-align: center;
         }
 
+        .tingwu-banner {
+            margin-top: 16px;
+            margin-bottom: 8px;
+        }
+        .tingwu-banner-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            flex-wrap: wrap;
+            background: linear-gradient(135deg, #e8f4fd 0%, #f0f7ff 100%);
+            border: 1px solid #91caff;
+            border-radius: 12px;
+            padding: 16px 20px;
+        }
+        .tingwu-banner-desc {
+            display: block;
+            font-size: 13px;
+            color: #666;
+            margin-top: 4px;
+            font-weight: normal;
+        }
+        .btn-tingwu-view {
+            background: #1677ff;
+            color: #fff;
+            padding: 10px 18px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 600;
+            white-space: nowrap;
+            transition: background 0.2s;
+        }
+        .btn-tingwu-view:hover { background: #0958d9; }
+        .btn-tingwu-link-inline {
+            display: inline-block;
+            margin-top: 12px;
+            color: #1677ff;
+            font-weight: 600;
+            text-decoration: none;
+        }
+        .btn-tingwu-link-inline:hover { text-decoration: underline; }
+
         .theme-green { --accent: #27ae60; --accent-bg: #e8f8ef; }
         .theme-orange { --accent: #e67e22; --accent-bg: #fef5e7; }
         .theme-blue { --accent: #3498db; --accent-bg: #ebf5fb; }
@@ -1279,7 +1322,7 @@
             <h2>🎤 会议 AI 助手</h2>
             <p class="subtitle" id="authSubtitle">请登录或注册后使用</p>
             <p id="portalAuthHint" class="auth-error" style="display:none;color:#667eea;">
-                已嵌入 xling 平台，请先在平台登录页登录后再进入「会议 AI」。
+                已嵌入 xlink 平台，请先在平台登录页登录后再进入「会议 AI」。
             </p>
             <div class="auth-tabs">
                 <button class="auth-tab active" id="loginTabBtn" onclick="switchAuthTab('login')">登录</button>
@@ -1414,6 +1457,16 @@
                 <div id="realtimeSummaryMarkdown" class="summary-content"></div>
                 <div id="realtimeSummaryVisual" class="visual-summary-root" style="display:none;"></div>
                 <p class="visual-disclaimer">图文内容由 AI 根据转写整理，如有出入以转写原文为准。</p>
+            </div>
+
+            <div id="realtimeTingwuBanner" class="tingwu-banner" style="display: none;">
+                <div class="tingwu-banner-inner">
+                    <div>
+                        <strong>听悟 AI 摘要</strong>
+                        <span class="tingwu-banner-desc">通义听悟大模型 · 全文摘要 / 发言总结 / 问答回顾 / 思维导图</span>
+                    </div>
+                    <a id="realtimeTingwuLink" class="btn-tingwu-view" href="#" target="_blank" rel="noopener">查看听悟摘要 →</a>
+                </div>
             </div>
                     
             <div class="info-box">
@@ -1651,7 +1704,7 @@
     </div>
 
     <script>
-        // ========== 认证状态（与 xling 门户共用 localStorage.token）==========
+        // ========== 认证状态（与 xlink 门户共用 localStorage.token）==========
         function isPortalEmbedded() {
             return window.self !== window.top
                 || new URLSearchParams(window.location.search).get('embedded') === '1';
@@ -1919,7 +1972,7 @@
                 document.getElementById('authOverlay').style.display = 'flex';
                 document.getElementById('mainApp').style.display = 'none';
                 document.getElementById('portalAuthHint').style.display = 'block';
-                document.getElementById('authSubtitle').textContent = '尚未登录 xling 平台';
+                document.getElementById('authSubtitle').textContent = '尚未登录 xlink 平台';
                 document.querySelector('.auth-tabs').style.display = 'none';
                 document.getElementById('loginForm').style.display = 'none';
                 document.getElementById('registerForm').style.display = 'none';
@@ -1994,7 +2047,7 @@
 
         function doLogout() {
             if (isPortalEmbedded()) {
-                showErrorAlert('请使用 xling 平台右上角的「退出」按钮退出登录');
+                showErrorAlert('请使用 xlink 平台右上角的「退出」按钮退出登录');
                 return;
             }
             if (ws && ws.readyState === WebSocket.OPEN) ws.close();
@@ -2026,7 +2079,7 @@
             document.querySelectorAll('.btn-export, .btn-export-visual').forEach(btn => {
                 if (!allowed) {
                     btn.disabled = true;
-                    btn.title = '暂无下载权限，请在 xling 平台权限管理中申请';
+                    btn.title = '暂无下载权限，请在 xlink 平台权限管理中申请';
                 } else {
                     btn.disabled = false;
                     btn.title = '';
@@ -2765,7 +2818,7 @@
 
         async function exportSummaryDocx({ fileId, content, title }) {
             if (!userCanDownload()) {
-                showErrorAlert('暂无下载/导出权限，请在 xling 平台「平台管理 → 权限管理」中申请');
+                showErrorAlert('暂无下载/导出权限，请在 xlink 平台「平台管理 → 权限管理」中申请');
                 return;
             }
             const exportTitle = (title || '').trim();
@@ -2800,7 +2853,7 @@
 
         async function exportVisualHtml({ fileId, visual, title, format = 'html' }) {
             if (!userCanDownload()) {
-                showErrorAlert('暂无下载/导出权限，请在 xling 平台「平台管理 → 权限管理」中申请');
+                showErrorAlert('暂无下载/导出权限，请在 xlink 平台「平台管理 → 权限管理」中申请');
                 return;
             }
             const exportTitle = (title || '').trim();
@@ -3319,6 +3372,7 @@
             }
 
             displayDualSummary('realtime', data);
+            updateTingwuSummaryBanner(data);
             if (data.file_id) {
                 lastRealtimeFileId = data.file_id;
             }
@@ -3332,6 +3386,28 @@
             }
             if (data.summary_visual_status === 'failed' && data.summary_visual_error) {
                 console.warn('图文速览:', data.summary_visual_error);
+            }
+        }
+
+        function tingwuSummaryPageUrl(fileId) {
+            return '/tingwu-summary?file_id=' + encodeURIComponent(fileId);
+        }
+
+        function updateTingwuSummaryBanner(data) {
+            const banner = document.getElementById('realtimeTingwuBanner');
+            const link = document.getElementById('realtimeTingwuLink');
+            if (!banner || !link) return;
+            const fileId = data.file_id || lastRealtimeFileId;
+            const hasTingwu = data.has_tingwu_summary || data.tingwu_summarization_status === 'completed';
+            if (fileId && hasTingwu) {
+                link.href = data.tingwu_summary_page || tingwuSummaryPageUrl(fileId);
+                banner.style.display = 'block';
+            } else if (fileId && data.tingwu_summarization_status === 'failed') {
+                banner.style.display = 'block';
+                banner.querySelector('.tingwu-banner-inner').innerHTML =
+                    '<div><strong>听悟 AI 摘要</strong><span class="tingwu-banner-desc">本次未能生成听悟摘要（可能转写内容过少）</span></div>';
+            } else {
+                banner.style.display = 'none';
             }
         }
 
@@ -3361,7 +3437,7 @@
             }
             resetRealtimeSessionUI(
                 isPortalEmbedded()
-                    ? '纪要已生成，请到门户左侧「会议记录」查看'
+                    ? '纪要已生成，请到 xlink 门户左侧「会议记录」查看'
                     : '纪要已生成，请到「历史会议」查看'
             );
         }
@@ -4186,6 +4262,20 @@
                                 <div id="historySummaryMarkdown" class="summary-content"></div>
                                 <div id="historySummaryVisual" class="visual-summary-root" style="display:none;"></div>
                                 <p class="visual-disclaimer">图文内容由 AI 根据转写整理，如有出入以转写原文为准。</p>
+                            </div>
+                        `;
+                    }
+                    if (data.has_tingwu_summary || data.tingwu_summarization_status === 'completed') {
+                        const twUrl = data.tingwu_summary_page || tingwuSummaryPageUrl(fileId);
+                        html += `
+                            <div class="tingwu-banner" style="margin-bottom:30px;">
+                                <div class="tingwu-banner-inner">
+                                    <div>
+                                        <strong>听悟 AI 摘要</strong>
+                                        <span class="tingwu-banner-desc">通义听悟大模型 · 全文摘要 / 发言总结 / 问答回顾 / 思维导图（独立于上方 GLM 速览）</span>
+                                    </div>
+                                    <a class="btn-tingwu-view" href="${twUrl}" target="_blank" rel="noopener">查看听悟摘要 →</a>
+                                </div>
                             </div>
                         `;
                     }

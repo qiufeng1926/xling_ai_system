@@ -1,10 +1,10 @@
-# xling AI 系统
+# xlink AI 系统
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-green.svg)](https://fastapi.tiangolo.com/)
 [![Vue](https://img.shields.io/badge/Vue-3.4+-brightgreen.svg)](https://vuejs.org/)
 
-**xling** 是一个多模块 AI 业务平台 Monorepo，通过统一的 Vue 3 门户整合两大业务系统：
+**xlink** 是一个多模块 AI 业务平台 Monorepo，通过统一的 Vue 3 门户整合两大业务系统：
 
 | 模块 | 目录 | 说明 |
 |------|------|------|
@@ -35,7 +35,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    xling 统一门户 (Vue 3)                        │
+│                    xlink 统一门户 (Vue 3)                        │
 │                    http://localhost:5173                         │
 │  ┌──────────────────────┐    ┌──────────────────────────────┐ │
 │  │  达人信息管理         │    │  会议 AI                      │ │
@@ -154,7 +154,7 @@ xling_ai_system/
 
 ## 快速开始
 
-以下步骤在本地启动完整的 xling 门户（达人 + 会议双模块）。
+以下步骤在本地启动完整的 xlink 门户（达人 + 会议双模块）。
 
 ### 1. 克隆仓库
 
@@ -253,7 +253,7 @@ Information_Aggregation\scripts\start_dev.bat
 
 | 地址 | 说明 |
 |------|------|
-| http://localhost:5173 | xling 统一门户 |
+| http://localhost:5173 | xlink 统一门户 |
 | http://localhost:8000/docs | 达人 API 文档 |
 | http://localhost:8001/docs | 会议 AI API 文档 |
 

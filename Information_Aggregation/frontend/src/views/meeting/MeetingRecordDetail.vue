@@ -31,7 +31,7 @@
     </div>
 
     <el-empty
-      v-if="permissionDenied"
+      v-if="permissionDenied && !isSuperAdminUser"
       description="无权查看该会议内容"
     >
       <p class="meeting-detail__denied-tip">
@@ -113,6 +113,8 @@ const canDownload = computed(() => {
   return !!userStore.userInfo?.permissions?.download_meetings
 })
 
+const isSuperAdminUser = computed(() => isSuperAdmin(userStore.userInfo?.role))
+
 const canDelete = computed(() => isSuperAdmin(userStore.userInfo?.role))
 
 async function loadDetail() {
@@ -121,9 +123,12 @@ async function loadDetail() {
   try {
     const res = await getMeetingDetail(fileId.value)
     if (!res.success) {
-      if (res.error?.includes('无权')) {
+      if (res.error?.includes('无权') && !isSuperAdminUser.value) {
         permissionDenied.value = true
         return
+      }
+      if (res.error?.includes('无权') && isSuperAdminUser.value) {
+        throw new Error('暂无浏览权限（隐身超管等特殊会议）')
       }
       throw new Error(res.error || '加载失败')
     }

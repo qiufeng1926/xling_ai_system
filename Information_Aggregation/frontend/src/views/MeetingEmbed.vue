@@ -2,7 +2,7 @@
 
   <div class="meeting-embed">
 
-    <el-empty v-if="!userStore.token" description="请先在 xling 平台登录后再使用会议 AI">
+    <el-empty v-if="!userStore.token" description="请先在 xlink 平台登录后再使用会议 AI">
 
       <el-button type="primary" @click="goLogin">去登录</el-button>
 

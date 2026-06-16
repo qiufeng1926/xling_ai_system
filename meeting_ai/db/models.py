@@ -290,6 +290,12 @@ class Meeting(Base):
     summary_visual_status = Column(
         String(20), nullable=True, comment='图文状态: completed/failed/skipped'
     )
+    tingwu_task_id = Column(String(64), nullable=True, comment='听悟实时任务 TaskId')
+    tingwu_summarization = Column(Text, nullable=True, comment='听悟大模型摘要JSON')
+    tingwu_summarization_status = Column(
+        String(20), nullable=True, comment='听悟摘要状态: completed/failed/skipped/pending'
+    )
+    tingwu_summarization_file_path = Column(String(500), nullable=True, comment='听悟摘要文件路径')
     
     # 数据统计
     transcript_length = Column(Integer, nullable=False, default=0, comment='转写文本长度')
@@ -341,6 +347,8 @@ class Meeting(Base):
             "has_summary": bool(self.summary),
             "has_visual_summary": bool(self.summary_visual),
             "summary_visual_status": self.summary_visual_status,
+            "has_tingwu_summary": bool(self.tingwu_summarization),
+            "tingwu_summarization_status": self.tingwu_summarization_status,
             "preview": (self.transcript or "")[:200],
             "is_collaborative": bool(getattr(self, "is_collaborative", False)),
             "room_code": getattr(self, "room_code", None),
@@ -376,6 +384,8 @@ class Meeting(Base):
             "has_summary": bool(self.summary),
             "has_visual_summary": bool(self.summary_visual),
             "summary_visual_status": self.summary_visual_status,
+            "has_tingwu_summary": bool(self.tingwu_summarization),
+            "tingwu_summarization_status": self.tingwu_summarization_status,
             "preview": (self.transcript or "")[:200],
             "is_collaborative": bool(self.is_collaborative),
             "room_code": self.room_code,
@@ -561,6 +571,22 @@ def migrate_schema(engine):
         for col, col_def in (
             ('summary_visual', "TEXT NULL COMMENT '图文速览JSON'"),
             ('summary_visual_status', "VARCHAR(20) NULL COMMENT '图文状态'"),
+        ):
+            result = conn.execute(text(f"""
+                SELECT COUNT(*) FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'meetings'
+                AND COLUMN_NAME = '{col}'
+            """))
+            if result.scalar() == 0:
+                conn.execute(text(f"ALTER TABLE meetings ADD COLUMN {col} {col_def}"))
+                conn.commit()
+                print(f"[OK] meetings 表已添加 {col} 字段")
+
+        for col, col_def in (
+            ('tingwu_task_id', "VARCHAR(64) NULL COMMENT '听悟实时任务 TaskId'"),
+            ('tingwu_summarization', "TEXT NULL COMMENT '听悟大模型摘要JSON'"),
+            ('tingwu_summarization_status', "VARCHAR(20) NULL COMMENT '听悟摘要状态'"),
+            ('tingwu_summarization_file_path', "VARCHAR(500) NULL COMMENT '听悟摘要文件路径'"),
         ):
             result = conn.execute(text(f"""
                 SELECT COUNT(*) FROM information_schema.COLUMNS

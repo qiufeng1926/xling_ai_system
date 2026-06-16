@@ -79,7 +79,7 @@ def can_access_meeting(
         return False
 
     if owner_role == "root":
-        if viewer.role != "admin" or not viewer.can_view_root_meetings:
+        if viewer.role != "admin" or not bool(viewer.can_view_root_meetings):
             return False
         cutoff = datetime.now() - timedelta(days=ROOT_MEETING_VIEW_DAYS)
         return meeting.created_at is not None and meeting.created_at >= cutoff
@@ -125,12 +125,13 @@ def can_download_meeting(
         finally:
             db.close()
 
+    if not can_access_meeting(viewer, meeting, owner, session=session):
+        return False
+
     if viewer.is_root() or viewer.can_download_files():
         return True
     if meeting.user_id == viewer.id:
         return True
-    if not can_access_meeting(viewer, meeting, owner, session=session):
-        return False
     return _has_meeting_download_grant(session, viewer, meeting.file_id)
 
 

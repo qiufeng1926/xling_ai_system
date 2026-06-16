@@ -35,7 +35,7 @@
     />
 
     <div class="welcome">
-      <h3>欢迎使用 xling · 达人信息管理</h3>
+      <h3>欢迎使用 xlink · 达人信息管理</h3>
       <p>{{ welcomeText }}</p>
       <el-space wrap>
         <el-button type="primary" @click="$router.push(INFLUENCER_ROUTES.collection)">发起采集</el-button>

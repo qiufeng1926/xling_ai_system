@@ -148,6 +148,10 @@ def save_meeting_to_db(meeting_data: dict) -> Meeting:
             summary=meeting_data.get('summary'),
             summary_visual=meeting_data.get('summary_visual'),
             summary_visual_status=meeting_data.get('summary_visual_status'),
+            tingwu_task_id=meeting_data.get('tingwu_task_id'),
+            tingwu_summarization=meeting_data.get('tingwu_summarization'),
+            tingwu_summarization_status=meeting_data.get('tingwu_summarization_status'),
+            tingwu_summarization_file_path=meeting_data.get('tingwu_summarization_file_path'),
             transcript_length=meeting_data.get('transcript_length', len(meeting_data['transcript'])),
             summary_length=meeting_data.get('summary_length', len(meeting_data.get('summary', '')) if meeting_data.get('summary') else 0),
             audio_duration=meeting_data.get('audio_duration'),
@@ -443,15 +447,22 @@ def get_all_meetings(
                 allowed = can_access_meeting(viewer, meeting, owner, session=session)
                 row["can_access"] = allowed
                 row["can_download"] = can_download_meeting(viewer, meeting, owner, session=session)
-                if not allowed:
+                if viewer.is_root():
+                    # 超级管理员无需单条审批；不展示历史申请状态
+                    row["access_request_status"] = None
+                    row["download_request_status"] = None
+                    if not allowed:
+                        row["preview"] = ""
+                elif not allowed:
                     row["preview"] = ""
                     row["access_request_status"] = request_status_map.get(meeting.file_id)
                 else:
                     row["access_request_status"] = None
-                if row["can_download"]:
-                    row["download_request_status"] = None
-                else:
-                    row["download_request_status"] = download_request_status_map.get(meeting.file_id)
+                if not viewer.is_root():
+                    if row["can_download"]:
+                        row["download_request_status"] = None
+                    else:
+                        row["download_request_status"] = download_request_status_map.get(meeting.file_id)
             else:
                 row["can_access"] = True
                 row["can_download"] = True

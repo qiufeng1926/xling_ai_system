@@ -56,8 +56,12 @@ def can_apply_request_type(user: User, request_type: str) -> tuple[bool, str]:
         REQ_VIEW_ROOT_MEETINGS,
     )
 
-    perms = effective_permissions(user)
     role = normalize_role(user.role)
+
+    if role == SUPER_ADMIN:
+        return False, "超级管理员无需申请权限"
+
+    perms = effective_permissions(user)
 
     if request_type == REQ_VIEW_LIBRARY:
         if perms["view_library"]:

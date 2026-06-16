@@ -155,6 +155,17 @@ def get_or_create_user_from_portal_token(
         meeting_role = ROLE_TO_MEETING.get(portal_role, meeting_role)
         nickname = (live_profile.get("nickname") or nickname).strip() or username
 
+    if portal_role == "super_admin":
+        meeting_role = "root"
+        perms = {
+            **perms,
+            "view_all_meetings": True,
+            "view_root_meetings": True,
+            "download_meetings": True,
+            "approve_meeting_download": True,
+            "approve_meeting_view": True,
+        }
+
     user = db.query(User).filter(User.username == username).first()
     if user:
         try:

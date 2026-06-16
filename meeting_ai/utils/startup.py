@@ -35,7 +35,7 @@ def validate_startup_config() -> None:
 
     if not jwt_secret or jwt_secret in _INSECURE_JWT_SECRETS:
         issues.append(
-            "JWT_SECRET 未设置或仍为默认值；嵌入 xling 门户时须与达人后端 SECRET_KEY 完全一致"
+            "JWT_SECRET 未设置或仍为默认值；嵌入 xlink 门户时须与达人后端 SECRET_KEY 完全一致"
         )
 
     if app_env == "production":

@@ -4,10 +4,15 @@
       <div>
         <h2>会议记录</h2>
         <p class="meeting-history__desc">
-          所有人可查看会议列表。浏览/下载他人会议需勾选后逐条向管理员申请；自己录制或参与的协作会议默认可浏览，自己录制的会议默认可下载。
+          <template v-if="isSuperAdminUser">
+            超级管理员可浏览与下载全部会议记录（隐身超管等特殊策略除外），无需申请权限。
+          </template>
+          <template v-else>
+            所有人可查看会议列表。浏览/下载他人会议需勾选后逐条向管理员申请；自己录制或参与的协作会议默认可浏览，自己录制的会议默认可下载。
+          </template>
         </p>
       </div>
-      <div class="meeting-history__header-actions">
+      <div v-if="!isSuperAdminUser" class="meeting-history__header-actions">
         <el-button
           v-if="viewSelectableCount > 0"
           type="primary"
@@ -61,14 +66,14 @@
         >
           <div class="meeting-history__checks" @click.stop>
             <el-checkbox
-              v-if="isViewSelectable(item)"
+              v-if="!isSuperAdminUser && isViewSelectable(item)"
               :model-value="selectedViewIds.includes(item.file_id)"
               @change="(val: boolean) => toggleViewSelect(item.file_id, val)"
             >
               浏览
             </el-checkbox>
             <el-checkbox
-              v-if="isDownloadSelectable(item)"
+              v-if="!isSuperAdminUser && isDownloadSelectable(item)"
               :model-value="selectedDownloadIds.includes(item.file_id)"
               @change="(val: boolean) => toggleDownloadSelect(item.file_id, val)"
             >
@@ -82,10 +87,10 @@
                 <el-tag v-if="item.is_collaborative" size="small" type="primary">协作</el-tag>
                 <el-tag v-if="item.meeting_type === 'realtime'" size="small">实时</el-tag>
                 <el-tag v-else-if="item.meeting_type === 'batch'" size="small" type="info">批量</el-tag>
-                <el-tag v-if="item.access_request_status === 'pending'" size="small" type="warning">浏览申请中</el-tag>
-                <el-tag v-else-if="item.can_access === false" size="small" type="warning">需申请浏览</el-tag>
-                <el-tag v-if="item.download_request_status === 'pending'" size="small" type="info">下载申请中</el-tag>
-                <el-tag v-else-if="item.can_access && item.can_download === false" size="small" type="info">需申请下载</el-tag>
+                <el-tag v-if="!isSuperAdminUser && item.access_request_status === 'pending'" size="small" type="warning">浏览申请中</el-tag>
+                <el-tag v-else-if="!isSuperAdminUser && item.can_access === false" size="small" type="warning">需申请浏览</el-tag>
+                <el-tag v-if="!isSuperAdminUser && item.download_request_status === 'pending'" size="small" type="info">下载申请中</el-tag>
+                <el-tag v-else-if="!isSuperAdminUser && item.can_access && item.can_download === false" size="small" type="info">需申请下载</el-tag>
               </div>
               <span class="meeting-history__item-time">{{ formatTime(item.created_at) }}</span>
             </div>
@@ -124,8 +129,12 @@ import {
   type MeetingListItem,
 } from '@/api/meetings'
 import { MEETING_ROUTES } from '@/constants/routes'
+import { useUserStore } from '@/stores/user'
+import { isSuperAdmin } from '@/utils/permission'
 
 const router = useRouter()
+const userStore = useUserStore()
+const isSuperAdminUser = computed(() => isSuperAdmin(userStore.userInfo?.role))
 const loading = ref(false)
 const applyingView = ref(false)
 const applyingDownload = ref(false)
@@ -169,6 +178,12 @@ function isDownloadSelectable(item: MeetingListItem) {
 }
 
 function previewMessage(item: MeetingListItem) {
+  if (isSuperAdminUser.value) {
+    if (item.can_access === false) {
+      return '暂无浏览权限（隐身超管等特殊会议）'
+    }
+    return previewText(item.preview)
+  }
   if (item.can_access === false) {
     if (item.access_request_status === 'pending') {
       return '已提交浏览申请，请等待超级管理员审批'
@@ -297,7 +312,7 @@ async function applySingleView(item: MeetingListItem) {
 }
 
 function goDetail(item: MeetingListItem) {
-  if (item.can_access === false) {
+  if (!isSuperAdminUser.value && item.can_access === false) {
     if (item.access_request_status === 'pending') {
       ElMessage.info('该会议浏览申请审批中，请耐心等待')
       return

@@ -26,6 +26,7 @@ from api.routes.export import router as export_router
 from api.routes.settings import router as settings_router
 from api.routes.collaborative import router as collaborative_router
 from api.routes.meeting_access import router as meeting_access_router
+from api.routes.tingwu_summary import router as tingwu_summary_router
 
 
 @asynccontextmanager
@@ -122,6 +123,12 @@ app.include_router(
     tags=["会议浏览权限"]
 )
 
+app.include_router(
+    tingwu_summary_router,
+    prefix="/api",
+    tags=["听悟摘要"]
+)
+
 
 # 挂载静态文件目录
 static_dir = os.path.join(
@@ -160,6 +167,15 @@ async def root():
         "message": "Meeting AI API",
         "docs": "/docs"
     }
+
+
+@app.get("/tingwu-summary")
+async def tingwu_summary_page():
+    """听悟大模型摘要展示页（独立于 GLM 速览）"""
+    html_path = os.path.join(static_dir, "tingwu_summary.html")
+    if os.path.exists(html_path):
+        return FileResponse(html_path)
+    return {"error": "页面不存在"}
 
 
 # favicon.ico 处理

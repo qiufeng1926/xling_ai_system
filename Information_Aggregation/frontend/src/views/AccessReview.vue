@@ -2,7 +2,7 @@
   <div class="page-card">
     <el-card v-if="applyTypes.length" shadow="never" class="section">
       <template #header>申请平台权限</template>
-      <p class="tip">所有模块的权限均在 xling 平台统一申请与审批，审批通过后请重新登录生效。</p>
+      <p class="tip">所有模块的权限均在 xlink 平台统一申请与审批，审批通过后请重新登录生效。</p>
       <el-form label-width="120px">
         <el-form-item label="申请类型">
           <el-select v-model="applyType" style="width: 100%">
