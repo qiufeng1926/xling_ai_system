@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>听悟 AI 摘要 - Meeting AI</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
+            min-height: 100vh;
+            color: #1a1a2e;
+            padding: 24px 16px 48px;
+        }
+        .page {
+            max-width: 960px;
+            margin: 0 auto;
+        }
+        .top-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+        .top-bar h1 {
+            color: #fff;
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+        .top-bar .subtitle {
+            color: rgba(255,255,255,0.75);
+            font-size: 0.9rem;
+            margin-top: 4px;
+        }
+        .btn-back {
+            background: rgba(255,255,255,0.15);
+            color: #fff;
+            border: 1px solid rgba(255,255,255,0.3);
+            padding: 10px 18px;
+            border-radius: 8px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        .btn-back:hover { background: rgba(255,255,255,0.25); }
+
+        .card {
+            background: #fff;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #2c5364;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .card-title .badge {
+            font-size: 11px;
+            font-weight: 600;
+            background: #e8f4fd;
+            color: #1677ff;
+            padding: 2px 8px;
+            border-radius: 999px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        .tab-btn {
+            padding: 10px 18px;
+            border: 2px solid rgba(255,255,255,0.3);
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+            border-radius: 999px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .tab-btn.active {
+            background: #fff;
+            color: #2c5364;
+            border-color: #fff;
+            font-weight: 600;
+        }
+
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        .paragraph-text {
+            line-height: 1.9;
+            font-size: 15px;
+            color: #333;
+            white-space: pre-wrap;
+        }
+
+        .speaker-card {
+            border-left: 4px solid #1677ff;
+            background: #f8fafc;
+            border-radius: 0 10px 10px 0;
+            padding: 16px 18px;
+            margin-bottom: 14px;
+        }
+        .speaker-card:nth-child(even) { border-left-color: #52c41a; }
+        .speaker-name {
+            font-weight: 700;
+            color: #1677ff;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        .speaker-card:nth-child(even) .speaker-name { color: #389e0d; }
+
+        .qa-item {
+            border: 1px solid #e8e8e8;
+            border-radius: 12px;
+            padding: 16px 18px;
+            margin-bottom: 12px;
+        }
+        .qa-q {
+            font-weight: 700;
+            color: #1677ff;
+            margin-bottom: 10px;
+            line-height: 1.6;
+        }
+        .qa-q::before { content: "Q："; }
+        .qa-a {
+            color: #444;
+            line-height: 1.8;
+            padding-left: 0;
+        }
+        .qa-a::before { content: "A："; font-weight: 700; color: #52c41a; }
+
+        .mindmap-root { overflow-x: auto; padding: 8px 0; }
+        .mindmap-tree, .mindmap-tree ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        .mindmap-tree ul {
+            padding-left: 24px;
+            margin-left: 12px;
+            border-left: 2px solid #d9e8f5;
+        }
+        .mindmap-tree li {
+            position: relative;
+            padding: 6px 0 6px 8px;
+            line-height: 1.5;
+        }
+        .mindmap-tree li::before {
+            content: "";
+            position: absolute;
+            left: -14px;
+            top: 16px;
+            width: 12px;
+            height: 2px;
+            background: #d9e8f5;
+        }
+        .mindmap-node {
+            display: inline-block;
+            background: #f0f7ff;
+            border: 1px solid #bae0ff;
+            border-radius: 8px;
+            padding: 8px 14px;
+            font-size: 14px;
+            color: #1a1a2e;
+            max-width: 100%;
+        }
+        .mindmap-tree > li > .mindmap-node {
+            background: #1677ff;
+            color: #fff;
+            border-color: #1677ff;
+            font-weight: 600;
+            font-size: 15px;
+        }
+
+        .empty-hint {
+            text-align: center;
+            color: #999;
+            padding: 32px 16px;
+            font-size: 14px;
+        }
+        .loading-box {
+            text-align: center;
+            color: #fff;
+            padding: 60px 20px;
+        }
+        .loading-box .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 16px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .error-box {
+            background: #fff2f0;
+            border: 1px solid #ffccc7;
+            color: #cf1322;
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+        }
+        .disclaimer {
+            text-align: center;
+            color: rgba(255,255,255,0.6);
+            font-size: 12px;
+            margin-top: 24px;
+        }
+        .meeting-meta {
+            color: rgba(255,255,255,0.85);
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="top-bar">
+            <div>
+                <h1>听悟 AI 摘要</h1>
+                <div class="subtitle">通义听悟大模型 · 全文摘要 / 发言总结 / 问答回顾 / 思维导图</div>
+            </div>
+            <a class="btn-back" href="/" id="backLink">← 返回实时转写</a>
+        </div>
+
+        <div id="meetingMeta" class="meeting-meta" style="display:none;"></div>
+
+        <div id="loadingState" class="loading-box">
+            <div class="spinner"></div>
+            <div>正在加载听悟摘要...</div>
+        </div>
+
+        <div id="errorState" style="display:none;" class="card error-box"></div>
+
+        <div id="contentArea" style="display:none;">
+            <div class="tabs" id="sectionTabs">
+                <button class="tab-btn active" data-panel="paragraph">全文摘要</button>
+                <button class="tab-btn" data-panel="conversational">发言总结</button>
+                <button class="tab-btn" data-panel="qa">问答回顾</button>
+                <button class="tab-btn" data-panel="mindmap">思维导图</button>
+            </div>
+
+            <div id="panel-paragraph" class="panel active">
+                <div class="card">
+                    <div class="card-title">全文摘要 <span class="badge">Paragraph</span></div>
+                    <div id="paragraphContent" class="paragraph-text"></div>
+                </div>
+            </div>
+
+            <div id="panel-conversational" class="panel">
+                <div class="card">
+                    <div class="card-title">发言总结 <span class="badge">Conversational</span></div>
+                    <div id="conversationalContent"></div>
+                </div>
+            </div>
+
+            <div id="panel-qa" class="panel">
+                <div class="card">
+                    <div class="card-title">问答回顾 <span class="badge">Q&amp;A</span></div>
+                    <div id="qaContent"></div>
+                </div>
+            </div>
+
+            <div id="panel-mindmap" class="panel">
+                <div class="card">
+                    <div class="card-title">思维导图 <span class="badge">MindMap</span></div>
+                    <div id="mindmapContent" class="mindmap-root"></div>
+                </div>
+            </div>
+        </div>
+
+        <p class="disclaimer">摘要由阿里云通义听悟大模型生成，与 GLM 智能速览独立展示。</p>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const fileId = (params.get('file_id') || '').trim();
+
+        function getAuthToken() {
+            return localStorage.getItem('token') || localStorage.getItem('authToken') || '';
+        }
+
+        function authFetch(url, options = {}) {
+            const headers = Object.assign({}, options.headers || {});
+            const token = getAuthToken();
+            if (token) headers['Authorization'] = 'Bearer ' + token;
+            return fetch(url, Object.assign({}, options, { headers }));
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text == null ? '' : String(text);
+            return div.innerHTML;
+        }
+
+        function showError(msg) {
+            document.getElementById('loadingState').style.display = 'none';
+            document.getElementById('contentArea').style.display = 'none';
+            const el = document.getElementById('errorState');
+            el.style.display = 'block';
+            el.textContent = msg;
+        }
+
+        function renderMindMapNodes(items) {
+            if (!items || !items.length) return '';
+            let html = '<ul class="mindmap-tree">';
+            for (const node of items) {
+                const title = node.Title || node.title || '';
+                const children = node.Topic || node.topic || [];
+                html += '<li><span class="mindmap-node">' + escapeHtml(title) + '</span>';
+                if (children.length) html += renderMindMapNodes(children);
+                html += '</li>';
+            }
+            html += '</ul>';
+            return html;
+        }
+
+        function renderSummarization(data) {
+            const s = data.summarization || {};
+            const paragraph = s.paragraph_summary || '';
+            const conversational = s.conversational_summary || [];
+            const qa = s.questions_answering_summary || [];
+            const mindmap = s.mind_map_summary || [];
+
+            const paragraphEl = document.getElementById('paragraphContent');
+            paragraphEl.textContent = paragraph || '暂无全文摘要（可能转写内容过少）';
+
+            const convEl = document.getElementById('conversationalContent');
+            if (!conversational.length) {
+                convEl.innerHTML = '<div class="empty-hint">暂无发言总结</div>';
+            } else {
+                convEl.innerHTML = conversational.map(item => {
+                    const name = item.SpeakerName || item.speakerName || ('发言人' + (item.SpeakerId || item.speakerId || ''));
+                    const summary = item.Summary || item.summary || '';
+                    return '<div class="speaker-card"><div class="speaker-name">' + escapeHtml(name) + '</div><div>' + escapeHtml(summary) + '</div></div>';
+                }).join('');
+            }
+
+            const qaEl = document.getElementById('qaContent');
+            if (!qa.length) {
+                qaEl.innerHTML = '<div class="empty-hint">暂无问答回顾（会议中可能没有明确的问答交互）</div>';
+            } else {
+                qaEl.innerHTML = qa.map(item => {
+                    const q = item.Question || item.question || '';
+                    const a = item.Answer || item.answer || '';
+                    return '<div class="qa-item"><div class="qa-q">' + escapeHtml(q) + '</div><div class="qa-a">' + escapeHtml(a) + '</div></div>';
+                }).join('');
+            }
+
+            const mindEl = document.getElementById('mindmapContent');
+            if (!mindmap.length) {
+                mindEl.innerHTML = '<div class="empty-hint">暂无思维导图</div>';
+            } else {
+                mindEl.innerHTML = renderMindMapNodes(mindmap);
+            }
+
+            document.getElementById('loadingState').style.display = 'none';
+            document.getElementById('contentArea').style.display = 'block';
+
+            if (data.meeting_name) {
+                const meta = document.getElementById('meetingMeta');
+                meta.style.display = 'block';
+                meta.textContent = '会议：' + data.meeting_name;
+            }
+        }
+
+        document.querySelectorAll('#sectionTabs .tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('#sectionTabs .tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+                btn.classList.add('active');
+                const panel = document.getElementById('panel-' + btn.dataset.panel);
+                if (panel) panel.classList.add('active');
+            });
+        });
+
+        async function loadSummary() {
+            if (!fileId) {
+                showError('缺少 file_id 参数，请从实时转写或历史会议页面进入。');
+                return;
+            }
+            if (!getAuthToken()) {
+                showError('请先登录后再查看听悟摘要。');
+                return;
+            }
+
+            const backLink = document.getElementById('backLink');
+            if (document.referrer && document.referrer.includes(window.location.host)) {
+                backLink.href = 'javascript:history.back()';
+                backLink.textContent = '← 返回上一页';
+            }
+
+            try {
+                const resp = await authFetch('/api/meetings/' + encodeURIComponent(fileId) + '/tingwu-summary');
+                const data = await resp.json();
+                if (!resp.ok || !data.success) {
+                    showError(data.error || data.detail || '加载失败');
+                    return;
+                }
+                if (data.tingwu_summarization_status === 'pending' || (!data.has_content && data.tingwu_summarization_status !== 'failed')) {
+                    showError('听悟摘要仍在生成中，请稍后刷新页面。');
+                    return;
+                }
+                if (!data.has_content) {
+                    showError('听悟摘要暂无内容（可能转写过短或未启用摘要功能）。');
+                    return;
+                }
+                renderSummarization(data);
+            } catch (e) {
+                console.error(e);
+                showError('网络错误，请稍后重试。');
+            }
+        }
+
+        loadSummary();
+    </script>
+</body>
+</html>
