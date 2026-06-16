@@ -679,48 +679,6 @@
         .theme-red .visual-section-num { background: #e74c3c; color: white; }
         .theme-red .visual-card-highlight { background: #fdedec; color: #e74c3c; }
 
-        .btn-export {
-            padding: 8px 16px;
-            background: #4caf50;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            font-size: 14px;
-            cursor: pointer;
-            white-space: nowrap;
-            font-weight: bold;
-        }
-
-        .btn-export:hover {
-            background: #43a047;
-        }
-
-        .btn-export:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .summary-export-actions {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            align-items: center;
-        }
-
-        .btn-export-visual {
-            padding: 8px 16px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            font-size: 14px;
-            cursor: pointer;
-            white-space: nowrap;
-            font-weight: bold;
-        }
-
-        .btn-export-visual:hover { background: #5568d3; }
-        .btn-export-visual:disabled { opacity: 0.5; cursor: not-allowed; }
         
         .info-box {
             margin-top: 20px;
@@ -1445,10 +1403,6 @@
             <div id="realtimeSummary" class="summary-container" style="display: none;">
                 <div class="summary-header">
                     <div class="summary-title" style="margin-bottom:0;">📝 AI 智能速览</div>
-                    <div class="summary-export-actions">
-                        <button class="btn-export" onclick="exportSummary('realtime')">📥 导出 Word</button>
-                        <button type="button" id="realtimeExportVisualBtn" class="btn-export-visual" onclick="exportVisual('realtime')">📥 下载图文</button>
-                    </div>
                 </div>
                 <div class="summary-view-tabs">
                     <button type="button" id="realtimeTabMarkdown" class="summary-view-tab active" onclick="switchSummaryTab('realtime','markdown')">文字速览</button>
@@ -1520,10 +1474,6 @@
             <div id="summaryResult" class="summary-container" style="display: none;">
                 <div class="summary-header">
                     <div class="summary-title" style="margin-bottom:0;">📝 AI 智能速览</div>
-                    <div class="summary-export-actions">
-                        <button class="btn-export" onclick="exportSummary('batch')">📥 导出 Word</button>
-                        <button type="button" id="batchExportVisualBtn" class="btn-export-visual" onclick="exportVisual('batch')">📥 下载图文</button>
-                    </div>
                 </div>
                 <div class="summary-view-tabs">
                     <button type="button" id="batchTabMarkdown" class="summary-view-tab active" onclick="switchSummaryTab('batch','markdown')">文字速览</button>
@@ -1539,7 +1489,7 @@
                 <ul>
                     <li>上传音频文件后自动进行语音识别</li>
                     <li>AI 自动生成会议纪要和要点总结</li>
-                    <li>结果可保存为文本文件</li>
+                    <li>可在 xlink 平台「会议记录详情」页导出 Word / 下载图文</li>
                     <li>支持多种音频格式</li>
                 </ul>
             </div>
@@ -2070,23 +2020,6 @@
             return false;
         }
 
-        function userCanDownload() {
-            return currentUser && (currentUser.role === 'root' || currentUser.can_download);
-        }
-
-        function updateExportButtonsState() {
-            const allowed = userCanDownload();
-            document.querySelectorAll('.btn-export, .btn-export-visual').forEach(btn => {
-                if (!allowed) {
-                    btn.disabled = true;
-                    btn.title = '暂无下载权限，请在 xlink 平台权限管理中申请';
-                } else {
-                    btn.disabled = false;
-                    btn.title = '';
-                }
-            });
-        }
-
         function updateAccountPanel() {
             if (!currentUser) return;
             const roleLabel = ROLE_LABELS[currentUser.role] || currentUser.role;
@@ -2169,8 +2102,6 @@
 
             document.getElementById('rootAdminSection').style.display =
                 currentUser.role === 'root' ? 'flex' : 'none';
-
-            updateExportButtonsState();
         }
 
         function openAdminModal() {
@@ -2797,153 +2728,6 @@
             }
         }
 
-        function downloadBlobResponse(response, defaultFilename) {
-            const disposition = response.headers.get('Content-Disposition') || '';
-            let filename = defaultFilename;
-            const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-            const plainMatch = disposition.match(/filename="([^"]+)"/i);
-            if (utf8Match) filename = decodeURIComponent(utf8Match[1]);
-            else if (plainMatch) filename = plainMatch[1];
-            return response.blob().then(blob => {
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = filename;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                URL.revokeObjectURL(url);
-            });
-        }
-
-        async function exportSummaryDocx({ fileId, content, title }) {
-            if (!userCanDownload()) {
-                showErrorAlert('暂无下载/导出权限，请在 xlink 平台「平台管理 → 权限管理」中申请');
-                return;
-            }
-            const exportTitle = (title || '').trim();
-            if (!fileId && !exportTitle) {
-                showErrorAlert('请先填写会议名称');
-                return;
-            }
-            try {
-                let response;
-                if (fileId) {
-                    response = await authFetch(`/api/meetings/${fileId}/export/summary`);
-                } else if (content) {
-                    response = await authFetch('/api/export/summary', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ content, title: exportTitle }),
-                    });
-                } else {
-                    showErrorAlert('无可导出的总结');
-                    return;
-                }
-                if (!response.ok) {
-                    const err = await response.json().catch(() => ({}));
-                    showErrorAlert(err.detail || '导出失败');
-                    return;
-                }
-                await downloadBlobResponse(response, 'AI智能速览.docx');
-            } catch (e) {
-                showErrorAlert('导出失败，请稍后重试');
-            }
-        }
-
-        async function exportVisualHtml({ fileId, visual, title, format = 'html' }) {
-            if (!userCanDownload()) {
-                showErrorAlert('暂无下载/导出权限，请在 xlink 平台「平台管理 → 权限管理」中申请');
-                return;
-            }
-            const exportTitle = (title || '').trim();
-            if (!fileId && !exportTitle) {
-                showErrorAlert('请先填写会议名称');
-                return;
-            }
-            try {
-                let response;
-                const fmt = format === 'json' ? 'json' : 'html';
-                if (fileId) {
-                    response = await authFetch(`/api/meetings/${fileId}/export/visual?format=${fmt}`);
-                } else if (visual) {
-                    response = await authFetch(`/api/export/visual?format=${fmt}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ visual, title: exportTitle }),
-                    });
-                } else {
-                    showErrorAlert('无可下载的图文速览');
-                    return;
-                }
-                if (!response.ok) {
-                    const err = await response.json().catch(() => ({}));
-                    showErrorAlert(err.detail || '下载失败');
-                    return;
-                }
-                const defaultName = fmt === 'json' ? '图文速览.json' : '图文速览.html';
-                await downloadBlobResponse(response, defaultName);
-            } catch (e) {
-                showErrorAlert('下载失败，请稍后重试');
-            }
-        }
-
-        function exportSummary(source) {
-            if (source === 'realtime') {
-                const mdEl = document.getElementById('realtimeSummaryMarkdown');
-                const content = (mdEl ? mdEl.textContent : '').trim();
-                const meetingName = document.getElementById('meetingNameInput').value.trim();
-                if (!meetingName && !lastRealtimeFileId) {
-                    showErrorAlert('请先填写会议名称');
-                    return;
-                }
-                exportSummaryDocx({
-                    fileId: lastRealtimeFileId,
-                    content: lastRealtimeFileId ? null : content,
-                    title: meetingName,
-                });
-            } else if (source === 'batch') {
-                const mdEl = document.getElementById('batchSummaryMarkdown');
-                const content = (mdEl ? mdEl.textContent : '').trim();
-                exportSummaryDocx({
-                    fileId: lastBatchFileId,
-                    content: lastBatchFileId ? null : content,
-                    title: lastBatchSummaryTitle,
-                });
-            }
-        }
-
-        function exportVisual(source, format) {
-            if (source === 'realtime') {
-                const meetingName = document.getElementById('meetingNameInput').value.trim();
-                if (!meetingName && !lastRealtimeFileId) {
-                    showErrorAlert('请先填写会议名称');
-                    return;
-                }
-                exportVisualHtml({
-                    fileId: lastRealtimeFileId,
-                    visual: lastRealtimeFileId ? null : lastRealtimeVisual,
-                    title: meetingName,
-                    format,
-                });
-            } else if (source === 'batch') {
-                exportVisualHtml({
-                    fileId: lastBatchFileId,
-                    visual: lastBatchFileId ? null : lastBatchVisual,
-                    title: lastBatchSummaryTitle,
-                    format,
-                });
-            }
-        }
-
-        function exportHistorySummary(fileId, title) {
-            exportSummaryDocx({ fileId, title });
-        }
-
-        function exportHistoryVisual(fileId, title, format) {
-            exportVisualHtml({ fileId, title, format });
-        }
-
         // ========== 原有功能 ==========
         let ws = null;
         let mediaRecorder = null;
@@ -3346,10 +3130,6 @@
             const btnVis = document.getElementById(prefix + 'TabVisual');
             if (btnVis) {
                 btnVis.disabled = !visual && status === 'failed';
-            }
-            const exportVisBtn = document.getElementById(prefix + 'ExportVisualBtn');
-            if (exportVisBtn) {
-                exportVisBtn.disabled = !visual && status !== 'completed';
             }
             if (prefix === 'realtime') lastRealtimeVisual = visual || null;
             if (prefix === 'batch') lastBatchVisual = visual || null;
@@ -4250,10 +4030,6 @@
                             <div class="summary-container" style="margin-bottom:30px;">
                                 <div class="summary-header">
                                     <div class="summary-title" style="margin-bottom:0;">📊 AI 智能速览</div>
-                                    <div class="summary-export-actions">
-                                        <button class="btn-export" onclick="exportHistorySummary('${fileId}')">📥 导出 Word</button>
-                                        <button type="button" class="btn-export-visual" ${data.summary_visual ? '' : 'disabled'} onclick="exportHistoryVisual('${fileId}')">📥 下载图文</button>
-                                    </div>
                                 </div>
                                 <div class="summary-view-tabs">
                                     <button type="button" id="historyTabMarkdown" class="summary-view-tab active" onclick="switchSummaryTab('history','markdown')">文字速览</button>
