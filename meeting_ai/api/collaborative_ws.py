@@ -110,10 +110,14 @@ async def handle_collaborative_ws(
                 return
             if is_sentence_end and body:
                 merged = await room_manager.append_transcript(
-                    room.room_code, current_user.username, nickname, body
+                    session_info["room_code"], current_user.username, nickname, body
                 )
-                collab_svc.append_transcript(db, room, f"[{nickname}] {body}")
-                await room_manager.broadcast(room.room_code, {
+                try:
+                    collab_svc.append_transcript(db, room, f"[{nickname}] {body}")
+                except Exception as exc:
+                    logger.error("协作转写落库失败: %s", exc, exc_info=True)
+                    db.rollback()
+                await room_manager.broadcast(session_info["room_code"], {
                     "type": "transcript_update",
                     "merged_transcript": merged,
                     "speaker": nickname,
@@ -136,7 +140,10 @@ async def handle_collaborative_ws(
         async def ensure_tingwu() -> None:
             if session_info["role"] == "viewer":
                 return
-            if session_info["tingwu_started"] or session_info["tingwu_failed"]:
+            if session_info["tingwu_failed"]:
+                return
+            if session_info["tingwu_started"]:
+                await manager.send_json(connection_id, {"type": "tingwu_ready"})
                 return
             rt = room_manager.get_room(room.room_code)
             if (
@@ -147,6 +154,7 @@ async def handle_collaborative_ws(
                 raise ValueError(f"同时录音人数已达上限（{collab_max_recorders}）")
             async with tingwu_lock:
                 if session_info["tingwu_started"]:
+                    await manager.send_json(connection_id, {"type": "tingwu_ready"})
                     return
                 transcriber = tingwu_engine.create_streaming_session(
                     on_result=on_tingwu_result, on_error=on_tingwu_error
@@ -214,7 +222,7 @@ async def handle_collaborative_ws(
 
             if message.get("type") == "record_stop":
                 session_info["is_recording"] = False
-                await room_manager.set_recording(room.room_code, current_user.username, False)
+                await room_manager.set_recording(session_info["room_code"], current_user.username, False)
                 if session_info["tingwu_started"] and session_info["transcriber"]:
                     await tingwu_engine.finalize_stream_async(session_info["transcriber"])
                     session_info["tingwu_started"] = False
@@ -233,8 +241,13 @@ async def handle_collaborative_ws(
 
     except WebSocketDisconnect:
         pass
+    except Exception:
+        db.rollback()
+        raise
     finally:
         code = room_manager.unregister_connection(connection_id)
+        if not code and session_info:
+            code = session_info.get("room_code")
         if code and session_info:
             await room_manager.broadcast(code, {
                 "type": "participant_event",
@@ -249,6 +262,10 @@ async def handle_collaborative_ws(
                     await tingwu_engine.finalize_stream_async(transcriber)
                 except Exception:
                     pass
+        try:
+            db.rollback()
+        except Exception:
+            pass
         db.close()
         manager.disconnect(connection_id)
 
@@ -274,7 +291,8 @@ async def finalize_collaborative_room(
         room = db.query(CollaborativeRoom).filter(CollaborativeRoom.id == room.id).first()
 
     rt = room_manager.get_room(room.room_code)
-    merged = rt.merged_text() if rt else (room.merged_transcript or "")
+    memory_text = rt.merged_text() if rt else ""
+    merged = collab_svc.resolve_merged_transcript(room, memory_text)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_name = "".join(

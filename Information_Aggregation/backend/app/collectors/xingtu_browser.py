@@ -12,6 +12,12 @@ from app.config import settings
 from app.constants.xingtu_filters import PAGE_FILTER_LABELS
 from app.collectors.filter_utils import passes_search_filters
 from app.utils.mcn_utils import extract_mcn_name
+from app.utils.collector_uid import (
+    normalize_xingtu_authors,
+    pick_display_nickname,
+    resolve_xingtu_platform_uid,
+)
+from app.utils.keyword_match import calc_keyword_match_score, passes_keyword_match
 from app.utils.xingtu_fields import (
     build_xingtu_homepage,
     choose_best_profile_url,
@@ -29,24 +35,23 @@ XINGTU_MARKET_URL = "https://www.xingtu.cn/ad/creator/market"
 XINGTU_SEARCH_URL = "https://www.xingtu.cn/ad/creator/market?keyword={keyword}"
 
 AUTHOR_ID_KEYS = ("author_id", "star_id", "uid", "user_id", "core_user_id")
-NICKNAME_KEYS = ("nick_name", "nickname", "author_name", "name", "unique_id")
+NICKNAME_KEYS = ("nick_name", "nickname", "author_name", "name")
 FOLLOWER_KEYS = ("follower_count", "follower", "fans_num", "fans_count", "follower_num")
 AVATAR_KEYS = ("avatar_uri", "avatar_url", "avatar", "head_image")
 TAG_KEYS = ("tags", "tag_list", "content_tags", "category_tags")
 AVG_PLAY_KEYS = ("avg_play", "avg_play_count", "play_count_avg", "average_play")
 
 INTERCEPT_URL_KEYWORDS = (
-    "author",
-    "creator",
-    "search",
-    "market",
-    "star",
-    "kol",
-    "talent",
-    "detail",
-    "homepage",
-    "profile",
-    "info",
+    "search_for_author_square",
+    "search_for_author",
+)
+
+EXCLUDE_URL_KEYWORDS = (
+    "recommend",
+    "demander_get",
+    "/u/login",
+    "/u/api/demander",
+    "get_collaboration",
 )
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
@@ -79,36 +84,9 @@ class XingtuBrowserCollector:
         except ImportError as exc:
             raise RuntimeError("请先安装 Playwright: pip install playwright && playwright install chromium") from exc
 
-        authors: dict[str, dict[str, Any]] = {}
-        seen_ids: set[str] = set()
-
-        def on_response(response) -> None:
-            if response.status != 200:
-                return
-            content_type = response.headers.get("content-type", "")
-            if "json" not in content_type:
-                return
-            url = response.url.lower()
-            if "xingtu.cn" not in url:
-                return
-            if not any(k in url for k in INTERCEPT_URL_KEYWORDS):
-                return
-            try:
-                data = response.json()
-                for item in _extract_author_items(data):
-                    uid = str(_pick(item, AUTHOR_ID_KEYS) or "")
-                    if not uid:
-                        continue
-                    seen_ids.add(uid)
-                    if uid in authors:
-                        authors[uid] = merge_author_items(authors[uid], item)
-                    else:
-                        authors[uid] = item
-            except Exception:
-                pass
-
         logger.info("Xingtu Playwright collect start: keyword=%s", keyword)
-        page = None
+        authors: dict[str, dict[str, Any]] = {}
+        from_search_api = False
 
         with sync_playwright() as p:
             browser = p.chromium.launch(
@@ -116,62 +94,87 @@ class XingtuBrowserCollector:
                 slow_mo=settings.PLAYWRIGHT_SLOW_MO,
             )
             context = self._create_context(browser)
-            page = context.new_page()
-            page.on("response", on_response)
+            page = None
+            api_authors: dict[str, dict[str, Any]] = {}
 
             try:
-                page.goto(XINGTU_MARKET_URL, wait_until="domcontentloaded", timeout=settings.PLAYWRIGHT_TIMEOUT)
-                page.wait_for_timeout(2000)
+                page = context.new_page()
+
+                def on_response(response) -> None:
+                    nonlocal from_search_api
+                    if response.status != 200:
+                        return
+                    content_type = response.headers.get("content-type", "")
+                    if "json" not in content_type:
+                        return
+                    url = response.url.lower()
+                    if "xingtu.cn" not in url:
+                        return
+                    if any(k in url for k in EXCLUDE_URL_KEYWORDS):
+                        return
+                    if not any(k in url for k in INTERCEPT_URL_KEYWORDS):
+                        return
+                    try:
+                        data = response.json()
+                        for item in _extract_author_items(data):
+                            uid = resolve_xingtu_platform_uid(item)
+                            if not uid:
+                                continue
+                            from_search_api = True
+                            if uid in api_authors:
+                                api_authors[uid] = merge_author_items(api_authors[uid], item)
+                            else:
+                                api_authors[uid] = item
+                    except Exception:
+                        pass
+
+                page.on("response", on_response)
+                search_url = XINGTU_SEARCH_URL.format(keyword=quote(keyword))
+                page.goto(search_url, wait_until="domcontentloaded", timeout=settings.PLAYWRIGHT_TIMEOUT)
+                page.wait_for_timeout(settings.PLAYWRIGHT_WAIT_AFTER_SEARCH)
 
                 if not self._is_logged_in(page):
                     raise RuntimeError(
                         "星图未登录或 Cookie 已过期。请在工作台配置星图登录态"
                     )
 
-                self._apply_page_filters(page, filters)
-                self._perform_search(page, keyword)
-                page.wait_for_timeout(settings.PLAYWRIGHT_WAIT_AFTER_SEARCH)
+                if self._has_active_filters(filters):
+                    self._apply_page_filters(page, filters)
+                    page.wait_for_timeout(settings.PLAYWRIGHT_WAIT_AFTER_SEARCH)
 
-                for _ in range(3):
+                for _ in range(max(settings.PLAYWRIGHT_MAX_SCROLLS, 0)):
                     page.evaluate("window.scrollBy(0, window.innerHeight)")
-                    page.wait_for_timeout(1500)
+                    page.wait_for_timeout(1200)
 
                 table_items = self._parse_market_table(page)
+                if not table_items:
+                    table_items = self._parse_result_cards(page)
+
+                if api_authors:
+                    authors = {uid: {**item, "_from_search_api": True} for uid, item in api_authors.items()}
+                else:
+                    for item in table_items:
+                        uid = resolve_xingtu_platform_uid(item)
+                        nickname = pick_display_nickname(item, "douyin")
+                        if not uid and nickname:
+                            continue
+                        if not uid:
+                            continue
+                        authors[uid] = merge_author_items(authors.get(uid, {}), item)
+
                 for item in table_items:
-                    nickname = str(item.get("nick_name") or item.get("nickname") or "")
-                    uid = str(item.get("author_id") or item.get("star_id") or "")
-                    if not uid and nickname:
-                        matched_uid = next(
-                            (
-                                key
-                                for key, author in authors.items()
-                                if str(_pick(author, NICKNAME_KEYS) or "") == nickname
-                            ),
-                            "",
-                        )
-                        uid = matched_uid
-                    if not uid and not nickname:
-                        continue
-                    if uid:
-                        if uid in authors:
-                            authors[uid] = merge_author_items(authors[uid], item)
-                        else:
-                            seen_ids.add(uid)
-                            authors[uid] = item
-                    elif nickname:
-                        authors[f"_nick:{nickname}"] = item
+                    uid = resolve_xingtu_platform_uid(item)
+                    if uid and uid in authors:
+                        authors[uid] = merge_author_items(authors[uid], item)
 
-                if len(authors) < filters.limit:
-                    dom_items = self._parse_dom(page)
-                    for item in dom_items:
-                        uid = str(item.get("author_id") or item.get("platform_uid") or "")
-                        if uid and uid not in seen_ids:
-                            seen_ids.add(uid)
-                            authors[uid] = item
-                        elif uid and uid in authors:
-                            authors[uid] = merge_author_items(authors[uid], item)
+                if not authors and api_authors:
+                    for uid, item in api_authors.items():
+                        authors[uid] = item
 
-                self._enrich_from_detail_pages(page, authors, filters.limit)
+                if settings.PLAYWRIGHT_DETAIL_ENRICH_MAX > 0 and authors:
+                    self._enrich_from_detail_pages(
+                        page, authors, filters.limit, max_visits=settings.PLAYWRIGHT_DETAIL_ENRICH_MAX
+                    )
             except Exception as exc:
                 shot = _save_failure_screenshot(page, keyword)
                 if shot:
@@ -182,12 +185,21 @@ class XingtuBrowserCollector:
                 context.close()
                 browser.close()
 
+        authors = normalize_xingtu_authors(authors)
         captured = list(authors.values())
-        results = self._to_raw_influencers(keyword, captured, filters)
+        has_keyword = bool((keyword or "").strip())
+        results = self._to_raw_influencers(
+            keyword,
+            captured,
+            filters,
+            require_keyword_match=has_keyword and not from_search_api,
+        )
         logger.info("Xingtu Playwright collect done: keyword=%s, count=%d", keyword, len(results))
 
         if not results:
-            raise RuntimeError(f"星图未采集到达人，请检查关键词「{keyword}」或 Cookie 是否有效")
+            raise RuntimeError(
+                f"星图未采集到与关键词「{keyword}」相关的达人，请检查关键词或 Cookie 是否有效"
+            )
 
         return results[: filters.limit]
 
@@ -239,6 +251,18 @@ class XingtuBrowserCollector:
         return "market" in url or "creator" in url
 
     @staticmethod
+    def _has_active_filters(filters: SearchFilters) -> bool:
+        from dataclasses import fields
+
+        for field in fields(filters):
+            if field.name == "limit":
+                continue
+            value = getattr(filters, field.name, None)
+            if value not in (None, "", [], {}):
+                return True
+        return False
+
+    @staticmethod
     def _perform_search(page, keyword: str) -> None:
         search_selectors = [
             'input[placeholder*="搜索"]',
@@ -256,14 +280,93 @@ class XingtuBrowserCollector:
                     locator.fill(keyword)
                     locator.press("Enter")
                     logger.info("Search submitted via selector: %s", selector)
-                    page.wait_for_timeout(2000)
+                    page.wait_for_timeout(settings.PLAYWRIGHT_WAIT_AFTER_SEARCH)
                     return
             except Exception:
                 continue
 
         # 备用：带关键词 URL
         page.goto(XINGTU_SEARCH_URL.format(keyword=quote(keyword)), wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(settings.PLAYWRIGHT_WAIT_AFTER_SEARCH)
+
+    @staticmethod
+    def _parse_result_cards(page) -> list[dict[str, Any]]:
+        """解析非 table 布局的达人卡片列表"""
+        try:
+            rows_data = page.evaluate(
+                """() => {
+                const results = [];
+                const cardSelectors = [
+                    '[class*="author"]',
+                    '[class*="creator"]',
+                    '[class*="star-card"]',
+                    '[class*="market"] [class*="item"]',
+                    '[class*="list"] [class*="row"]',
+                ];
+                const seen = new Set();
+                const skipWords = ['达人清单', '我的清单', '观众画像', '达人信息', '合作', '筛选', '排序'];
+                for (const selector of cardSelectors) {
+                    const cards = document.querySelectorAll(selector);
+                    for (const card of cards) {
+                        const text = (card.innerText || '').trim();
+                        if (!text || text.length < 4) continue;
+                        const lines = text.split('\\n').map((s) => s.trim()).filter(Boolean);
+                        if (!lines.length) continue;
+                        const nickname = lines[0];
+                        if (!nickname || seen.has(nickname)) continue;
+                        if (skipWords.some((w) => nickname.includes(w))) continue;
+                        if (/^[¥￥]/.test(nickname) || /^\\d+$/.test(nickname)) continue;
+                        const link = card.querySelector('a[href*="author-homepage"], a[href*="/creator/"]');
+                        const item = { nick_name: nickname };
+                        if (link) {
+                            const href = link.getAttribute('href') || '';
+                            const match = href.match(/(\\d{11,20})/);
+                            if (match) item.author_id = match[1];
+                        }
+                        if (!item.author_id && !/粉丝|万|互动率|预期播放/.test(text)) continue;
+                        const followerMatch = text.match(/粉丝[：:\\s]*([\\d.,]+万?)/);
+                        if (followerMatch) item.follower_count = followerMatch[1];
+                        const playMatch = text.match(/预期播放[量]*[：:\\s]*([\\d.,]+万?)/);
+                        if (playMatch) item.expect_play_count = playMatch[1];
+                        const rateMatch = text.match(/互动率[：:\\s]*([\\d.]+%?)/);
+                        if (rateMatch) item.interact_rate = rateMatch[1];
+                        seen.add(nickname);
+                        results.push(item);
+                    }
+                    if (results.length >= 5) break;
+                }
+                return results;
+            }"""
+            )
+            return rows_data if isinstance(rows_data, list) else []
+        except Exception:
+            logger.debug("Result card parse failed", exc_info=True)
+            return []
+
+    @staticmethod
+    def _search_applied(page, keyword: str) -> bool:
+        keyword = (keyword or "").strip()
+        if not keyword:
+            return True
+        url = page.url
+        if keyword in url or quote(keyword) in url:
+            return True
+        search_selectors = [
+            'input[placeholder*="搜索"]',
+            'input[placeholder*="达人"]',
+            'input[placeholder*="关键词"]',
+            'input[type="search"]',
+            ".search-input input",
+            '[class*="search"] input',
+        ]
+        for selector in search_selectors:
+            try:
+                value = page.locator(selector).first.input_value(timeout=1000)
+                if keyword in (value or ""):
+                    return True
+            except Exception:
+                continue
+        return False
 
     def _apply_page_filters(self, page, filters: SearchFilters) -> None:
         """在星图页面上点击对应筛选项（默认「不限」则跳过）"""
@@ -469,31 +572,40 @@ class XingtuBrowserCollector:
         return items
 
     def _to_raw_influencers(
-        self, keyword: str, items: list[dict[str, Any]], filters: SearchFilters
+        self,
+        keyword: str,
+        items: list[dict[str, Any]],
+        filters: SearchFilters,
+        *,
+        require_keyword_match: bool = True,
     ) -> list[RawInfluencer]:
         results: list[RawInfluencer] = []
+        seen_uids: set[str] = set()
         for item in items:
             raw = self._map_item(keyword, item)
-            if raw and passes_search_filters(raw, filters):
+            if not raw or raw.platform_uid in seen_uids:
+                continue
+            if require_keyword_match and not passes_keyword_match(
+                keyword, raw.nickname, raw.matched_tags, raw.extra_data
+            ):
+                continue
+            seen_uids.add(raw.platform_uid)
+            if passes_search_filters(raw, filters):
                 results.append(raw)
         results.sort(key=lambda x: x.match_score, reverse=True)
         return results
 
     def _map_item(self, keyword: str, item: dict[str, Any]) -> RawInfluencer | None:
-        platform_uid = str(_pick(item, AUTHOR_ID_KEYS) or "")
-        nickname = str(_pick(item, NICKNAME_KEYS) or "")
-        if not platform_uid and not nickname:
-            return None
+        platform_uid = resolve_xingtu_platform_uid(item)
+        nickname = pick_display_nickname(item, "douyin") or str(_pick(item, NICKNAME_KEYS) or "")
         if not platform_uid:
-            platform_uid = nickname
+            return None
 
         tags = _pick(item, TAG_KEYS) or []
         if isinstance(tags, list):
-            tag_names = [t.get("name", t) if isinstance(t, dict) else str(t) for t in tags]
+            tag_names = [t.get("name", t) if isinstance(t, dict) else str(t) for t in tags if t]
         else:
-            tag_names = [keyword]
-        if keyword not in tag_names:
-            tag_names.insert(0, keyword)
+            tag_names = []
 
         follower_count = _to_int(_pick(item, FOLLOWER_KEYS))
         if not follower_count:
@@ -541,6 +653,10 @@ class XingtuBrowserCollector:
         if mcn_name:
             extra_data["mcn_name"] = mcn_name
 
+        match_score = calc_keyword_match_score(keyword, nickname, tag_names, extra_data)
+        if item.get("_from_search_api") and match_score < 30:
+            match_score = 30.0
+
         return RawInfluencer(
             platform="douyin",
             platform_uid=platform_uid,
@@ -552,7 +668,7 @@ class XingtuBrowserCollector:
             avg_views=avg_views,
             source="xingtu",
             matched_tags=tag_names[:10],
-            match_score=_calc_match_score(keyword, nickname, tag_names),
+            match_score=match_score,
             extra_data=extra_data,
         )
 
@@ -690,9 +806,4 @@ def _parse_follower_from_text(text: str) -> int:
 
 
 def _calc_match_score(keyword: str, nickname: str, tags: list[str]) -> float:
-    score = 40.0
-    if keyword in nickname:
-        score += 35
-    if any(keyword in t for t in tags):
-        score += 20
-    return round(min(score, 100), 2)
+    return calc_keyword_match_score(keyword, nickname, tags)

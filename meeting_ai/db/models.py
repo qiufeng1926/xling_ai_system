@@ -3,6 +3,7 @@
 """
 from datetime import datetime
 from sqlalchemy import Column, String, Text, Integer, DateTime, Index, Boolean, ForeignKey, create_engine, text
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
 Base = declarative_base()
@@ -284,7 +285,7 @@ class Meeting(Base):
     summary_file_path = Column(String(500), nullable=True, comment='会议纪要文件路径')
     
     # 内容数据
-    transcript = Column(Text, nullable=False, comment='转写文本内容')
+    transcript = Column(LONGTEXT, nullable=False, comment='转写文本内容')
     summary = Column(Text, nullable=True, comment='会议纪要内容(Markdown速览)')
     summary_visual = Column(Text, nullable=True, comment='图文速览JSON')
     summary_visual_status = Column(
@@ -407,7 +408,7 @@ class CollaborativeRoom(Base):
         String(20), nullable=False, default='waiting',
         comment='waiting/live/ending/completed/cancelled',
     )
-    merged_transcript = Column(Text, nullable=False, default='', comment='合并转写缓冲')
+    merged_transcript = Column(LONGTEXT, nullable=False, default='', comment='合并转写缓冲')
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     started_at = Column(DateTime, nullable=True)
     ended_at = Column(DateTime, nullable=True)
@@ -743,6 +744,23 @@ def migrate_schema(engine):
                 conn.commit()
             except Exception:
                 conn.rollback()
+
+        for table, col, comment in (
+            ('collaborative_rooms', 'merged_transcript', '合并转写缓冲'),
+            ('meetings', 'transcript', '转写文本内容'),
+        ):
+            result = conn.execute(text(f"""
+                SELECT DATA_TYPE FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{table}'
+                AND COLUMN_NAME = '{col}'
+            """))
+            row = result.fetchone()
+            if row and row[0].lower() != 'longtext':
+                conn.execute(text(
+                    f"ALTER TABLE {table} MODIFY {col} LONGTEXT NOT NULL COMMENT '{comment}'"
+                ))
+                conn.commit()
+                print(f"[OK] {table}.{col} 已升级为 LONGTEXT")
 
 
 def init_database(database_url: str):

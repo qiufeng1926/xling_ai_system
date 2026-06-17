@@ -11,6 +11,8 @@ from app.collectors.base import RawInfluencer, SearchFilters
 from app.collectors.filter_utils import passes_search_filters
 from app.config import settings
 from app.utils.mcn_utils import extract_mcn_name
+from app.utils.collector_uid import pick_display_nickname, resolve_pugongying_platform_uid
+from app.utils.keyword_match import calc_keyword_match_score, passes_keyword_match
 from app.utils.pugongying_fields import (
     AVATAR_KEYS,
     FOLLOWER_KEYS,
@@ -30,15 +32,16 @@ PUGONGYING_MARKET_URL = "https://pgy.xiaohongshu.com/solar/pre-trade/note/kol"
 PUGONGYING_SEARCH_URL = "https://pgy.xiaohongshu.com/solar/pre-trade/note/kol?keyword={keyword}"
 
 INTERCEPT_URL_KEYWORDS = (
-    "kol",
-    "blogger",
-    "creator",
     "search",
-    "user",
-    "author",
-    "note",
-    "red",
-    "solar",
+    "search_kol",
+    "kol/search",
+    "blogger/search",
+)
+
+EXCLUDE_URL_KEYWORDS = (
+    "recommend",
+    "suggest",
+    "/login",
 )
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
@@ -71,34 +74,9 @@ class PugongyingBrowserCollector:
         except ImportError as exc:
             raise RuntimeError("请先安装 Playwright: pip install playwright && playwright install chromium") from exc
 
-        authors: dict[str, dict[str, Any]] = {}
-
-        def on_response(response) -> None:
-            if response.status != 200:
-                return
-            content_type = response.headers.get("content-type", "")
-            if "json" not in content_type:
-                return
-            url = response.url.lower()
-            if "xiaohongshu.com" not in url and "xhs.cn" not in url:
-                return
-            if not any(k in url for k in INTERCEPT_URL_KEYWORDS):
-                return
-            try:
-                data = response.json()
-                for item in _extract_kol_items(data):
-                    uid = str(_pick(item, KOL_ID_KEYS) or "")
-                    if not uid:
-                        continue
-                    if uid in authors:
-                        authors[uid] = merge_author_items(authors[uid], item)
-                    else:
-                        authors[uid] = item
-            except Exception:
-                pass
-
         logger.info("Pugongying Playwright collect start: keyword=%s", keyword)
-        page = None
+        authors: dict[str, dict[str, Any]] = {}
+        from_search_api = False
 
         with sync_playwright() as p:
             browser = p.chromium.launch(
@@ -106,35 +84,77 @@ class PugongyingBrowserCollector:
                 slow_mo=settings.PLAYWRIGHT_SLOW_MO,
             )
             context = self._create_context(browser)
-            page = context.new_page()
-            page.on("response", on_response)
+            page = None
+            api_authors: dict[str, dict[str, Any]] = {}
 
             try:
-                page.goto(PUGONGYING_MARKET_URL, wait_until="domcontentloaded", timeout=settings.PLAYWRIGHT_TIMEOUT)
-                page.wait_for_timeout(2500)
+                page = context.new_page()
+
+                def on_response(response) -> None:
+                    nonlocal from_search_api
+                    if response.status != 200:
+                        return
+                    content_type = response.headers.get("content-type", "")
+                    if "json" not in content_type:
+                        return
+                    url = response.url.lower()
+                    if "xiaohongshu.com" not in url and "xhs.cn" not in url:
+                        return
+                    if any(k in url for k in EXCLUDE_URL_KEYWORDS):
+                        return
+                    if not any(k in url for k in INTERCEPT_URL_KEYWORDS):
+                        return
+                    try:
+                        data = response.json()
+                        for item in _extract_kol_items(data):
+                            uid = resolve_pugongying_platform_uid(item)
+                            if not uid:
+                                continue
+                            from_search_api = True
+                            if uid in api_authors:
+                                api_authors[uid] = merge_author_items(api_authors[uid], item)
+                            else:
+                                api_authors[uid] = item
+                    except Exception:
+                        pass
+
+                page.on("response", on_response)
+                search_url = PUGONGYING_SEARCH_URL.format(keyword=quote(keyword))
+                page.goto(search_url, wait_until="domcontentloaded", timeout=settings.PLAYWRIGHT_TIMEOUT)
+                page.wait_for_timeout(settings.PLAYWRIGHT_WAIT_AFTER_SEARCH)
 
                 if not self._is_logged_in(page):
                     raise RuntimeError(
                         "蒲公英未登录或 Cookie 已过期。请在工作台配置蒲公英登录态"
                     )
 
-                self._perform_search(page, keyword)
-                page.wait_for_timeout(settings.PLAYWRIGHT_WAIT_AFTER_SEARCH)
-
-                for _ in range(4):
+                for _ in range(max(settings.PLAYWRIGHT_MAX_SCROLLS, 0)):
                     page.evaluate("window.scrollBy(0, window.innerHeight)")
-                    page.wait_for_timeout(1500)
+                    page.wait_for_timeout(1200)
 
-                if len(authors) < filters.limit:
-                    for item in self._parse_dom(page):
-                        uid = str(_pick(item, KOL_ID_KEYS) or "")
-                        if uid:
-                            if uid in authors:
-                                authors[uid] = merge_author_items(authors[uid], item)
-                            else:
-                                authors[uid] = item
+                dom_items = self._parse_dom(page)
+                if api_authors:
+                    authors = dict(api_authors)
+                else:
+                    for item in dom_items:
+                        uid = resolve_pugongying_platform_uid(item)
+                        if not uid:
+                            continue
+                        authors[uid] = merge_author_items(authors.get(uid, {}), item)
 
-                self._enrich_from_detail_pages(page, authors)
+                for item in dom_items:
+                    uid = resolve_pugongying_platform_uid(item)
+                    if uid and uid in authors:
+                        authors[uid] = merge_author_items(authors[uid], item)
+
+                if not authors and api_authors:
+                    for uid, item in api_authors.items():
+                        authors[uid] = item
+
+                if settings.PLAYWRIGHT_DETAIL_ENRICH_MAX > 0 and authors:
+                    self._enrich_from_detail_pages(
+                        page, authors, max_visits=settings.PLAYWRIGHT_DETAIL_ENRICH_MAX
+                    )
             except Exception as exc:
                 shot = _save_failure_screenshot(page, keyword)
                 if shot:
@@ -144,11 +164,18 @@ class PugongyingBrowserCollector:
                 context.close()
                 browser.close()
 
-        results = self._to_raw_influencers(keyword, list(authors.values()), filters)
+        results = self._to_raw_influencers(
+            keyword,
+            list(authors.values()),
+            filters,
+            require_keyword_match=bool((keyword or "").strip()) and not from_search_api,
+        )
         logger.info("Pugongying collect done: keyword=%s, count=%d", keyword, len(results))
 
         if not results:
-            raise RuntimeError(f"蒲公英未采集到达人，请检查关键词「{keyword}」或登录态是否有效")
+            raise RuntimeError(
+                f"蒲公英未采集到与关键词「{keyword}」相关的博主，请检查关键词或登录态是否有效"
+            )
 
         return results[: filters.limit]
 
@@ -216,13 +243,38 @@ class PugongyingBrowserCollector:
                     locator.fill(keyword)
                     locator.press("Enter")
                     logger.info("Pugongying search via: %s", selector)
-                    page.wait_for_timeout(2500)
+                    page.wait_for_timeout(settings.PLAYWRIGHT_WAIT_AFTER_SEARCH)
                     return
             except Exception:
                 continue
 
         page.goto(PUGONGYING_SEARCH_URL.format(keyword=quote(keyword)), wait_until="domcontentloaded")
         page.wait_for_timeout(2500)
+
+    @staticmethod
+    def _search_applied(page, keyword: str) -> bool:
+        keyword = (keyword or "").strip()
+        if not keyword:
+            return True
+        url = page.url
+        if keyword in url or quote(keyword) in url:
+            return True
+        search_selectors = [
+            'input[placeholder*="搜索"]',
+            'input[placeholder*="博主"]',
+            'input[placeholder*="关键词"]',
+            'input[type="search"]',
+            ".search-input input",
+            '[class*="search"] input',
+        ]
+        for selector in search_selectors:
+            try:
+                value = page.locator(selector).first.input_value(timeout=1000)
+                if keyword in (value or ""):
+                    return True
+            except Exception:
+                continue
+        return False
 
     @staticmethod
     def _parse_dom(page) -> list[dict[str, Any]]:
@@ -302,31 +354,40 @@ class PugongyingBrowserCollector:
                 logger.debug("Pugongying detail enrich failed: %s", uid, exc_info=True)
 
     def _to_raw_influencers(
-        self, keyword: str, items: list[dict[str, Any]], filters: SearchFilters
+        self,
+        keyword: str,
+        items: list[dict[str, Any]],
+        filters: SearchFilters,
+        *,
+        require_keyword_match: bool = True,
     ) -> list[RawInfluencer]:
         results: list[RawInfluencer] = []
+        seen_uids: set[str] = set()
         for item in items:
             raw = self._map_item(keyword, item)
-            if raw and passes_search_filters(raw, filters):
+            if not raw or raw.platform_uid in seen_uids:
+                continue
+            if require_keyword_match and not passes_keyword_match(
+                keyword, raw.nickname, raw.matched_tags, raw.extra_data
+            ):
+                continue
+            seen_uids.add(raw.platform_uid)
+            if passes_search_filters(raw, filters):
                 results.append(raw)
         results.sort(key=lambda x: x.match_score, reverse=True)
         return results
 
     def _map_item(self, keyword: str, item: dict[str, Any]) -> RawInfluencer | None:
-        platform_uid = str(_pick(item, KOL_ID_KEYS) or "")
-        nickname = str(_pick(item, NICKNAME_KEYS) or "")
-        if not platform_uid and not nickname:
-            return None
+        platform_uid = resolve_pugongying_platform_uid(item)
+        nickname = pick_display_nickname(item, "xiaohongshu") or str(_pick(item, NICKNAME_KEYS) or "")
         if not platform_uid:
-            platform_uid = nickname
+            return None
 
         tags = _pick(item, TAG_KEYS) or []
         if isinstance(tags, list):
-            tag_names = [t.get("name", t) if isinstance(t, dict) else str(t) for t in tags]
+            tag_names = [t.get("name", t) if isinstance(t, dict) else str(t) for t in tags if t]
         else:
-            tag_names = [keyword]
-        if keyword not in tag_names:
-            tag_names.insert(0, keyword)
+            tag_names = []
 
         extra = {
             k: v
@@ -359,6 +420,8 @@ class PugongyingBrowserCollector:
         if mcn_name:
             extra_data["mcn_name"] = mcn_name
 
+        match_score = calc_keyword_match_score(keyword, nickname, tag_names, extra_data)
+
         return RawInfluencer(
             platform="xiaohongshu",
             platform_uid=platform_uid,
@@ -370,7 +433,7 @@ class PugongyingBrowserCollector:
             avg_views=parsed.get("avg_views"),
             source="pugongying",
             matched_tags=tag_names[:10],
-            match_score=_calc_match_score(keyword, nickname, tag_names),
+            match_score=match_score,
             extra_data=extra_data,
         )
 
@@ -484,9 +547,4 @@ def _parse_follower_from_text(text: str) -> int:
 
 
 def _calc_match_score(keyword: str, nickname: str, tags: list[str]) -> float:
-    score = 40.0
-    if keyword in nickname:
-        score += 35
-    if any(keyword in t for t in tags):
-        score += 20
-    return round(min(score, 100), 2)
+    return calc_keyword_match_score(keyword, nickname, tags)

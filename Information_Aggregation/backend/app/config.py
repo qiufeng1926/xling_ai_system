@@ -134,7 +134,9 @@ class Settings(BaseSettings):
     PLAYWRIGHT_HEADLESS: bool = False
     PLAYWRIGHT_SLOW_MO: int = 80
     PLAYWRIGHT_TIMEOUT: int = 60000
-    PLAYWRIGHT_WAIT_AFTER_SEARCH: int = 5000
+    PLAYWRIGHT_WAIT_AFTER_SEARCH: int = 3500
+    PLAYWRIGHT_MAX_SCROLLS: int = 1
+    PLAYWRIGHT_DETAIL_ENRICH_MAX: int = 0
     PLAYWRIGHT_FALLBACK_MOCK: bool = False
     PLAYWRIGHT_USER_AGENT: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

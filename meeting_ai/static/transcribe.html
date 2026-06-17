@@ -1893,7 +1893,11 @@
             if (!validateSpeakerCountSetting()) {
                 return false;
             }
-            const mode = document.querySelector('input[name="speakerCountMode"]:checked').value;
+            const mode = document.querySelector('input[name="speakerCountMode"]:checked')?.value;
+            if (!mode) {
+                showErrorAlert('请选择会议人数');
+                return false;
+            }
             let speakerCount = 0;
             if (mode === 'manual') {
                 speakerCount = parseInt(document.getElementById('speakerCountInput').value, 10);
@@ -2743,6 +2747,8 @@
         let lastBatchFileId = null;
         let lastBatchVisual = null;
         let lastBatchSummaryTitle = '';
+        let tingwuReadyResolve = null;
+        let tingwuReadyReject = null;
         
         const statusEl = document.getElementById('status');
         const micWarningEl = document.getElementById('micWarning');
@@ -3256,6 +3262,40 @@
                 }, { once: true });
             });
         }
+
+        function resetTingwuReadyWaiter() {
+            if (tingwuReadyReject) {
+                try { tingwuReadyReject(new Error('aborted')); } catch (e) { /* ignore */ }
+            }
+            tingwuReadyResolve = null;
+            tingwuReadyReject = null;
+        }
+
+        function waitForTingwuReady(timeoutMs = 20000) {
+            return new Promise((resolve, reject) => {
+                resetTingwuReadyWaiter();
+                tingwuReadyResolve = resolve;
+                tingwuReadyReject = reject;
+                setTimeout(() => {
+                    if (tingwuReadyReject) {
+                        tingwuReadyReject(new Error('转写通道启动超时，请重试'));
+                        tingwuReadyResolve = null;
+                        tingwuReadyReject = null;
+                    }
+                }, timeoutMs);
+            });
+        }
+
+        function closeActiveWebSocket() {
+            collabWsReady = false;
+            resetTingwuReadyWaiter();
+            if (!ws) return;
+            try {
+                ws.onclose = null;
+                ws.close();
+            } catch (e) { /* ignore */ }
+            ws = null;
+        }
         
         // 说话人展示
         const SPEAKER_THEME_COLORS = [
@@ -3526,6 +3566,14 @@
                 }
             } else if (data.type === 'tingwu_ready') {
                 console.log('听悟通道就绪');
+                if (tingwuReadyResolve) {
+                    tingwuReadyResolve();
+                    tingwuReadyResolve = null;
+                    tingwuReadyReject = null;
+                }
+                if (isRecording) {
+                    setRealtimeTranscriptStatus('正在录音，实时转写中…');
+                }
             } else if (data.type === 'error') {
                 showErrorAlert(data.message || '转写出现问题，请稍后重试');
             }
@@ -3641,11 +3689,22 @@
                     },
                 });
 
-                // 连接 WebSocket 并等待就绪后再采集
-                if (!isCollabMode || !collabWsReady || !ws || ws.readyState !== WebSocket.OPEN) {
+                // 连接 WebSocket 并等待听悟通道就绪后再采集音频
+                if (isCollabMode) {
+                    if (!collabWsReady || !ws || ws.readyState !== WebSocket.OPEN) {
+                        connectWebSocket(meetingName);
+                        await waitForWebSocketOpen(ws);
+                    }
+                } else {
+                    closeActiveWebSocket();
                     connectWebSocket(meetingName);
                     await waitForWebSocketOpen(ws);
                 }
+
+                setRealtimeTranscriptStatus('正在启动转写通道…');
+                const tingwuReadyWait = waitForTingwuReady();
+                ws.send(JSON.stringify({ type: 'record_start' }));
+                await tingwuReadyWait;
 
                 // 使用设备实际采样率，由服务端重采样到 16kHz
                 audioContext = new AudioContext();
@@ -3671,6 +3730,8 @@
                     ws.send(floatToPcmArrayBuffer(new Float32Array(take)));
                 }
 
+                isRecording = true;
+
                 processor.onaudioprocess = (e) => {
                     if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
 
@@ -3688,30 +3749,30 @@
                     }
                 };
 
-                // 麦克风就绪后再启动听悟，并周期性发送音频（含静音）保活
-                ws.send(JSON.stringify({ type: 'record_start' }));
-
                 const flushTimer = setInterval(() => {
                     if (!isRecording) return;
                     flushPcmSendBuffer(true);
                 }, 500);
 
                 mediaRecorder = { stream, processor, source, pcmSendBuffer, flushTimer };
-                isRecording = true;
                 
                 startBtn.disabled = true;
                 stopBtn.disabled = false;
-                setRealtimeTranscriptStatus('正在录音...');
+                setRealtimeTranscriptStatus('正在录音，实时转写中…');
                 
                 console.log('开始录音');
                 
             } catch (error) {
                 console.error('录音启动失败:', error);
+                isRecording = false;
+                resetTingwuReadyWaiter();
                 stopMediaStream(stream);
-                if (!isCollabMode && ws && ws.readyState === WebSocket.OPEN) {
-                    ws.close();
+                if (!isCollabMode) {
+                    closeActiveWebSocket();
+                } else if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'record_stop' }));
                 }
-                showErrorAlert(describeMicError(error));
+                showErrorAlert(error.message || describeMicError(error));
             }
         }
 

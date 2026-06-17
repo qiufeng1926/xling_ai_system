@@ -28,6 +28,41 @@ logger = logging.getLogger(__name__)
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 WORKER_SCRIPT = BACKEND_DIR / "scripts" / "run_collect_worker.py"
 
+
+def _prefer_non_empty(new: str | None, old: str | None) -> str | None:
+    if new is None or str(new).strip() == "":
+        return old
+    return new
+
+
+def _prefer_positive_number(new, old):
+    if new is None:
+        return old
+    try:
+        new_val = float(new)
+        old_val = float(old) if old is not None else 0
+        if new_val <= 0 and old_val > 0:
+            return old
+    except (TypeError, ValueError):
+        return new
+    return new
+
+
+def _build_approve_update(existing: Influencer, item: CollectedInfluencer) -> InfluencerUpdate:
+    engagement = float(item.engagement_rate) if item.engagement_rate else None
+    existing_engagement = float(existing.engagement_rate) if existing.engagement_rate else None
+    return InfluencerUpdate(
+        nickname=_prefer_non_empty(item.nickname, existing.nickname) or existing.nickname,
+        avatar_url=_prefer_non_empty(item.avatar_url, existing.avatar_url),
+        profile_url=item.profile_url or existing.profile_url,
+        follower_count=int(
+            _prefer_positive_number(item.follower_count, existing.follower_count) or 0
+        ),
+        engagement_rate=_prefer_positive_number(engagement, existing_engagement),
+        source=item.source or existing.source,
+        extra_data=item.extra_data or existing.extra_data,
+    )
+
 RETRIABLE_CATEGORIES = {"network", "timeout", "unknown"}
 MAX_AUTO_RETRY = 1
 
@@ -323,8 +358,17 @@ class CollectionService:
                 return [], 0, {}
             query = query.filter(CollectedInfluencer.task_id == task_id)
         query = query.order_by(CollectedInfluencer.match_score.desc())
-        total = query.count()
-        items = query.offset((page - 1) * page_size).limit(page_size).all()
+        all_items = query.all()
+        seen_keys: set[tuple[str, str]] = set()
+        deduped: list[CollectedInfluencer] = []
+        for item in all_items:
+            key = (item.platform, item.platform_uid)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            deduped.append(item)
+        total = len(deduped)
+        items = deduped[(page - 1) * page_size : page * page_size]
         library_map = CollectionService._library_uid_map(db, items)
         return items, total, library_map
 
@@ -370,15 +414,7 @@ class CollectionService:
             existing = InfluencerService.get_by_platform_uid(db, item.platform, item.platform_uid)
             if existing:
                 merged_profile = merge_profile_patch(existing.profile, profile_patch) if profile_patch else None
-                update_data = InfluencerUpdate(
-                    nickname=item.nickname,
-                    avatar_url=item.avatar_url,
-                    profile_url=item.profile_url or existing.profile_url,
-                    follower_count=item.follower_count,
-                    engagement_rate=float(item.engagement_rate) if item.engagement_rate else None,
-                    source=item.source,
-                    extra_data=item.extra_data,
-                )
+                update_data = _build_approve_update(existing, item)
                 if agency_id is not None:
                     update_data.agency_id = agency_id
                 if merged_profile is not None:

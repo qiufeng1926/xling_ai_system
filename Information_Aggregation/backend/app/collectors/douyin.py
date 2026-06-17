@@ -66,12 +66,14 @@ class DouyinCollector(BaseCollector):
     def _parse_api_response(
         self, keyword: str, data: dict, filters: SearchFilters
     ) -> list[RawInfluencer]:
-        from app.collectors.xingtu_browser import _calc_match_score, _pick, _to_int
+        from app.utils.keyword_match import calc_keyword_match_score
+        from app.collectors.xingtu_browser import _pick, _to_int
 
         items = data.get("data", {}).get("list", [])
         results: list[RawInfluencer] = []
         for item in items:
             nickname = str(_pick(item, ("nickname", "nick_name", "author_name")) or "")
+            tags = item.get("tags") or []
             raw = RawInfluencer(
                 platform="douyin",
                 platform_uid=str(_pick(item, ("author_id", "star_id", "uid")) or ""),
@@ -82,8 +84,8 @@ class DouyinCollector(BaseCollector):
                 engagement_rate=item.get("engagement_rate"),
                 avg_views=_to_int(_pick(item, ("avg_play_count", "avg_play"))),
                 source="xingtu",
-                matched_tags=[keyword] + (item.get("tags") or []),
-                match_score=_calc_match_score(keyword, nickname, item.get("tags") or []),
+                matched_tags=tags,
+                match_score=calc_keyword_match_score(keyword, nickname, tags),
                 extra_data={
                     "recent_gmv": item.get("gmv_30d"),
                     "showcase_count": item.get("showcase_count"),

@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS meetings (
     summary_file_path VARCHAR(500) DEFAULT NULL COMMENT '会议纪要文件路径',
     
     -- 内容数据
-    transcript TEXT NOT NULL COMMENT '转写文本内容',
+    transcript LONGTEXT NOT NULL COMMENT '转写文本内容',
     summary TEXT DEFAULT NULL COMMENT '会议纪要内容',
     
     -- 数据统计
@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS collaborative_rooms (
     host_user_id INT NULL COMMENT '发起人 meeting_ai user_id',
     meeting_name VARCHAR(255) NOT NULL COMMENT '会议名称',
     status VARCHAR(20) NOT NULL DEFAULT 'waiting' COMMENT 'waiting/live/ending/completed/cancelled',
-    merged_transcript TEXT NOT NULL COMMENT '合并转写缓冲',
+    merged_transcript LONGTEXT NOT NULL COMMENT '合并转写缓冲',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     started_at DATETIME NULL,
     ended_at DATETIME NULL,

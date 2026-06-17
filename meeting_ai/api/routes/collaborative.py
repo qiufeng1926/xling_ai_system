@@ -139,4 +139,38 @@ async def end_room(room_code: str, db: Session = Depends(get_db), user: User = D
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await finalize_collaborative_room(db, room)
     db.refresh(room)
-    return {"success": True, "room": room.to_dict()}
+    return {"success": True, "room": room.to_dict(), "file_id": room.file_id}
+
+
+@router.post("/meetings/rooms/{room_code}/recover")
+async def recover_room(room_code: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """恢复卡在 ending 状态的协作会议（合并转写并生成纪要）。"""
+    from api.collaborative_ws import finalize_collaborative_room
+
+    room = svc.get_room_by_code(db, room_code)
+    if not room:
+        raise HTTPException(status_code=404, detail="会议不存在")
+    if user.username != room.host_username:
+        raise HTTPException(status_code=403, detail="仅主持人可恢复会议")
+    if room.status == "completed":
+        return {
+            "success": True,
+            "room": room.to_dict(),
+            "file_id": room.file_id,
+            "message": "会议已完成，无需恢复",
+        }
+    if room.status not in ("ending", "live", "waiting"):
+        raise HTTPException(status_code=400, detail="当前状态无法恢复")
+    try:
+        merged, hint = svc.prepare_room_recovery(db, room)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await finalize_collaborative_room(db, room)
+    db.refresh(room)
+    return {
+        "success": True,
+        "room": room.to_dict(),
+        "file_id": room.file_id,
+        "transcript_length": len(merged),
+        "message": hint,
+    }

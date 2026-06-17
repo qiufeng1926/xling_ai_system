@@ -37,7 +37,33 @@
             <el-table-column prop="meeting_name" label="会议名称" />
             <el-table-column prop="room_code" label="房间码" width="90" />
             <el-table-column prop="status" label="状态" width="90">
-              <template #default="{ row }">{{ statusLabel(row.status) }}</template>
+              <template #default="{ row }">
+                <el-tag v-if="row.status === 'ending'" type="warning" size="small">
+                  {{ statusLabel(row.status) }}
+                </el-tag>
+                <span v-else>{{ statusLabel(row.status) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="140" @click.stop>
+              <template #default="{ row }">
+                <el-button
+                  v-if="row.status === 'ending'"
+                  type="warning"
+                  link
+                  :loading="recoveringCode === row.room_code"
+                  @click.stop="handleRecover(row)"
+                >
+                  恢复纪要
+                </el-button>
+                <el-button
+                  v-else-if="row.status === 'completed'"
+                  type="primary"
+                  link
+                  @click.stop="goRecord(row.file_id)"
+                >
+                  查看记录
+                </el-button>
+              </template>
             </el-table-column>
           </el-table>
         </el-card>
@@ -62,10 +88,11 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   acceptInvitation,
   listMyRooms,
+  recoverRoom,
   type CollaborativeRoom,
   type RoomInvitation,
 } from '@/api/meetingRooms'
@@ -76,6 +103,7 @@ const router = useRouter()
 const hosted = ref<CollaborativeRoom[]>([])
 const joined = ref<CollaborativeRoom[]>([])
 const pending = ref<Array<RoomInvitation & { room: CollaborativeRoom }>>([])
+const recoveringCode = ref('')
 
 function statusLabel(status: string) {
   const map: Record<string, string> = {
@@ -94,6 +122,33 @@ function roleLabel(role: string) {
 
 function goRoom(row: CollaborativeRoom) {
   router.push(`/meeting/room/${row.room_code}`)
+}
+
+function goRecord(fileId: string) {
+  router.push(MEETING_ROUTES.recordDetail(fileId))
+}
+
+async function handleRecover(row: CollaborativeRoom) {
+  await ElMessageBox.confirm(
+    `会议「${row.meeting_name}」结束处理未完成，是否从已保存转写恢复并生成纪要？可能需要 1–3 分钟。`,
+    '恢复会议',
+    { type: 'warning' }
+  )
+  recoveringCode.value = row.room_code
+  try {
+    const res = await recoverRoom(row.room_code)
+    ElMessage.success(res.message || '恢复成功')
+    await loadData()
+    if (res.file_id) {
+      await ElMessageBox.confirm('是否前往查看会议记录？', '恢复成功', {
+        confirmButtonText: '查看记录',
+        cancelButtonText: '稍后',
+        type: 'success',
+      }).then(() => goRecord(res.file_id)).catch(() => {})
+    }
+  } finally {
+    recoveringCode.value = ''
+  }
 }
 
 async function acceptInvite(roomCode: string) {

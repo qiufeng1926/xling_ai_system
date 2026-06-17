@@ -248,10 +248,21 @@ async def websocket_transcribe(
 
     async def ensure_tingwu_started() -> None:
         """在用户开始录音后再连接听悟，避免 StartTranscription 后长时间无音频触发 IDLE_TIMEOUT。"""
-        if session_info["tingwu_started"] or session_info.get("tingwu_failed"):
+        if session_info.get("tingwu_failed"):
+            return
+        if session_info["tingwu_started"]:
+            await manager.send_json(connection_id, {
+                "type": "tingwu_ready",
+                "message": "转写通道已就绪",
+            })
             return
         async with tingwu_start_lock:
             if session_info["tingwu_started"] or session_info.get("tingwu_failed"):
+                if session_info["tingwu_started"]:
+                    await manager.send_json(connection_id, {
+                        "type": "tingwu_ready",
+                        "message": "转写通道已就绪",
+                    })
                 return
             await tingwu_engine.start_session_async(transcriber)
             await tingwu_engine.send_keepalive_async(transcriber)
@@ -287,7 +298,7 @@ async def websocket_transcribe(
                 await tingwu_engine.feed_stream_async(
                     session_info["transcriber"], audio_bytes, 16000
                 )
-                session_info["total_text"] = session_info["transcriber"].total_text
+                session_info["total_text"] = session_info["transcriber"].total_text()
                 continue
 
             if "text" not in raw_message:
@@ -324,7 +335,7 @@ async def websocket_transcribe(
                     await tingwu_engine.feed_stream_async(
                         session_info["transcriber"], audio_bytes, sample_rate
                     )
-                    session_info["total_text"] = session_info["transcriber"].total_text
+                    session_info["total_text"] = session_info["transcriber"].total_text()
 
                 elif message.get("type") == "end":
                     if session_info["tingwu_started"]:
@@ -333,7 +344,7 @@ async def websocket_transcribe(
                             "message": "正在整理说话人分离转写并获取听悟 AI 摘要，请稍候...",
                         })
                         await tingwu_engine.finalize_stream_async(session_info["transcriber"])
-                        session_info["total_text"] = session_info["transcriber"].total_text
+                        session_info["total_text"] = session_info["transcriber"].total_text()
 
                     # 会话结束，生成 AI 总结
                     duration_ms = (time.time() - start_time) * 1000

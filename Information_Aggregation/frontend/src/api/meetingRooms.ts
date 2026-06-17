@@ -110,5 +110,24 @@ export function startRoom(roomCode: string) {
 }
 
 export function endRoom(roomCode: string) {
-  return meetingRequest.post(`/meetings/rooms/${encodeURIComponent(roomCode)}/end`)
+  return meetingRequest.post(`/meetings/rooms/${encodeURIComponent(roomCode)}/end`, null, {
+    timeout: 180000,
+  })
+}
+
+export interface RecoverRoomResult {
+  success: boolean
+  room: CollaborativeRoom
+  file_id: string
+  transcript_length?: number
+  message?: string
+}
+
+/** 恢复卡在「结束中」的协作会议（合并转写并生成纪要，耗时较长） */
+export function recoverRoom(roomCode: string) {
+  return meetingRequest.post<RecoverRoomResult>(
+    `/meetings/rooms/${encodeURIComponent(roomCode)}/recover`,
+    null,
+    { timeout: 180000 }
+  )
 }

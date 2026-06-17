@@ -450,6 +450,21 @@ def parse_xingtu_item(item: dict[str, Any]) -> dict[str, Any]:
 
 def merge_author_items(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     """合并同一达人的多次 API 响应，保留更完整字段"""
+    metric_keys = {
+        "follower_count",
+        "follower",
+        "fans_num",
+        "fans_count",
+        "follower_num",
+        "avg_play",
+        "avg_play_count",
+        "play_count_avg",
+        "average_play",
+        "expect_play_count",
+        "engagement_rate",
+        "interact_rate",
+        "interaction_rate",
+    }
     merged = dict(base)
     for key, value in incoming.items():
         if key.startswith("_"):
@@ -458,6 +473,12 @@ def merge_author_items(base: dict[str, Any], incoming: dict[str, Any]) -> dict[s
             continue
         if key not in merged or merged[key] in (None, "", [], {}):
             merged[key] = value
+        elif key in metric_keys:
+            try:
+                if float(value) > float(merged[key]):
+                    merged[key] = value
+            except (TypeError, ValueError):
+                merged[key] = value
         elif isinstance(value, dict) and isinstance(merged.get(key), dict):
             merged[key] = {**merged[key], **{k: v for k, v in value.items() if v not in (None, "", [], {})}}
         elif isinstance(value, list) and isinstance(merged.get(key), list):

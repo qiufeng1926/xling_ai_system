@@ -649,6 +649,8 @@ class TingwuStreamingSession:
 
         self._completed_text = ""
 
+        self._pending_audio: list[bytes] = []
+
         self._closed = False
 
         self._task_failed = False
@@ -863,6 +865,8 @@ class TingwuStreamingSession:
 
             self._started_event.set()
 
+            await self._flush_pending_audio()
+
             return
 
 
@@ -934,6 +938,42 @@ class TingwuStreamingSession:
             return
 
         if not self._started_event.is_set():
+
+            self._pending_audio.append(bytes(audio_bytes))
+
+            # 避免启动阶段缓冲无限增长
+
+            pending_bytes = sum(len(chunk) for chunk in self._pending_audio)
+
+            if pending_bytes > 16000 * 60 * 2:
+
+                self._pending_audio = self._pending_audio[-20:]
+
+            return
+
+        await self._send_audio_chunks(audio_bytes, sample_rate)
+
+
+
+    async def _flush_pending_audio(self) -> None:
+
+        if not self._pending_audio:
+
+            return
+
+        pending = self._pending_audio
+
+        self._pending_audio = []
+
+        for chunk in pending:
+
+            await self._send_audio_chunks(chunk, tingwu_sample_rate)
+
+
+
+    async def _send_audio_chunks(self, audio_bytes: bytes, sample_rate: int) -> None:
+
+        if not audio_bytes or self._closed or self._task_failed or not self._ws:
 
             return
 

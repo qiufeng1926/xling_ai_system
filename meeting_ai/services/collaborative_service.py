@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import glob
+import os
 import secrets
 import string
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from config.config import collab_max_participants, collab_max_recorders
+from config.config import collab_max_participants, collab_max_recorders, output_dir
 from db.models import CollaborativeRoom, RoomInvitation, RoomParticipant, User
 
 ROOM_CODE_CHARS = string.ascii_uppercase + string.digits
@@ -358,9 +361,58 @@ def start_room(db: Session, room: CollaborativeRoom, username: str) -> Collabora
     return room
 
 
+def find_transcript_file(file_id: str) -> Path | None:
+    pattern = os.path.join(output_dir, "transcripts", f"*{file_id}*_realtime.txt")
+    matches = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+    return Path(matches[0]) if matches else None
+
+
+def resolve_merged_transcript(room: CollaborativeRoom, memory_text: str = "") -> str:
+    """取内存、数据库、磁盘转写文件中最完整的一份。"""
+    candidates = [
+        (memory_text or "").strip(),
+        (room.merged_transcript or "").strip(),
+    ]
+    file_path = find_transcript_file(room.file_id)
+    if file_path and file_path.is_file():
+        candidates.append(file_path.read_text(encoding="utf-8").strip())
+    return max(candidates, key=len, default="")
+
+
+def prepare_room_recovery(db: Session, room: CollaborativeRoom) -> tuple[str, str]:
+    """将最佳转写写入房间记录，返回 (merged_text, source_hint)。"""
+    merged = resolve_merged_transcript(room)
+    if not merged:
+        raise ValueError("未找到可恢复的转写内容")
+
+    db_text = (room.merged_transcript or "").strip()
+    file_path = find_transcript_file(room.file_id)
+    file_text = ""
+    if file_path and file_path.is_file():
+        file_text = file_path.read_text(encoding="utf-8").strip()
+
+    if len(file_text) > len(db_text):
+        hint = f"已从磁盘转写文件恢复（{len(merged)} 字）"
+    elif len(merged) > len(db_text):
+        hint = f"已从内存转写恢复（{len(merged)} 字）"
+    else:
+        hint = f"使用数据库转写（{len(merged)} 字）"
+
+    room.merged_transcript = merged
+    if room.status not in ("ending", "completed"):
+        room.status = "ending"
+    db.commit()
+    db.refresh(room)
+    return merged, hint
+
+
 def end_room(db: Session, room: CollaborativeRoom, username: str) -> CollaborativeRoom:
     if username != room.host_username:
         raise ValueError("仅主持人可结束会议")
+    if room.status == "completed":
+        raise ValueError("会议已结束")
+    if room.status == "ending":
+        return room
     if room.status not in ("waiting", "live"):
         raise ValueError("会议已结束")
     room.status = "ending"
@@ -375,7 +427,11 @@ def complete_room(db: Session, room: CollaborativeRoom, merged_transcript: str) 
     room.status = "completed"
     if not room.ended_at:
         room.ended_at = datetime.now()
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(room)
     return room
 
@@ -388,7 +444,11 @@ def append_transcript(db: Session, room: CollaborativeRoom, line: str) -> str:
     if current and not current.endswith("\n"):
         current += "\n"
     room.merged_transcript = current + line + "\n"
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return room.merged_transcript
 
 

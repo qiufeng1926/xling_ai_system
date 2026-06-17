@@ -60,9 +60,23 @@ def main():
             .all()
         }
 
+        pending_uids = {
+            r[0]
+            for r in db.query(CollectedInfluencer.platform_uid)
+            .filter(
+                CollectedInfluencer.platform == task.platform,
+                CollectedInfluencer.review_status == "pending",
+            )
+            .all()
+        }
+
         saved = 0
+        skipped = 0
         for item in results:
             if item.platform_uid in existing_uids:
+                continue
+            if item.platform_uid in pending_uids:
+                skipped += 1
                 continue
 
             extra = dict(item.extra_data or {})
@@ -89,13 +103,14 @@ def main():
                 )
             )
             existing_uids.add(item.platform_uid)
+            pending_uids.add(item.platform_uid)
             saved += 1
 
         task.status = "completed"
         task.result_count = saved
         task.completed_at = datetime.now()
         db.commit()
-        print(json.dumps({"ok": True, "count": saved}))
+        print(json.dumps({"ok": True, "count": saved, "skipped_duplicates": skipped}))
 
     except Exception as exc:
         db.rollback()

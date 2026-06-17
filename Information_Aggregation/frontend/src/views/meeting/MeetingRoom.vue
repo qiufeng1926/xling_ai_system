@@ -10,6 +10,16 @@
     <el-skeleton v-if="loading" :rows="4" animated class="meeting-room__skeleton" />
 
     <template v-else-if="room">
+      <el-alert
+        v-if="room.status === 'ending'"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="meeting-room__recover-alert"
+        title="会议结束处理未完成"
+        description="转写可能已保存在服务器，可点击下方按钮重新合并转写并生成纪要。"
+      />
+
       <div class="meeting-room__toolbar">
         <el-tag :type="statusTagType">{{ statusLabel(room.status) }}</el-tag>
         <span class="meeting-room__role">我的角色：{{ roleLabel(myRole) }}</span>
@@ -29,6 +39,21 @@
             @click="handleEnd"
           >
             结束会议
+          </el-button>
+          <el-button
+            v-if="myRole === 'host' && room.status === 'ending'"
+            type="warning"
+            :loading="recoverLoading"
+            @click="handleRecover"
+          >
+            恢复并生成纪要
+          </el-button>
+          <el-button
+            v-if="myRole === 'host' && room.status === 'completed' && room.file_id"
+            type="primary"
+            @click="goRecord"
+          >
+            查看会议记录
           </el-button>
           <el-button v-if="myRole === 'host'" @click="showInvite = true">邀请成员</el-button>
         </div>
@@ -120,11 +145,13 @@ import {
   joinRoom,
   startRoom,
   endRoom,
+  recoverRoom,
   type RoomInvitation,
   type RoomParticipant,
   type CollaborativeRoom,
 } from '@/api/meetingRooms'
 import { searchUsers, type UserSearchHit } from '@/api/users'
+import { MEETING_ROUTES } from '@/constants/routes'
 
 interface OnlineParticipant extends RoomParticipant {
   is_recording?: boolean
@@ -137,6 +164,7 @@ const roomCode = computed(() => String(route.params.roomCode || '').toUpperCase(
 
 const loading = ref(true)
 const actionLoading = ref(false)
+const recoverLoading = ref(false)
 const room = ref<CollaborativeRoom | null>(null)
 const myRole = ref('viewer')
 const participants = ref<OnlineParticipant[]>([])
@@ -239,6 +267,37 @@ async function handleEnd() {
   }
 }
 
+async function handleRecover() {
+  await ElMessageBox.confirm(
+    '将从服务器已保存的转写重新合并并生成 AI 纪要，可能需要 1–3 分钟，请耐心等待。',
+    '恢复会议',
+    { type: 'warning' }
+  )
+  recoverLoading.value = true
+  try {
+    const res = await recoverRoom(roomCode.value)
+    ElMessage.success(res.message || '会议已恢复，纪要生成完成')
+    await loadRoom()
+    if (res.file_id) {
+      await ElMessageBox.confirm('是否前往查看会议记录？', '恢复成功', {
+        confirmButtonText: '查看记录',
+        cancelButtonText: '留在此页',
+        type: 'success',
+      }).then(() => {
+        router.push(MEETING_ROUTES.recordDetail(res.file_id))
+      }).catch(() => {})
+    }
+  } finally {
+    recoverLoading.value = false
+  }
+}
+
+function goRecord() {
+  if (room.value?.file_id) {
+    router.push(MEETING_ROUTES.recordDetail(room.value.file_id))
+  }
+}
+
 async function searchRemoteUsers(keyword: string) {
   if (!keyword.trim()) {
     searchResults.value = []
@@ -285,6 +344,9 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.meeting-room__recover-alert {
+  margin: 16px 0 0;
+}
 .meeting-room__code {
   margin-left: 8px;
   vertical-align: middle;
