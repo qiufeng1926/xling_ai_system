@@ -921,6 +921,9 @@ async def get_meeting(file_id: str, current_user: User = Depends(get_current_use
         return {
             "success": True,
             "file_id": file_id,
+            "meeting_name": meeting_record.meeting_name if meeting_record else None,
+            "created_at": meeting_record.created_at.isoformat() if meeting_record and meeting_record.created_at else None,
+            "transcript_length": len(transcript) if transcript else 0,
             "transcript": transcript,
             "summary": summary,
             "summary_visual": summary_visual,

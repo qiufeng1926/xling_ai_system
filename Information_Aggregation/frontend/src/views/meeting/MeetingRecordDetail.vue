@@ -41,37 +41,48 @@
     </el-empty>
 
     <template v-else-if="detail">
-      <el-card shadow="never" class="meeting-detail__section">
-        <template #header>转写文本</template>
-        <el-scrollbar max-height="420px">
-          <pre class="meeting-detail__transcript">{{ detail.transcript || '暂无转写内容' }}</pre>
-        </el-scrollbar>
-      </el-card>
-
-      <el-card
-        v-if="detail.summary || detail.summary_visual"
-        shadow="never"
-        class="meeting-detail__section"
-      >
-        <template #header>
-          <div class="meeting-detail__summary-head">
-            <span>AI 智能速览</span>
-            <el-radio-group v-model="summaryTab" size="small">
-              <el-radio-button value="markdown">文字速览</el-radio-button>
-              <el-radio-button value="visual" :disabled="!detail.summary_visual">图文速览</el-radio-button>
-            </el-radio-group>
+      <section class="meeting-detail__hero">
+        <div>
+          <h1 class="meeting-detail__title">{{ pageTitle }}</h1>
+          <div class="meeting-detail__tags">
+            <el-tag v-if="formattedCreatedAt" size="small" effect="plain">{{ formattedCreatedAt }}</el-tag>
+            <el-tag v-if="detail.transcript_length" size="small" type="info" effect="plain">
+              转写 {{ detail.transcript_length }} 字
+            </el-tag>
+            <el-tag v-if="detail.summary" size="small" type="success" effect="plain">已生成速览</el-tag>
           </div>
-        </template>
+        </div>
+      </section>
 
-        <el-scrollbar v-if="summaryTab === 'markdown'" max-height="520px">
-          <pre class="meeting-detail__summary">{{ detail.summary || '暂无文字速览' }}</pre>
-        </el-scrollbar>
-        <MeetingVisualSummary
-          v-else
-          :visual="detail.summary_visual"
-          :status="detail.summary_visual_status"
-        />
-        <p class="meeting-detail__disclaimer">图文内容由 AI 根据转写整理，如有出入以转写原文为准。</p>
+      <el-card shadow="never" class="meeting-detail__panel">
+        <el-tabs v-model="activeTab" class="meeting-detail__tabs">
+          <el-tab-pane v-if="detail.summary" label="智能速览" name="summary">
+            <el-scrollbar max-height="620px">
+              <MeetingSummaryView :summary="detail.summary" />
+            </el-scrollbar>
+          </el-tab-pane>
+
+          <el-tab-pane label="转写原文" name="transcript">
+            <el-scrollbar max-height="620px">
+              <MeetingTranscriptView :transcript="detail.transcript" />
+            </el-scrollbar>
+          </el-tab-pane>
+
+          <el-tab-pane
+            v-if="detail.summary_visual"
+            label="图文速览"
+            name="visual"
+          >
+            <el-scrollbar max-height="620px">
+              <MeetingVisualSummary
+                :visual="detail.summary_visual"
+                :status="detail.summary_visual_status"
+              />
+            </el-scrollbar>
+          </el-tab-pane>
+        </el-tabs>
+
+        <p class="meeting-detail__disclaimer">内容由 AI 根据转写整理，如有出入以转写原文为准。</p>
       </el-card>
     </template>
   </div>
@@ -88,8 +99,11 @@ import {
   getMeetingDetail,
   type MeetingDetail,
 } from '@/api/meetings'
+import MeetingSummaryView from '@/components/MeetingSummaryView.vue'
+import MeetingTranscriptView from '@/components/MeetingTranscriptView.vue'
 import MeetingVisualSummary from '@/components/MeetingVisualSummary.vue'
 import { MEETING_ROUTES } from '@/constants/routes'
+import { parseSummary } from '@/utils/meetingContent'
 import { useUserStore } from '@/stores/user'
 import { isSuperAdmin } from '@/utils/permission'
 
@@ -103,9 +117,30 @@ const deleting = ref(false)
 const exportingSummary = ref(false)
 const exportingVisual = ref(false)
 const detail = ref<MeetingDetail | null>(null)
-const summaryTab = ref<'markdown' | 'visual'>('markdown')
+const activeTab = ref('summary')
 
 const fileId = computed(() => String(route.params.fileId || ''))
+
+const pageTitle = computed(() => {
+  const fromApi = detail.value?.meeting_name?.trim()
+  if (fromApi) return fromApi
+  const topic = parseSummary(detail.value?.summary || '').meta.topic
+  return topic || '会议详情'
+})
+
+const formattedCreatedAt = computed(() => {
+  const raw = detail.value?.created_at
+  if (!raw) return ''
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return raw
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+})
 
 const canDownload = computed(() => {
   if (isSuperAdmin(userStore.userInfo?.role)) return true
@@ -133,7 +168,7 @@ async function loadDetail() {
       throw new Error(res.error || '加载失败')
     }
     detail.value = res
-    summaryTab.value = res.summary ? 'markdown' : 'visual'
+    activeTab.value = res.summary ? 'summary' : 'transcript'
   } catch (err: any) {
     ElMessage.error(err?.message || '加载会议详情失败')
     if (!permissionDenied.value) {
@@ -195,6 +230,10 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.meeting-detail {
+  max-width: 980px;
+  margin: 0 auto;
+}
 .meeting-detail__toolbar {
   display: flex;
   justify-content: space-between;
@@ -208,27 +247,31 @@ onMounted(async () => {
   gap: 8px;
   flex-wrap: wrap;
 }
-.meeting-detail__section {
+.meeting-detail__hero {
   margin-bottom: 16px;
 }
-.meeting-detail__summary-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
+.meeting-detail__title {
+  margin: 0 0 10px;
+  color: #1f2d3d;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.35;
 }
-.meeting-detail__transcript,
-.meeting-detail__summary {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.8;
-  font-family: inherit;
-  color: #303133;
+.meeting-detail__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.meeting-detail__panel {
+  border-radius: 12px;
+}
+.meeting-detail__tabs :deep(.el-tabs__header) {
+  margin-bottom: 12px;
 }
 .meeting-detail__disclaimer {
   margin: 12px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid #ebeef5;
   color: #909399;
   font-size: 12px;
 }

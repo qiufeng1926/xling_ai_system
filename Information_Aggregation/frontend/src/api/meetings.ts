@@ -61,6 +61,9 @@ export interface VisualSummary {
 export interface MeetingDetail {
   success: boolean
   file_id: string
+  meeting_name?: string | null
+  created_at?: string | null
+  transcript_length?: number | null
   transcript: string | null
   summary: string | null
   summary_visual: VisualSummary | null

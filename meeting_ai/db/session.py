@@ -189,6 +189,37 @@ def update_meeting_status(file_id: str, status: str, error_message: str = None):
             logger.warning(f"未找到会议记录: file_id={file_id}")
 
 
+def update_meeting_summaries(
+    file_id: str,
+    *,
+    summary: str | None,
+    summary_visual: str | None = None,
+    summary_visual_status: str | None = None,
+    summary_file_path: str | None = None,
+    llm_duration_ms: int | None = None,
+) -> bool:
+    """更新已有会议的 AI 总结字段（不改动转写原文）"""
+    with get_db_session() as session:
+        meeting = session.query(Meeting).filter(Meeting.file_id == file_id).first()
+        if not meeting:
+            logger.warning(f"未找到会议记录: file_id={file_id}")
+            return False
+        meeting.summary = summary
+        meeting.summary_length = len(summary) if summary else 0
+        if summary_visual is not None:
+            meeting.summary_visual = summary_visual
+        if summary_visual_status is not None:
+            meeting.summary_visual_status = summary_visual_status
+        if summary_file_path is not None:
+            meeting.summary_file_path = summary_file_path
+        if llm_duration_ms is not None:
+            meeting.llm_duration_ms = llm_duration_ms
+        meeting.status = 'completed'
+        meeting.error_message = None
+        logger.info(f"会议总结已更新: file_id={file_id}, summary_length={meeting.summary_length}")
+        return True
+
+
 def _detach_instance(session: Session, instance):
     """在会话关闭前加载属性并分离，避免 DetachedInstanceError"""
     if instance is None:
