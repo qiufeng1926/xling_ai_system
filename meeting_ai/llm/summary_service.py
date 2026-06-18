@@ -10,7 +10,7 @@ from config.config import (
     visual_json_repair,
     visual_summary_retry_max,
 )
-from llm.glm_chat import GLMClient
+from llm.base_client import BaseLLMClient
 from llm.visual_schema import (
     VisualSummary,
     merge_visual_parts,
@@ -35,13 +35,13 @@ class DualSummaryResult:
     visual_error: str | None
 
 
-async def _parse_raw_visual(client: GLMClient, raw: str) -> VisualSummary:
+async def _parse_raw_visual(client: BaseLLMClient, raw: str) -> VisualSummary:
     repair_fn = client.repair_json_async if visual_json_repair else None
     return await parse_visual_summary_with_repair(raw, repair_fn=repair_fn)
 
 
 async def _generate_visual_once(
-    client: GLMClient,
+    client: BaseLLMClient,
     transcript: str,
     meeting_name: str | None,
     part_index: int | None = None,
@@ -57,7 +57,7 @@ async def _generate_visual_once(
 
 
 async def _generate_visual_chunked(
-    client: GLMClient,
+    client: BaseLLMClient,
     transcript: str,
     meeting_name: str | None,
 ) -> VisualSummary:
@@ -88,7 +88,7 @@ async def _generate_visual_chunked(
 
 
 async def _generate_visual_with_retry(
-    client: GLMClient,
+    client: BaseLLMClient,
     transcript: str,
     meeting_name: str | None,
     max_retries: int,
@@ -115,7 +115,7 @@ async def _generate_visual_with_retry(
 
 
 async def generate_dual_summaries(
-    client: GLMClient,
+    client: BaseLLMClient,
     transcript: str,
     meeting_name: str | None = None,
 ) -> DualSummaryResult:
@@ -127,11 +127,13 @@ async def generate_dual_summaries(
 
 
 async def _generate_dual_summaries_inner(
-    client: GLMClient,
+    client: BaseLLMClient,
     transcript: str,
     meeting_name: str | None = None,
 ) -> DualSummaryResult:
-    markdown_task = asyncio.create_task(client.summary_meeting_async(transcript))
+    markdown_task = asyncio.create_task(
+        client.summary_meeting_async(transcript, meeting_name)
+    )
     visual_task = asyncio.create_task(
         _generate_visual_with_retry(client, transcript, meeting_name, visual_summary_retry_max)
     )

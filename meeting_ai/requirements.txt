@@ -67,6 +67,7 @@ networkx==3.6.1
 numba==0.65.1
 numpy==2.4.6
 omegaconf==2.3.0
+openai>=2.26.0,<3.0.0
 oss2==2.19.1
 packaging==26.0
 pandocfilters==1.5.1

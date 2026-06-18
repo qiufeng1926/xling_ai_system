@@ -19,7 +19,7 @@ from db.models import User
 
 from config.config import upload_dir, output_dir, max_upload_bytes
 from asr.holder import get_asr_engine
-from llm.client_holder import get_glm_client
+from llm.client_holder import get_llm_client
 from llm.summary_service import generate_dual_summaries, visual_dict_from_result
 from utils.logger import get_logger
 from utils.executors import _get_batch_sem, run_io
@@ -130,7 +130,7 @@ async def _process_meeting_upload(
         # 并行生成 Markdown 速览 + 图文 JSON
         logger.info(f"开始生成会议纪要（双轨）...", extra={'request_id': request_id})
         llm_start = time.time()
-        dual = await generate_dual_summaries(get_glm_client(), transcript, meeting_name)
+        dual = await generate_dual_summaries(get_llm_client(), transcript, meeting_name)
         llm_duration = (time.time() - llm_start) * 1000
 
         if dual.markdown_error or not dual.markdown:

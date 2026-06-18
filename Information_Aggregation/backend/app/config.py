@@ -1,9 +1,10 @@
 from pathlib import Path
+from typing import Annotated
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 # 强制以 backend/.env 为准，避免 shell/conda 中的旧 SECRET_KEY 覆盖文件配置
@@ -67,7 +68,7 @@ class Settings(BaseSettings):
     LOG_CONSOLE: bool = True
 
     # CORS：逗号分隔，例如 http://localhost:5173,http://192.168.1.10:5173
-    CORS_ORIGINS: list[str] = Field(
+    CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "http://localhost:5173",
             "http://127.0.0.1:5173",

@@ -2,9 +2,11 @@
 from config.config import (
     app_env,
     cors_origins,
+    deepseek_api_key,
     glm_api_key,
     jwt_secret,
     jwt_secret_default,
+    llm_provider,
     seed_default_users_on_startup,
     tingwu_access_key_id,
     tingwu_app_key,
@@ -30,6 +32,7 @@ def validate_startup_config() -> None:
             "JWT 已加载（前缀=%s…，须与门户 SECRET_KEY 一致）",
             (jwt_secret or "")[:12],
         )
+        logger.info("LLM 提供商: %s", llm_provider)
 
     issues: list[str] = []
 
@@ -43,8 +46,14 @@ def validate_startup_config() -> None:
             issues.append("生产环境禁止 SEED_DEFAULT_USERS=true（勿自动创建默认账号）")
         if not cors_origins.strip():
             issues.append("生产环境必须配置 CORS_ORIGINS（逗号分隔的前端域名）")
-        if not glm_api_key:
-            issues.append("生产环境必须配置 GLM_API_KEY")
+        if llm_provider == "deepseek":
+            if not deepseek_api_key:
+                issues.append("生产环境必须配置 DEEPSEEK_API_KEY（LLM_PROVIDER=deepseek）")
+        elif llm_provider == "glm":
+            if not glm_api_key:
+                issues.append("生产环境必须配置 GLM_API_KEY（LLM_PROVIDER=glm）")
+        else:
+            issues.append(f"LLM_PROVIDER 无效: {llm_provider!r}，可选 glm | deepseek")
         if not tingwu_access_key_id or not tingwu_app_key:
             issues.append("生产环境必须配置听悟 AccessKey 与 TINGWU_APP_KEY")
 

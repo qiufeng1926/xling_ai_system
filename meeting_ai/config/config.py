@@ -43,10 +43,17 @@ asr_energy_threshold = float(_env("ASR_ENERGY_THRESHOLD", "0.006") or "0.006")
 asr_device = _env("ASR_DEVICE", "cpu")
 ffmpeg_path = _env("FFMPEG_PATH", r"D:\AI\ffmpeg-8.1.1-essentials_build\bin")
 
-# LLM 配置
+# LLM 配置（LLM_PROVIDER: glm | deepseek）
+llm_provider = (_env("LLM_PROVIDER", "glm") or "glm").strip().lower()
+llm_temperature = float(
+    _env("LLM_TEMPERATURE", _env("GLM_TEMPERATURE", "0.3")) or "0.3"
+)
 glm_api_key = _env("GLM_API_KEY", "")
 glm_model = _env("GLM_MODEL", "glm-4-flash")
-glm_temperature = float(_env("GLM_TEMPERATURE", "0.3") or "0.3")
+glm_temperature = llm_temperature  # 兼容旧配置名
+deepseek_api_key = _env("DEEPSEEK_API_KEY", "")
+deepseek_model = _env("DEEPSEEK_MODEL", "deepseek-chat")
+deepseek_base_url = _env("DEEPSEEK_BASE_URL", "https://api.deepseek.com") or "https://api.deepseek.com"
 
 # 图文速览（与 Markdown 并行生成，每场必生成）
 visual_summary_retry_max = int(_env("VISUAL_SUMMARY_RETRY_MAX", "2") or "2")

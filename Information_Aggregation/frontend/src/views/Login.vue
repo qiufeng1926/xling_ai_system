@@ -84,8 +84,7 @@
         </el-button>
       </el-form>
 
-      <p v-if="tab === 'login' && isDev" class="hint">开发环境请在 backend/.env 中配置 ADMIN_USERNAME / ADMIN_PASSWORD</p>
-      <p v-else-if="tab === 'register'" class="hint">注册后为普通用户，模块权限可在平台内申请或由管理员下发</p>
+      <p v-if="tab === 'register'" class="hint">注册后为普通用户，模块权限可在平台内申请或由管理员下发</p>
     </el-card>
   </div>
 </template>
@@ -118,8 +117,6 @@ const registerForm = reactive({
   password: '',
   password_confirm: '',
 })
-
-const isDev = import.meta.env.DEV
 
 const loginRules: FormRules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],

@@ -17,7 +17,7 @@ from asr.tingwu_realtime import TingwuRealtimeEngine
 from config.config import collab_max_recorders, output_dir
 from db.models import CollaborativeRoom
 from db.session import SessionFactory, save_meeting_to_db_async
-from llm.client_holder import get_glm_client
+from llm.client_holder import get_llm_client
 from llm.summary_service import generate_dual_summaries, visual_dict_from_result
 from services import collaborative_service as collab_svc
 from services.room_runtime import TranscriptLine, room_manager
@@ -327,7 +327,7 @@ async def finalize_collaborative_room(
     try:
         dual = await _run_with_keepalive(
             host_connection_id,
-            generate_dual_summaries(get_glm_client(), merged, room.meeting_name),
+            generate_dual_summaries(get_llm_client(), merged, room.meeting_name),
             stage="summary",
         )
         if dual and dual.markdown:

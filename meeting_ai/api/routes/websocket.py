@@ -43,7 +43,7 @@ from db.models import User
 from db.session import SessionFactory
 from utils.logger import get_logger
 from asr.tingwu_realtime import TingwuRealtimeEngine, TingwuTaskError
-from llm.client_holder import get_glm_client
+from llm.client_holder import get_llm_client
 from llm.summary_service import generate_dual_summaries, visual_dict_from_result
 from config.config import output_dir
 from db.session import save_meeting_to_db_async
@@ -412,7 +412,7 @@ async def websocket_transcribe(
                         dual = await _run_with_keepalive(
                             connection_id,
                             generate_dual_summaries(
-                                get_glm_client(),
+                                get_llm_client(),
                                 session_info["total_text"],
                                 meeting_name or None,
                             ),

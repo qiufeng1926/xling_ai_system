@@ -89,17 +89,21 @@ def test_llm_client():
     logger.info("=" * 50)
     
     try:
-        from llm.glm_chat import GLMClient
-        from config.config import glm_api_key
-        
-        if not glm_api_key:
+        from llm.client_holder import create_llm_client
+        from config.config import llm_provider, glm_api_key, deepseek_api_key
+
+        if llm_provider == "deepseek":
+            if not deepseek_api_key:
+                logger.warning("⚠ DeepSeek API Key 未配置，跳过测试")
+                return True
+        elif not glm_api_key:
             logger.warning("⚠ GLM API Key 未配置，跳过测试")
             return True
-        
-        logger.info("正在初始化 GLM 客户端...")
-        client = GLMClient()
-        
-        logger.info("✓ GLM 客户端初始化成功")
+
+        logger.info(f"正在初始化 LLM 客户端 (provider={llm_provider})...")
+        client = create_llm_client()
+
+        logger.info("✓ LLM 客户端初始化成功")
         logger.info(f"✓ 模型: {client.model}")
         return True
     except Exception as e:

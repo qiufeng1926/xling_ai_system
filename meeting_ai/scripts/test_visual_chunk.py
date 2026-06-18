@@ -15,7 +15,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from config import config as cfg
-from llm.glm_chat import GLMClient
+from llm.client_holder import create_llm_client
 from llm.summary_service import _generate_visual_with_retry
 from llm.visual_schema import split_transcript_chunks
 
@@ -74,11 +74,15 @@ async def main():
     print(f'模拟转写长度 = {len(transcript)} 字')
     print(f'将分为 {len(chunks)} 段生成\n')
 
-    if not cfg.glm_api_key:
-        print('错误: 未配置 GLM_API_KEY，请在 .env 中设置')
+    if cfg.llm_provider == "deepseek":
+        if not cfg.deepseek_api_key:
+            print('错误: LLM_PROVIDER=deepseek 但未配置 DEEPSEEK_API_KEY')
+            sys.exit(1)
+    elif not cfg.glm_api_key:
+        print('错误: LLM_PROVIDER=glm 但未配置 GLM_API_KEY')
         sys.exit(1)
 
-    client = GLMClient()
+    client = create_llm_client()
     visual, visual_json, err = await _generate_visual_with_retry(
         client,
         transcript,
