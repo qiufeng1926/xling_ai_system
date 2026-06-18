@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 
 SYSTEM_PROMPT = """
 你是专业的会议纪要助手，擅长将口语化会议转写整理为结构清晰、信息密度高的商务纪要。
@@ -18,10 +19,41 @@ def _has_speaker_labels(transcript: str) -> bool:
     return bool(re.search(r'\[说话人\d+\]|\[([^\]]+)\]|发言人\d+|说话人\d+[:：]', transcript))
 
 
-def build_meeting_prompt(transcript: str, meeting_name: str | None = None) -> str:
+def _format_meeting_started_at(value: datetime | str | None) -> str | None:
+    """将会议开始时间格式化为纪要元信息用的时间字符串。"""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        dt = value
+    return dt.strftime("%Y年%m月%d日 %H:%M")
+
+
+def build_meeting_prompt(
+    transcript: str,
+    meeting_name: str | None = None,
+    meeting_started_at: datetime | str | None = None,
+) -> str:
     has_speakers = _has_speaker_labels(transcript)
     name_hint = (meeting_name or "").strip()
     name_line = f"\n【已知会议名称（可作主题参考）】{name_hint}" if name_hint else ""
+
+    started_hint = _format_meeting_started_at(meeting_started_at)
+    if started_hint:
+        time_line = f"时间: {started_hint}"
+        time_rule = "时间：必须使用上方【已知会议开始时间】，原样写入，不要从转写推断或改写。"
+        started_line = f"\n【已知会议开始时间（时间字段须原样使用）】{started_hint}"
+    else:
+        time_line = "时间: （从转写推断或写「未提及」）"
+        time_rule = "时间：无系统记录时，从转写推断或写「未提及」。"
+        started_line = ""
 
     participant_hint = (
         "参与人：从转写中的说话人标签、自我介绍或称呼中提取，多人用顿号分隔；无法识别则写「未提及」。"
@@ -35,9 +67,8 @@ def build_meeting_prompt(transcript: str, meeting_name: str | None = None) -> st
 【输出格式 — 严格按此结构，保留 Markdown 标题层级，不要输出格式说明或多余前后缀】
 
 主题: （概括本次会议核心议题，10～25 字；可参考已知会议名称）
-时间: （从转写推断或写「未提及」）
+{time_line}
 参与人: （{participant_hint.replace("参与人：", "")}）
-
 
 
 （用 1 段话 120～200 字概括：会议背景、讨论主线、关键结论或共识；书面语、信息密度高，类似咨询纪要开篇总述）
@@ -72,7 +103,8 @@ def build_meeting_prompt(transcript: str, meeting_name: str | None = None) -> st
 - 子话题下的要点用 `-` 列表，每条 1～3 句，保留转写中的专有名词、数字、人名
 - 不要输出「关键词」「全文概要」「章节速览」「要点回顾」等旧版听悟结构
 - 不要输出代码块包裹全文
-{name_line}
+- {time_rule}
+{name_line}{started_line}
 
 【转写内容】
 {transcript}

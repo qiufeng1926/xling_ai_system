@@ -1,6 +1,7 @@
 """LLM 客户端抽象基类：共享纪要/图文/JSON 修复逻辑"""
 import asyncio
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 from config.config import llm_temperature
 from llm.prompt import SYSTEM_PROMPT, build_meeting_prompt
@@ -45,16 +46,25 @@ class BaseLLMClient(ABC):
             lambda: self.chat(prompt, temperature, system_prompt),
         )
 
-    def summary_meeting(self, transcript: str, meeting_name: str | None = None) -> str:
-        prompt = build_meeting_prompt(transcript, meeting_name)
+    def summary_meeting(
+        self,
+        transcript: str,
+        meeting_name: str | None = None,
+        meeting_started_at: datetime | str | None = None,
+    ) -> str:
+        prompt = build_meeting_prompt(transcript, meeting_name, meeting_started_at)
         return self.chat(prompt)
 
     async def summary_meeting_async(
-        self, transcript: str, meeting_name: str | None = None
+        self,
+        transcript: str,
+        meeting_name: str | None = None,
+        meeting_started_at: datetime | str | None = None,
     ) -> str:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            self.executor, lambda: self.summary_meeting(transcript, meeting_name)
+            self.executor,
+            lambda: self.summary_meeting(transcript, meeting_name, meeting_started_at),
         )
 
     def summary_visual(

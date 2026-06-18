@@ -2738,6 +2738,8 @@
         let audioContext = null;
         let isRecording = false;
         let sessionEnding = false;
+        let wsPingTimer = null;
+        let lastMeetingName = '';
         let pendingFileId = null;
         let pollAbort = false;
         let pollFallbackTimer = null;
@@ -2887,12 +2889,22 @@
             ws.onclose = () => {
                 console.log('WebSocket 连接关闭');
                 updateStatus('已断开', false);
+                stopWsPing();
+                const wasRecording = isRecording;
                 cleanupMediaOnly();
                 if (sessionEnding && pendingFileId) {
                     setRealtimeTranscriptStatus('连接已断开，正在获取会议纪要...');
                     pollMeetingSummary(pendingFileId);
                 } else if (sessionEnding) {
                     resetRealtimeSessionUI('连接已断开，请查看历史记录');
+                } else if (wasRecording && !isCollabMode) {
+                    resetRealtimeSessionUI(
+                        '连接意外断开，转写可能已在服务端自动保存，请稍后在「会议记录」中查看'
+                    );
+                    showErrorAlert(
+                        '录音连接已断开（可能因网络或长时间穿透超时）。' +
+                        '若已录制较久，请等待约 1 分钟后到「会议记录」查看是否已自动保存转写。'
+                    );
                 }
             };
         }
@@ -3228,7 +3240,24 @@
             );
         }
 
+        function stopWsPing() {
+            if (wsPingTimer) {
+                clearInterval(wsPingTimer);
+                wsPingTimer = null;
+            }
+        }
+
+        function startWsPing() {
+            stopWsPing();
+            wsPingTimer = setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'ping' }));
+                }
+            }, 25000);
+        }
+
         function cleanupMediaOnly() {
+            stopWsPing();
             if (!mediaRecorder) return;
             if (mediaRecorder.flushTimer) {
                 clearInterval(mediaRecorder.flushTimer);
@@ -3755,6 +3784,8 @@
                 }, 500);
 
                 mediaRecorder = { stream, processor, source, pcmSendBuffer, flushTimer };
+                lastMeetingName = meetingName;
+                startWsPing();
                 
                 startBtn.disabled = true;
                 stopBtn.disabled = false;
@@ -3839,6 +3870,11 @@
             console.log('停止录音');
         }
         
+        document.addEventListener('visibilitychange', () => {
+            if (!isRecording || document.visibilityState === 'visible') return;
+            setRealtimeTranscriptStatus('页面在后台时浏览器可能暂停录音，请保持此标签页在前台');
+        });
+
         // 拖拽上传功能
         const uploadArea = document.getElementById('uploadArea');
         

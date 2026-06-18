@@ -164,6 +164,84 @@ async def _run_with_keepalive(
     return await task
 
 
+async def _persist_realtime_session_emergency(
+    session_info: dict,
+    connection_id: str,
+    start_time: float,
+    *,
+    reason: str = "interrupted",
+) -> str | None:
+    """WebSocket 异常断开时保存转写，避免长时间录音数据丢失。"""
+    if session_info.get("saved"):
+        return session_info.get("file_id")
+
+    meeting_name = (session_info.get("meeting_name") or "").strip()
+    if not meeting_name:
+        return None
+
+    transcriber = session_info.get("transcriber")
+    if transcriber is not None:
+        session_info["total_text"] = transcriber.total_text()
+
+    total_text = (session_info.get("total_text") or "").strip()
+    if session_info.get("audio_chunks", 0) <= 0 and not total_text:
+        return None
+
+    file_id = str(uuid.uuid4())
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_info["file_id"] = file_id
+    session_info["saved"] = True
+
+    safe_name = "".join(
+        c for c in meeting_name if c.isalnum() or c in (" ", "-", "_")
+    ).strip().replace(" ", "_")
+    transcript_filename = f"{safe_name}_{file_id}_{timestamp}_realtime.txt"
+    transcript_path = os.path.join(output_dir, "transcripts", transcript_filename)
+    await run_io(Path(transcript_path).write_text, total_text, encoding="utf-8")
+
+    tingwu_task_id, tingwu_data, tingwu_status = _extract_tingwu_from_transcriber(transcriber)
+    tingwu_path, tingwu_json = await _save_tingwu_summarization_files(
+        safe_name, file_id, timestamp, tingwu_data
+    )
+    tingwu_db_fields = _tingwu_meeting_fields(
+        tingwu_task_id, tingwu_data, tingwu_status, tingwu_path, tingwu_json
+    )
+
+    total_duration_ms = (time.time() - start_time) * 1000
+    meeting_data = {
+        "file_id": file_id,
+        "user_id": session_info["user_id"],
+        "meeting_name": meeting_name,
+        "original_filename": transcript_filename,
+        "meeting_type": "realtime",
+        "audio_file_path": None,
+        "transcript_file_path": transcript_path,
+        "summary_file_path": None,
+        "transcript": total_text,
+        "summary": None,
+        "transcript_length": len(total_text),
+        "summary_length": 0,
+        "total_duration_ms": round(total_duration_ms, 2),
+        "status": reason,
+        "error_message": "连接中断，已自动保存转写内容" if reason == "interrupted" else None,
+        **tingwu_db_fields,
+    }
+    await save_meeting_to_db_async(meeting_data)
+    logger.info(
+        "实时会议已自动保存（连接中断）",
+        extra={
+            "request_id": connection_id,
+            "output_params": {
+                "file_id": file_id,
+                "reason": reason,
+                "text_length": len(total_text),
+                "audio_chunks": session_info.get("audio_chunks", 0),
+            },
+        },
+    )
+    return file_id
+
+
 @router.websocket("/ws/transcribe")
 async def websocket_transcribe(
     websocket: WebSocket,
@@ -208,8 +286,30 @@ async def websocket_transcribe(
         "transcriber": None,
         "tingwu_failed": False,
         "tingwu_started": False,
+        "tingwu_finalized": False,
+        "saved": False,
+        "tingwu_keepalive_task": None,
     }
     tingwu_start_lock = asyncio.Lock()
+
+    async def _tingwu_periodic_keepalive() -> None:
+        """听悟侧定期发送静音，避免长时间静音或浏览器节流导致 IDLE_TIMEOUT。"""
+        try:
+            while session_info.get("tingwu_started") and not session_info.get("saved"):
+                await asyncio.sleep(12)
+                if session_info.get("tingwu_failed"):
+                    break
+                transcriber_ref = session_info.get("transcriber")
+                if transcriber_ref is None or getattr(transcriber_ref, "_closed", False):
+                    break
+                await tingwu_engine.send_keepalive_async(transcriber_ref)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(
+                f"听悟保活失败: {e}",
+                extra={"request_id": connection_id},
+            )
 
     async def on_tingwu_result(
         display_text: str,
@@ -267,6 +367,10 @@ async def websocket_transcribe(
             await tingwu_engine.start_session_async(transcriber)
             await tingwu_engine.send_keepalive_async(transcriber)
             session_info["tingwu_started"] = True
+            if session_info.get("tingwu_keepalive_task") is None:
+                session_info["tingwu_keepalive_task"] = asyncio.create_task(
+                    _tingwu_periodic_keepalive()
+                )
             logger.info(
                 "听悟推流已启动",
                 extra={"request_id": connection_id, "output_params": {"task_id": transcriber.task_id}},
@@ -283,7 +387,15 @@ async def websocket_transcribe(
         )
         while True:
             # 控制消息：JSON 文本帧；音频：二进制 PCM 帧（16kHz int16）
-            raw_message = await websocket.receive()
+            try:
+                raw_message = await asyncio.wait_for(websocket.receive(), timeout=25.0)
+            except asyncio.TimeoutError:
+                await manager.send_json(
+                    connection_id,
+                    {"type": "heartbeat", "stage": "recording"},
+                )
+                continue
+
             if raw_message.get("type") == "websocket.disconnect":
                 raise WebSocketDisconnect()
 
@@ -320,6 +432,10 @@ async def websocket_transcribe(
                     logger.info(f"设置会议名称", extra={'request_id': connection_id, 'input_params': {'meeting_name': meeting_name}})
                     continue
 
+                if message.get("type") == "ping":
+                    await manager.send_json(connection_id, {"type": "pong"})
+                    continue
+
                 if message.get("type") == "record_start":
                     await ensure_tingwu_started()
                     continue
@@ -344,6 +460,7 @@ async def websocket_transcribe(
                             "message": "正在整理说话人分离转写并获取听悟 AI 摘要，请稍候...",
                         })
                         await tingwu_engine.finalize_stream_async(session_info["transcriber"])
+                        session_info["tingwu_finalized"] = True
                         session_info["total_text"] = session_info["transcriber"].total_text()
 
                     # 会话结束，生成 AI 总结
@@ -415,6 +532,7 @@ async def websocket_transcribe(
                                 get_llm_client(),
                                 session_info["total_text"],
                                 meeting_name or None,
+                                session_info.get("start_time"),
                             ),
                             stage="summary",
                         )
@@ -467,6 +585,7 @@ async def websocket_transcribe(
                                 **tingwu_db_fields,
                             }
                             await save_meeting_to_db_async(meeting_data)
+                            session_info["saved"] = True
                             logger.info(f"实时会议数据已保存到数据库", extra={'request_id': connection_id})
                         except Exception as db_error:
                             logger.error(f"保存实时会议数据到数据库失败: {str(db_error)}", exc_info=True, extra={'request_id': connection_id})
@@ -527,6 +646,7 @@ async def websocket_transcribe(
                                 **tingwu_db_fields,
                             }
                             await save_meeting_to_db_async(meeting_data)
+                            session_info["saved"] = True
                             logger.info(f"失败的实时会议数据已保存到数据库", extra={'request_id': connection_id})
                         except Exception as db_error:
                             logger.error(f"保存失败的实时会议数据到数据库失败: {str(db_error)}", exc_info=True, extra={'request_id': connection_id})
@@ -578,12 +698,42 @@ async def websocket_transcribe(
                 "message": "实时转写启动失败，请稍后重试",
             })
     finally:
+        keepalive_task = session_info.get("tingwu_keepalive_task")
+        if keepalive_task is not None and not keepalive_task.done():
+            keepalive_task.cancel()
+            try:
+                await keepalive_task
+            except asyncio.CancelledError:
+                pass
+
         transcriber = session_info.get("transcriber")
-        if transcriber is not None and session_info.get("tingwu_started"):
+        if (
+            transcriber is not None
+            and session_info.get("tingwu_started")
+            and not session_info.get("tingwu_finalized")
+        ):
             try:
                 await tingwu_engine.finalize_stream_async(transcriber)
+                session_info["total_text"] = transcriber.total_text()
+                session_info["tingwu_finalized"] = True
             except Exception as e:
                 logger.warning(f"听悟会话收尾失败: {e}", extra={"request_id": connection_id})
+
+        if not session_info.get("saved") and session_info.get("audio_chunks", 0) > 0:
+            try:
+                await _persist_realtime_session_emergency(
+                    session_info,
+                    connection_id,
+                    start_time,
+                    reason="interrupted",
+                )
+            except Exception as e:
+                logger.error(
+                    f"连接中断后自动保存失败: {e}",
+                    exc_info=True,
+                    extra={"request_id": connection_id},
+                )
+
         manager.disconnect(connection_id)
         logger.info(f"会话清理完成", extra={'request_id': connection_id})
 

@@ -130,7 +130,12 @@ async def _process_meeting_upload(
         # 并行生成 Markdown 速览 + 图文 JSON
         logger.info(f"开始生成会议纪要（双轨）...", extra={'request_id': request_id})
         llm_start = time.time()
-        dual = await generate_dual_summaries(get_llm_client(), transcript, meeting_name)
+        dual = await generate_dual_summaries(
+            get_llm_client(),
+            transcript,
+            meeting_name,
+            datetime.fromtimestamp(start_time),
+        )
         llm_duration = (time.time() - llm_start) * 1000
 
         if dual.markdown_error or not dual.markdown:

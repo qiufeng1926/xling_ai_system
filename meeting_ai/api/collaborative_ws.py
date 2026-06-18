@@ -327,7 +327,12 @@ async def finalize_collaborative_room(
     try:
         dual = await _run_with_keepalive(
             host_connection_id,
-            generate_dual_summaries(get_llm_client(), merged, room.meeting_name),
+            generate_dual_summaries(
+                get_llm_client(),
+                merged,
+                room.meeting_name,
+                room.started_at or room.created_at,
+            ),
             stage="summary",
         )
         if dual and dual.markdown:

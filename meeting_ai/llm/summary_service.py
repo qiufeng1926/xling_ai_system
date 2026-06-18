@@ -3,6 +3,7 @@
 """
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime
 
 from config.config import (
     visual_chunk_chars,
@@ -118,21 +119,25 @@ async def generate_dual_summaries(
     client: BaseLLMClient,
     transcript: str,
     meeting_name: str | None = None,
+    meeting_started_at: datetime | str | None = None,
 ) -> DualSummaryResult:
     """并行生成 Markdown 与图文 JSON；Markdown 失败则整体失败，图文失败可重试后标 failed"""
     from utils.executors import get_llm_summary_semaphore
 
     async with get_llm_summary_semaphore():
-        return await _generate_dual_summaries_inner(client, transcript, meeting_name)
+        return await _generate_dual_summaries_inner(
+            client, transcript, meeting_name, meeting_started_at
+        )
 
 
 async def _generate_dual_summaries_inner(
     client: BaseLLMClient,
     transcript: str,
     meeting_name: str | None = None,
+    meeting_started_at: datetime | str | None = None,
 ) -> DualSummaryResult:
     markdown_task = asyncio.create_task(
-        client.summary_meeting_async(transcript, meeting_name)
+        client.summary_meeting_async(transcript, meeting_name, meeting_started_at)
     )
     visual_task = asyncio.create_task(
         _generate_visual_with_retry(client, transcript, meeting_name, visual_summary_retry_max)
