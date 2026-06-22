@@ -27,16 +27,6 @@ def _find_transcript_by_file_id(transcripts_dir: str, file_id: str) -> tuple[str
         if filename.startswith(file_id) or f"_{file_id}_" in filename:
             return os.path.join(transcripts_dir, filename), filename
     return None, None
-
-
-def _find_tingwu_summary_file(file_id: str) -> str | None:
-    summaries_dir = os.path.join(output_dir, "summaries")
-    if not os.path.isdir(summaries_dir):
-        return None
-    for name in os.listdir(summaries_dir):
-        if name.endswith("_tingwu.json") and file_id in name:
-            return os.path.join(summaries_dir, name)
-    return None
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query, HTTPException
 from api.auth_utils import get_user_from_token, get_current_user
 from db.models import User
@@ -98,53 +88,6 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-def _extract_tingwu_from_transcriber(transcriber) -> tuple[str | None, dict | None, str]:
-    if transcriber is None:
-        return None, None, "skipped"
-    task_id = getattr(transcriber, "task_id", None)
-    data = getattr(transcriber, "summarization_data", None)
-    status = getattr(transcriber, "summarization_status", "skipped") or "skipped"
-    return task_id, data, status
-
-
-async def _save_tingwu_summarization_files(
-    safe_name: str,
-    file_id: str,
-    timestamp: str,
-    tingwu_data: dict | None,
-) -> tuple[str | None, str | None]:
-    if not tingwu_data:
-        return None, None
-    tingwu_filename = f"{safe_name}_{file_id}_{timestamp}_tingwu.json"
-    tingwu_path = os.path.join(output_dir, "summaries", tingwu_filename)
-    tingwu_json = json.dumps(tingwu_data, ensure_ascii=False, indent=2)
-    await run_io(Path(tingwu_path).write_text, tingwu_json, encoding="utf-8")
-    return tingwu_path, tingwu_json
-
-
-def _tingwu_meeting_fields(
-    task_id: str | None,
-    tingwu_data: dict | None,
-    tingwu_status: str,
-    tingwu_path: str | None,
-    tingwu_json: str | None,
-) -> dict:
-    return {
-        "tingwu_task_id": task_id,
-        "tingwu_summarization": tingwu_json,
-        "tingwu_summarization_status": tingwu_status,
-        "tingwu_summarization_file_path": tingwu_path,
-    }
-
-
-def _tingwu_session_end_fields(file_id: str, tingwu_data: dict | None, tingwu_status: str) -> dict:
-    return {
-        "has_tingwu_summary": bool(tingwu_data),
-        "tingwu_summarization_status": tingwu_status,
-        "tingwu_summary_page": f"/tingwu-summary?file_id={file_id}",
-    }
-
-
 async def _run_with_keepalive(
     connection_id: str,
     coro,
@@ -199,14 +142,6 @@ async def _persist_realtime_session_emergency(
     transcript_path = os.path.join(output_dir, "transcripts", transcript_filename)
     await run_io(Path(transcript_path).write_text, total_text, encoding="utf-8")
 
-    tingwu_task_id, tingwu_data, tingwu_status = _extract_tingwu_from_transcriber(transcriber)
-    tingwu_path, tingwu_json = await _save_tingwu_summarization_files(
-        safe_name, file_id, timestamp, tingwu_data
-    )
-    tingwu_db_fields = _tingwu_meeting_fields(
-        tingwu_task_id, tingwu_data, tingwu_status, tingwu_path, tingwu_json
-    )
-
     total_duration_ms = (time.time() - start_time) * 1000
     meeting_data = {
         "file_id": file_id,
@@ -224,7 +159,6 @@ async def _persist_realtime_session_emergency(
         "total_duration_ms": round(total_duration_ms, 2),
         "status": reason,
         "error_message": "连接中断，已自动保存转写内容" if reason == "interrupted" else None,
-        **tingwu_db_fields,
     }
     await save_meeting_to_db_async(meeting_data)
     logger.info(
@@ -457,7 +391,7 @@ async def websocket_transcribe(
                     if session_info["tingwu_started"]:
                         await manager.send_json(connection_id, {
                             "type": "generating_transcript",
-                            "message": "正在整理说话人分离转写并获取听悟 AI 摘要，请稍候...",
+                            "message": "正在整理说话人分离转写，请稍候...",
                         })
                         await tingwu_engine.finalize_stream_async(session_info["transcriber"])
                         session_info["tingwu_finalized"] = True
@@ -493,16 +427,6 @@ async def websocket_transcribe(
                     await run_io(Path(transcript_path).write_text, session_info["total_text"], encoding='utf-8')
                     logger.info(f"实时转写文本已保存", extra={'request_id': connection_id, 'output_params': {'transcript_file': transcript_path, 'text_length': len(session_info["total_text"])}})
 
-                    transcriber = session_info.get("transcriber")
-                    tingwu_task_id, tingwu_data, tingwu_status = _extract_tingwu_from_transcriber(transcriber)
-                    tingwu_path, tingwu_json = await _save_tingwu_summarization_files(
-                        safe_name, file_id, timestamp, tingwu_data
-                    )
-                    tingwu_db_fields = _tingwu_meeting_fields(
-                        tingwu_task_id, tingwu_data, tingwu_status, tingwu_path, tingwu_json
-                    )
-                    tingwu_client_fields = _tingwu_session_end_fields(file_id, tingwu_data, tingwu_status)
-                    
                     end_result_base = {
                         "total_text": session_info["total_text"],
                         "file_id": file_id,
@@ -582,7 +506,6 @@ async def websocket_transcribe(
                                 'summary_length': len(summary),
                                 'total_duration_ms': round(total_duration_ms, 2),
                                 'status': 'completed',
-                                **tingwu_db_fields,
                             }
                             await save_meeting_to_db_async(meeting_data)
                             session_info["saved"] = True
@@ -597,7 +520,6 @@ async def websocket_transcribe(
                             "summary_visual_status": dual.visual_status,
                             "summary_visual_error": dual.visual_error,
                             "summary_file": summary_path,
-                            **tingwu_client_fields,
                             **end_result_base,
                         }
                         sent = await manager.send_json(connection_id, end_result)
@@ -643,7 +565,6 @@ async def websocket_transcribe(
                                 'total_duration_ms': round(total_duration_ms, 2),
                                 'status': 'failed',
                                 'error_message': f"生成总结失败: {str(e)}",
-                                **tingwu_db_fields,
                             }
                             await save_meeting_to_db_async(meeting_data)
                             session_info["saved"] = True
@@ -655,7 +576,6 @@ async def websocket_transcribe(
                             "type": "session_end",
                             "summary": None,
                             "error": "会议纪要生成失败，请稍后重试",
-                            **tingwu_client_fields,
                             **end_result_base,
                         }
                         await manager.send_json(connection_id, end_result)
@@ -931,15 +851,6 @@ async def get_meeting(file_id: str, current_user: User = Depends(get_current_use
             "transcript_file": transcript_file,
             "summary_file": summary_file,
             "can_download": can_download,
-            "has_tingwu_summary": bool(
-                meeting_record and meeting_record.tingwu_summarization
-            ) if meeting_record else bool(
-                _find_tingwu_summary_file(file_id)
-            ),
-            "tingwu_summarization_status": (
-                meeting_record.tingwu_summarization_status if meeting_record else None
-            ),
-            "tingwu_summary_page": f"/tingwu-summary?file_id={file_id}",
         }
         
     except Exception as e:

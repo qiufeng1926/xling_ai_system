@@ -12,6 +12,7 @@ from app.collectors.filter_utils import passes_search_filters
 from app.config import settings
 from app.utils.mcn_utils import extract_mcn_name
 from app.utils.collector_uid import pick_display_nickname, resolve_pugongying_platform_uid
+from app.utils.collected_parsed import resolve_collected_profile_url
 from app.utils.keyword_match import calc_keyword_match_score, passes_keyword_match
 from app.utils.pugongying_fields import (
     AVATAR_KEYS,
@@ -405,6 +406,12 @@ class PugongyingBrowserCollector:
 
         mcn_name = extract_mcn_name({**item, "xingtu_raw": pgy_raw}) or parsed.get("mcn_name")
         profile_url = choose_best_profile_url(parsed, {**item, "pugongying_raw": pgy_raw})
+        profile_url = resolve_collected_profile_url(
+            "xiaohongshu",
+            platform_uid,
+            profile_url,
+            extra_data={"parsed": parsed, "pugongying_raw": pgy_raw},
+        )
         engagement_rate = parsed.get("engagement_rate")
         if engagement_rate is None:
             engagement_rate = _normalize_engagement_rate(

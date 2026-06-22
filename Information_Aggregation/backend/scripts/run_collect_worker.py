@@ -27,6 +27,8 @@ def main():
     from app.database import SessionLocal
     from app.models import CollectedInfluencer, CollectionTask, Influencer
 
+    from app.utils.collected_parsed import resolve_collected_profile_url
+
     db = SessionLocal()
     try:
         task = db.query(CollectionTask).filter(CollectionTask.id == task_id).first()
@@ -64,6 +66,7 @@ def main():
             r[0]
             for r in db.query(CollectedInfluencer.platform_uid)
             .filter(
+                CollectedInfluencer.task_id == task_id,
                 CollectedInfluencer.platform == task.platform,
                 CollectedInfluencer.review_status == "pending",
             )
@@ -79,6 +82,13 @@ def main():
                 skipped += 1
                 continue
 
+            profile_url = resolve_collected_profile_url(
+                item.platform,
+                item.platform_uid,
+                item.profile_url,
+                item.extra_data,
+            )
+
             extra = dict(item.extra_data or {})
             if item.platform_uid in library_map:
                 extra["in_library"] = True
@@ -91,7 +101,7 @@ def main():
                     platform_uid=item.platform_uid,
                     nickname=item.nickname,
                     avatar_url=item.avatar_url,
-                    profile_url=item.profile_url,
+                    profile_url=profile_url,
                     follower_count=item.follower_count,
                     engagement_rate=item.engagement_rate,
                     avg_views=item.avg_views,

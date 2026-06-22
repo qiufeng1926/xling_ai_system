@@ -19,7 +19,7 @@ from app.schemas import InfluencerCreate, InfluencerUpdate
 from app.services.agency_service import AgencyService
 from app.services.influencer_service import InfluencerService
 from app.services.tag_service import TagService
-from app.utils.collected_parsed import build_profile_update_from_extra
+from app.utils.collected_parsed import build_profile_update_from_extra, resolve_collected_profile_url
 from app.utils.xingtu_fields import merge_profile_patch
 from app.utils.filter_summary import build_filter_summary
 
@@ -51,10 +51,16 @@ def _prefer_positive_number(new, old):
 def _build_approve_update(existing: Influencer, item: CollectedInfluencer) -> InfluencerUpdate:
     engagement = float(item.engagement_rate) if item.engagement_rate else None
     existing_engagement = float(existing.engagement_rate) if existing.engagement_rate else None
+    profile_url = resolve_collected_profile_url(
+        item.platform,
+        item.platform_uid,
+        item.profile_url or existing.profile_url,
+        item.extra_data,
+    )
     return InfluencerUpdate(
         nickname=_prefer_non_empty(item.nickname, existing.nickname) or existing.nickname,
         avatar_url=_prefer_non_empty(item.avatar_url, existing.avatar_url),
-        profile_url=item.profile_url or existing.profile_url,
+        profile_url=profile_url,
         follower_count=int(
             _prefer_positive_number(item.follower_count, existing.follower_count) or 0
         ),
@@ -411,10 +417,18 @@ class CollectionService:
         for item in items:
             agency_id = AgencyService.resolve_agency_id(db, item.platform, item.extra_data)
             profile_patch = build_profile_update_from_extra(item.extra_data, item.platform)
+            profile_url = resolve_collected_profile_url(
+                item.platform,
+                item.platform_uid,
+                item.profile_url,
+                item.extra_data,
+            )
             existing = InfluencerService.get_by_platform_uid(db, item.platform, item.platform_uid)
             if existing:
                 merged_profile = merge_profile_patch(existing.profile, profile_patch) if profile_patch else None
                 update_data = _build_approve_update(existing, item)
+                if profile_url:
+                    update_data.profile_url = profile_url
                 if agency_id is not None:
                     update_data.agency_id = agency_id
                 if merged_profile is not None:
@@ -429,7 +443,7 @@ class CollectionService:
                         platform_uid=item.platform_uid,
                         nickname=item.nickname,
                         avatar_url=item.avatar_url,
-                        profile_url=item.profile_url,
+                        profile_url=profile_url,
                         follower_count=item.follower_count,
                         engagement_rate=float(item.engagement_rate) if item.engagement_rate else None,
                         source=item.source,

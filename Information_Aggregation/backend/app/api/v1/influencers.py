@@ -14,6 +14,7 @@ from app.schemas import (
 )
 from app.services.influencer_service import InfluencerService
 from app.utils.access_control import can_view_full_library, influencer_ids_for_user
+from app.utils.collected_parsed import resolve_collected_profile_url
 
 router = APIRouter(prefix="/influencers", tags=["达人管理"])
 
@@ -26,13 +27,19 @@ def _to_out(influencer) -> InfluencerOut:
         else None
     )
     engagement = influencer.engagement_rate
+    profile_url = resolve_collected_profile_url(
+        influencer.platform,
+        influencer.platform_uid,
+        influencer.profile_url,
+        influencer.extra_data,
+    )
     return InfluencerOut(
         id=influencer.id,
         platform=influencer.platform,
         platform_uid=influencer.platform_uid,
         nickname=influencer.nickname,
         avatar_url=influencer.avatar_url,
-        profile_url=influencer.profile_url,
+        profile_url=profile_url,
         agency_id=influencer.agency_id,
         follower_count=influencer.follower_count,
         engagement_rate=float(engagement) if engagement is not None else None,

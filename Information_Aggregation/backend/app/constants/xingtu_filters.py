@@ -251,7 +251,34 @@ PAGE_FILTER_LABELS: dict[str, str] = {
     "follower_gender": "粉丝性别",
     "follower_age": "粉丝年龄",
     "verified": "实名认证",
-    "quote_duration": "合作报价",
+    "quote_duration": "达人报价",
+}
+
+# 筛选项所属区块（用于滚动定位）
+PAGE_FILTER_SECTIONS: dict[str, str] = {
+    "cooperation_purpose": "合作要求",
+    "incentive_method": "合作要求",
+    "cooperation_form": "合作要求",
+    "creator_level": "合作要求",
+    "creator_type": "匹配度",
+    "follower_tier": "匹配度",
+    "content_theme": "匹配度",
+    "creator_gender": "匹配度",
+    "follower_gender": "匹配度",
+    "follower_age": "匹配度",
+    "verified": "匹配度",
+    "quote_duration": "性价比",
+    "quote_min": "性价比",
+    "quote_max": "性价比",
+}
+
+# 采集表单值 -> 星图页面上的展示文案
+PAGE_FILTER_VALUE_ALIASES: dict[str, dict[str, str]] = {
+    "quote_duration": {
+        "1-20s": "1-20s",
+        "21-60s": "21-60s视频",
+        "60s+": "60s以上",
+    },
 }
 
 

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""单次星图采集冒烟测试（仅 1 次页面访问，不访问详情页）"""
+"""星图采集测试：支持关键词 + 筛选，结果写入 logs/test_xingtu_result.json"""
 
 import json
 import sys
@@ -11,32 +11,45 @@ sys.path.insert(0, str(BACKEND_DIR))
 from app.collectors.base import SearchFilters
 from app.collectors.xingtu_browser import XingtuBrowserCollector
 
+OUT = BACKEND_DIR / "logs" / "test_xingtu_result.json"
+
 
 def main() -> int:
-    keyword = sys.argv[1] if len(sys.argv) > 1 else "美食"
-    limit = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+    keyword = sys.argv[1] if len(sys.argv) > 1 else ""
+    limit = int(sys.argv[2]) if len(sys.argv) > 2 else 10
 
-    filters = SearchFilters(limit=limit)
+    filters = SearchFilters(
+        limit=limit,
+        creator_type=sys.argv[3] if len(sys.argv) > 3 else None,
+        quote_duration=sys.argv[4] if len(sys.argv) > 4 else None,
+    )
+
     results = XingtuBrowserCollector().search(keyword=keyword, filters=filters)
 
-    payload = [
-        {
-            "nickname": r.nickname,
-            "platform_uid": r.platform_uid,
-            "follower_count": r.follower_count,
-            "match_score": r.match_score,
-            "matched_tags": r.matched_tags[:5],
-            "engagement_rate": r.engagement_rate,
-        }
-        for r in results
-    ]
-    out = BACKEND_DIR / "logs" / "test_xingtu_result.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        json.dumps({"keyword": keyword, "count": len(payload), "items": payload}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    print(str(out))
+    payload = {
+        "keyword": keyword or "(无)",
+        "filters": {
+            "creator_type": filters.creator_type,
+            "quote_duration": filters.quote_duration,
+            "limit": filters.limit,
+        },
+        "count": len(results),
+        "items": [
+            {
+                "nickname": r.nickname,
+                "platform_uid": r.platform_uid,
+                "follower_count": r.follower_count,
+                "match_score": r.match_score,
+                "matched_tags": r.matched_tags[:5],
+                "engagement_rate": r.engagement_rate,
+                "extra_creator_type": (r.extra_data or {}).get("creator_type"),
+            }
+            for r in results
+        ],
+    }
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(str(OUT))
     return 0
 
 

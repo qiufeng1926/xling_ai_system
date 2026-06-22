@@ -51,10 +51,6 @@ from config.config import (
 
     tingwu_diarization_enabled,
     get_tingwu_diarization_speaker_count,
-    tingwu_summarization_enabled,
-    TINGWU_SUMMARIZATION_TYPES,
-    tingwu_summarization_poll_seconds,
-
 )
 
 from utils.logger import get_logger
@@ -146,17 +142,9 @@ def _build_create_task_body(task_key: str) -> dict:
 
 
 def _build_task_parameters() -> dict:
-    params: dict = {
+    return {
         "Transcription": _build_transcription_params(),
     }
-    if tingwu_summarization_enabled:
-        params["SummarizationEnabled"] = True
-        params["Summarization"] = {"Types": list(TINGWU_SUMMARIZATION_TYPES)}
-        logger.info(
-            "听悟 CreateTask 已启用大模型摘要",
-            extra={"output_params": {"types": list(TINGWU_SUMMARIZATION_TYPES)}},
-        )
-    return params
 
 
 def _build_transcription_params() -> dict:
@@ -482,99 +470,6 @@ async def fetch_diarized_transcript_async(
     return None
 
 
-def _normalize_summarization_payload(data: dict) -> dict:
-    """解析听悟 Summarization JSON 为统一结构。"""
-    if not isinstance(data, dict):
-        return {}
-    inner = data.get("Summarization")
-    if not isinstance(inner, dict):
-        inner = data
-    return {
-        "task_id": data.get("TaskId"),
-        "paragraph_summary": inner.get("ParagraphSummary") or "",
-        "conversational_summary": inner.get("ConversationalSummary") or [],
-        "questions_answering_summary": inner.get("QuestionsAnsweringSummary") or [],
-        "mind_map_summary": inner.get("MindMapSummary") or [],
-    }
-
-
-def _summarization_has_content(normalized: dict) -> bool:
-    if not normalized:
-        return False
-    if (normalized.get("paragraph_summary") or "").strip():
-        return True
-    for key in ("conversational_summary", "questions_answering_summary", "mind_map_summary"):
-        if normalized.get(key):
-            return True
-    return False
-
-
-async def _async_none():
-    return None
-
-
-async def _async_skipped_summary():
-    return None, "skipped"
-
-
-async def fetch_tingwu_summarization_async(
-    task_id: str,
-    *,
-    max_wait_seconds: float | None = None,
-    poll_interval_seconds: float = 3.0,
-) -> tuple[dict | None, str]:
-    """任务结束后轮询 GetTask，下载 Summarization JSON。返回 (数据, status)。"""
-    if not task_id or not tingwu_summarization_enabled:
-        return None, "skipped"
-
-    wait_seconds = max_wait_seconds if max_wait_seconds is not None else tingwu_summarization_poll_seconds
-    deadline = time.time() + wait_seconds
-    last_status = ""
-
-    while time.time() < deadline:
-        try:
-            body = await run_io(_get_task_info_sync, task_id)
-        except Exception as exc:
-            logger.warning(f"查询听悟任务状态失败: {exc}")
-            await asyncio.sleep(poll_interval_seconds)
-            continue
-
-        data = body.get("Data") or {}
-        status = str(data.get("TaskStatus") or "")
-        last_status = status or last_status
-
-        if status == "FAILED":
-            logger.warning(
-                "听悟任务失败，无法获取大模型摘要",
-                extra={"output_params": {"task_id": task_id, "error": data.get("ErrorMessage")}},
-            )
-            return None, "failed"
-
-        if status in ("COMPLETED", "ONGOING"):
-            result = data.get("Result") or {}
-            summarization_url = result.get("Summarization")
-            if summarization_url:
-                try:
-                    summary_json = await run_io(_download_json_sync, summarization_url)
-                    normalized = _normalize_summarization_payload(summary_json)
-                    if _summarization_has_content(normalized):
-                        return normalized, "completed"
-                    return normalized, "completed"
-                except Exception as exc:
-                    logger.warning(f"下载听悟 Summarization 结果失败: {exc}")
-
-        if status == "COMPLETED":
-            break
-
-        await asyncio.sleep(poll_interval_seconds)
-
-    logger.warning(
-        "听悟大模型摘要未在超时内就绪",
-        extra={"output_params": {"task_id": task_id, "last_status": last_status}},
-    )
-    return None, "failed"
-
-
 def _extract_error_message(data: dict) -> str:
 
     header = data.get("header") or {}
@@ -658,9 +553,6 @@ class TingwuStreamingSession:
         self.last_error: Optional[str] = None
 
         self._speaker_labels: dict[str, str] = {}
-
-        self.summarization_data: dict | None = None
-        self.summarization_status: str = "pending"
 
     def total_text(self) -> str:
 
@@ -1089,22 +981,9 @@ class TingwuStreamingSession:
 
                 logger.error(f"结束听悟任务 API 失败: {e}", exc_info=True)
 
-        if self.task_id and not self._task_failed:
-            diarized_coro = (
-                fetch_diarized_transcript_async(self.task_id)
-                if tingwu_diarization_enabled
-                else _async_none()
-            )
-            summary_coro = (
-                fetch_tingwu_summarization_async(self.task_id)
-                if tingwu_summarization_enabled
-                else _async_skipped_summary()
-            )
+        if self.task_id and not self._task_failed and tingwu_diarization_enabled:
             try:
-                diarized, summary_result = await asyncio.gather(
-                    diarized_coro,
-                    summary_coro,
-                )
+                diarized = await fetch_diarized_transcript_async(self.task_id)
                 if diarized:
                     self._completed_text = diarized
                     logger.info(
@@ -1116,33 +995,13 @@ class TingwuStreamingSession:
                             }
                         },
                     )
-                elif tingwu_diarization_enabled:
+                else:
                     logger.warning(
                         "听悟说话人分离转写不可用，保留实时句末文本",
                         extra={"output_params": {"task_id": self.task_id}},
                     )
-
-                if tingwu_summarization_enabled:
-                    data, status = summary_result
-                    self.summarization_data = data
-                    self.summarization_status = status
-                    if data:
-                        logger.info(
-                            "已获取听悟大模型摘要",
-                            extra={
-                                "output_params": {
-                                    "task_id": self.task_id,
-                                    "status": status,
-                                    "has_paragraph": bool(data.get("paragraph_summary")),
-                                    "conversational_count": len(data.get("conversational_summary") or []),
-                                }
-                            },
-                        )
             except Exception as e:
-                self.summarization_status = "failed"
-                logger.warning(f"拉取听悟任务结果失败: {e}", exc_info=True)
-
-
+                logger.warning(f"拉取听悟说话人分离转写失败: {e}", exc_info=True)
 
         if self._task_failed and self.last_error:
 

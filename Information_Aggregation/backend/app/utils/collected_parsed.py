@@ -44,3 +44,33 @@ def is_valid_profile_url(url: str | None, platform: str) -> bool:
     if platform == "xiaohongshu":
         return _is_valid_xhs_profile_url(url)
     return _is_valid_douyin_profile_url(url)
+
+
+def resolve_collected_profile_url(
+    platform: str,
+    platform_uid: str,
+    profile_url: str | None = None,
+    extra_data: dict | None = None,
+) -> str | None:
+    """从采集结果解析主页链接，必要时用 platform_uid 拼装"""
+    if profile_url and is_valid_profile_url(profile_url, platform):
+        return profile_url
+
+    parsed = parse_collected_parsed(extra_data, platform) if extra_data else {}
+    for key in ("profile_url", "douyin_homepage", "xingtu_homepage", "pgy_homepage"):
+        candidate = parsed.get(key)
+        if candidate and is_valid_profile_url(str(candidate), platform):
+            return str(candidate)
+
+    if platform == "douyin" and platform_uid:
+        from app.utils.xingtu_fields import build_xingtu_homepage, _is_valid_star_id
+
+        if _is_valid_star_id(str(platform_uid)):
+            return build_xingtu_homepage(str(platform_uid))
+
+    if platform == "xiaohongshu" and platform_uid:
+        from app.utils.pugongying_fields import build_pugongying_kol_url, build_xhs_profile_url
+
+        return build_xhs_profile_url(platform_uid) or build_pugongying_kol_url(platform_uid)
+
+    return profile_url or None
