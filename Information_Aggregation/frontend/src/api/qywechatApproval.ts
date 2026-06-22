@@ -69,11 +69,11 @@ export interface WeComApprovalApplyPayload {
 }
 
 export function getWeComApprovalConfig() {
-  return request.get<any, ApiResponse<WeComApprovalConfig>>('/wecom/approval/config')
+  return request.get<any, ApiResponse<WeComApprovalConfig>>('/qywechat/approval/config')
 }
 
 export function getWeComApprovalTemplate(templateId: string) {
-  return request.post<any, ApiResponse<WeComApprovalTemplate>>('/wecom/approval/templates/detail', {
+  return request.post<any, ApiResponse<WeComApprovalTemplate>>('/qywechat/approval/templates/detail', {
     template_id: templateId,
   })
 }
@@ -86,15 +86,15 @@ export function listWeComApprovals(params?: {
   cursor?: string
   size?: number
 }) {
-  return request.get<any, ApiResponse<WeComApprovalListResult>>('/wecom/approval/list', { params })
+  return request.get<any, ApiResponse<WeComApprovalListResult>>('/qywechat/approval/list', { params })
 }
 
 export function getWeComApprovalDetail(spNo: string) {
   return request.get<any, ApiResponse<WeComApprovalDetail>>(
-    `/wecom/approval/detail/${encodeURIComponent(spNo)}`
+    `/qywechat/approval/detail/${encodeURIComponent(spNo)}`
   )
 }
 
 export function submitWeComApproval(data: WeComApprovalApplyPayload) {
-  return request.post<any, ApiResponse<{ sp_no: string }>>('/wecom/approval/submit', data)
+  return request.post<any, ApiResponse<{ sp_no: string }>>('/qywechat/approval/submit', data)
 }

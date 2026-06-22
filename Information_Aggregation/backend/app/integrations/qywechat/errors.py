@@ -1,4 +1,4 @@
-from app.integrations.wecom.client import WeComError
+from app.integrations.qywechat.client import WeComError
 
 
 def translate_wecom_error(exc: Exception) -> str:

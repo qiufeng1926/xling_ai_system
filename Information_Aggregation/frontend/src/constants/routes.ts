@@ -26,14 +26,20 @@ export const MEETING_ROUTES = {
   room: (code: string) => `/meeting/room/${code}`,
 } as const
 
-export const FEISHU_ROUTES = {
-  home: '/feishu',
+export const FLYBOOK_ROUTES = {
+  home: '/flybook',
 } as const
 
-export const WECOM_ROUTES = {
-  mail: '/wecom/mail',
-  approval: '/wecom/approval',
+export const QYWECHAT_ROUTES = {
+  mail: '/qywechat/mail',
+  approval: '/qywechat/approval',
 } as const
+
+/** @deprecated 使用 FLYBOOK_ROUTES */
+export const FEISHU_ROUTES = FLYBOOK_ROUTES
+
+/** @deprecated 使用 QYWECHAT_ROUTES */
+export const WECOM_ROUTES = QYWECHAT_ROUTES
 
 export const AUTH_ROUTES = {
   login: '/login',
@@ -51,4 +57,9 @@ export const LEGACY_REDIRECTS: Record<string, string> = {
   '/agencies': INFLUENCER_ROUTES.agencies,
   '/access-review': INFLUENCER_ROUTES.accessReview,
   '/users': INFLUENCER_ROUTES.users,
+  '/feishu': FLYBOOK_ROUTES.home,
+  '/feishu/': FLYBOOK_ROUTES.home,
+  '/wecom/mail': QYWECHAT_ROUTES.mail,
+  '/wecom/approval': QYWECHAT_ROUTES.approval,
+  '/wecom': QYWECHAT_ROUTES.mail,
 }

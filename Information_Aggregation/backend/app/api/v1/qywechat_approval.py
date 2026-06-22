@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from app.api.deps import AdminUser, CurrentUser
 from app.schemas import ResponseBase
-from app.schemas.wecom_approval import (
+from app.schemas.qywechat_approval import (
     WeComApprovalApplyOut,
     WeComApprovalApplyRequest,
     WeComApprovalConfigOut,
@@ -11,18 +11,18 @@ from app.schemas.wecom_approval import (
     WeComApprovalTemplateOut,
     WeComApprovalTemplateRequest,
 )
-from app.services.wecom_approval_service import WeComApprovalService
+from app.services.qywechat_approval_service import WeComApprovalService
 
-router = APIRouter(prefix="/wecom/approval", tags=["企业微信审批"])
+router = APIRouter(tags=["企业微信审批"])
 
 
 @router.get("/config", response_model=ResponseBase[WeComApprovalConfigOut])
-def get_wecom_approval_config(_: CurrentUser):
+def get_qywechat_approval_config(_: CurrentUser):
     return ResponseBase(data=WeComApprovalConfigOut(**WeComApprovalService.get_config()))
 
 
 @router.post("/templates/detail", response_model=ResponseBase[WeComApprovalTemplateOut])
-def get_wecom_approval_template(body: WeComApprovalTemplateRequest, _: AdminUser):
+def get_qywechat_approval_template(body: WeComApprovalTemplateRequest, _: AdminUser):
     try:
         data = WeComApprovalService.get_template_detail(body.template_id)
     except ValueError as exc:
@@ -36,7 +36,7 @@ def get_wecom_approval_template(body: WeComApprovalTemplateRequest, _: AdminUser
 
 
 @router.get("/list", response_model=ResponseBase[WeComApprovalListOut])
-def list_wecom_approvals(
+def list_qywechat_approvals(
     _: AdminUser,
     days: int = Query(7, ge=1, le=31),
     sp_status: str | None = Query(None),
@@ -65,7 +65,7 @@ def list_wecom_approvals(
 
 
 @router.get("/detail/{sp_no}", response_model=ResponseBase[WeComApprovalDetailOut])
-def get_wecom_approval_detail(sp_no: str, _: AdminUser):
+def get_qywechat_approval_detail(sp_no: str, _: AdminUser):
     try:
         data = WeComApprovalService.get_approval_detail(sp_no)
     except ValueError as exc:
@@ -79,7 +79,7 @@ def get_wecom_approval_detail(sp_no: str, _: AdminUser):
 
 
 @router.post("/submit", response_model=ResponseBase[WeComApprovalApplyOut])
-def submit_wecom_approval(body: WeComApprovalApplyRequest, _: AdminUser):
+def submit_qywechat_approval(body: WeComApprovalApplyRequest, _: AdminUser):
     try:
         data = WeComApprovalService.submit_approval(
             template_id=body.template_id,

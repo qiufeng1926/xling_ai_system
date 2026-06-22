@@ -4,9 +4,9 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from fastapi.responses import PlainTextResponse
 
 from app.config import settings
-from app.integrations.wecom.callback_crypto import WeComCallbackError, decrypt_message, verify_url
+from app.integrations.qywechat.callback_crypto import WeComCallbackError, decrypt_message, verify_url
 
-router = APIRouter(prefix="/wecom", tags=["企业微信回调"])
+router = APIRouter(tags=["企业微信回调"])
 
 
 def _require_callback_config() -> tuple[str, str, str]:
@@ -25,7 +25,7 @@ def _require_callback_config() -> tuple[str, str, str]:
 
 
 @router.get("/callback", response_class=PlainTextResponse)
-def wecom_callback_verify(
+def qywechat_callback_verify(
     msg_signature: str = Query(...),
     timestamp: str = Query(...),
     nonce: str = Query(...),
@@ -49,7 +49,7 @@ def wecom_callback_verify(
 
 
 @router.post("/callback")
-async def wecom_callback_event(
+async def qywechat_callback_event(
     request: Request,
     msg_signature: str = Query(...),
     timestamp: str = Query(...),

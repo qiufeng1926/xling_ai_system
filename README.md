@@ -449,27 +449,4 @@ cd Information_Aggregation/scripts
 
 ---
 
-## 技术栈
 
-| 层级 | 达人系统 | 会议 AI |
-|------|----------|---------|
-| 后端框架 | FastAPI + SQLAlchemy 2.0 | FastAPI + SQLAlchemy 2.0 |
-| 数据库 | MySQL 8 + Redis 7 | MySQL 8 |
-| 前端 | Vue 3 + TypeScript + Element Plus | HTML5（iframe 嵌入门户） |
-| 认证 | JWT (python-jose) + bcrypt | JWT (PyJWT) + 门户桥接 |
-| AI / 自动化 | Playwright | 通义听悟 + FunASR + 智谱 GLM |
-| 构建 / 部署 | Vite 5 + Docker Compose | uvicorn + Nginx（可选） |
-
----
-
-## 许可证
-
-MIT License
-
----
-
-<div align="center">
-
-Made with ❤️ by 秋枫团队
-
-</div>

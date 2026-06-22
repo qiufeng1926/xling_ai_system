@@ -38,7 +38,7 @@ export interface WeComMailSendPayload {
 }
 
 export function getWeComMailConfig() {
-  return request.get<any, ApiResponse<WeComMailConfig>>('/wecom/mail/config')
+  return request.get<any, ApiResponse<WeComMailConfig>>('/qywechat/mail/config')
 }
 
 export function listWeComInbox(params?: {
@@ -48,15 +48,15 @@ export function listWeComInbox(params?: {
   limit?: number
   days?: number
 }) {
-  return request.get<any, ApiResponse<WeComMailListResult>>('/wecom/mail/inbox', { params })
+  return request.get<any, ApiResponse<WeComMailListResult>>('/qywechat/mail/inbox', { params })
 }
 
 export function getWeComMailDetail(mailId: string) {
   return request.get<any, ApiResponse<WeComMailDetail>>(
-    `/wecom/mail/${encodeURIComponent(mailId)}`
+    `/qywechat/mail/${encodeURIComponent(mailId)}`
   )
 }
 
 export function sendWeComMail(data: WeComMailSendPayload) {
-  return request.post<any, ApiResponse<null>>('/wecom/mail/send', data)
+  return request.post<any, ApiResponse<null>>('/qywechat/mail/send', data)
 }

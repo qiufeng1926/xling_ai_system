@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import time
 
-from app.integrations.wecom.client import WeComClient
-from app.integrations.wecom.errors import translate_wecom_error
-from app.integrations.wecom.eml_parser import parse_mail_data
+from app.integrations.qywechat.client import WeComClient
+from app.integrations.qywechat.errors import translate_wecom_error
+from app.integrations.qywechat.eml_parser import parse_mail_data
 
 
 class WeComMailService:

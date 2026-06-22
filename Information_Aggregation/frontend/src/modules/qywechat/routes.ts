@@ -1,24 +1,24 @@
 import type { RouteRecordRaw } from 'vue-router'
 import { ROLES } from '@/utils/permission'
 
-export const wecomRoutes: RouteRecordRaw[] = [
+export const qywechatRoutes: RouteRecordRaw[] = [
   {
     path: 'mail',
-    name: 'WeComMail',
-    component: () => import('@/views/wecom/WecomMail.vue'),
+    name: 'QyWechatMail',
+    component: () => import('@/views/qywechat/QyWechatMail.vue'),
     meta: {
       title: '企业微信邮箱',
-      module: 'wecom',
+      module: 'qywechat',
       roles: [ROLES.ADMIN, ROLES.SUPER_ADMIN],
     },
   },
   {
     path: 'approval',
-    name: 'WeComApproval',
-    component: () => import('@/views/wecom/WecomApproval.vue'),
+    name: 'QyWechatApproval',
+    component: () => import('@/views/qywechat/QyWechatApproval.vue'),
     meta: {
       title: '企业微信审批',
-      module: 'wecom',
+      module: 'qywechat',
       roles: [ROLES.ADMIN, ROLES.SUPER_ADMIN],
     },
   },

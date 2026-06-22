@@ -192,7 +192,7 @@ import {
   submitWeComApproval,
   type WeComApprovalDetail,
   type WeComApprovalListItem,
-} from '@/api/wecomApproval'
+} from '@/api/qywechatApproval'
 
 interface TemplateControlField {
   control: string

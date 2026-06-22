@@ -5,8 +5,8 @@ import { normalizeRole, ROLES } from '@/utils/permission'
 import { AUTH_ROUTES, INFLUENCER_ROUTES, LEGACY_REDIRECTS } from '@/constants/routes'
 import { influencerRoutes } from '@/modules/influencer/routes'
 import { meetingRoutes } from '@/modules/meeting/routes'
-import { feishuRoutes } from '@/modules/feishu/routes'
-import { wecomRoutes } from '@/modules/wecom/routes'
+import { flybookRoutes } from '@/modules/flybook/routes'
+import { qywechatRoutes } from '@/modules/qywechat/routes'
 
 const legacyRedirectRoutes = Object.entries(LEGACY_REDIRECTS).map(([path, redirect]) => ({
   path,
@@ -57,12 +57,12 @@ const router = createRouter({
           children: meetingRoutes,
         },
         {
-          path: 'feishu',
-          children: feishuRoutes,
+          path: 'flybook',
+          children: flybookRoutes,
         },
         {
-          path: 'wecom',
-          children: wecomRoutes,
+          path: 'qywechat',
+          children: qywechatRoutes,
         },
       ],
     },

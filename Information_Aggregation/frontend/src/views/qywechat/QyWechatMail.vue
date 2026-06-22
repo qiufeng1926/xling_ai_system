@@ -119,7 +119,7 @@ import {
   sendWeComMail,
   type WeComMailDetail,
   type WeComMailListItem,
-} from '@/api/wecomMail'
+} from '@/api/qywechatMail'
 
 const config = reactive({ configured: false, corp_id: null as string | null })
 const days = ref(7)

@@ -4,8 +4,8 @@ import time
 from typing import Any
 
 from app.config import settings
-from app.integrations.wecom.client import WeComClient
-from app.integrations.wecom.errors import translate_wecom_error
+from app.integrations.qywechat.client import WeComClient
+from app.integrations.qywechat.errors import translate_wecom_error
 
 SP_STATUS_LABELS: dict[int, str] = {
     1: "审批中",

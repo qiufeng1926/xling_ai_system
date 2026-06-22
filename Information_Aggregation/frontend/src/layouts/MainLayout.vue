@@ -67,21 +67,21 @@
           </el-menu-item>
         </el-sub-menu>
 
-        <el-menu-item :index="FEISHU_ROUTES.home">
+        <el-menu-item :index="FLYBOOK_ROUTES.home">
           <el-icon><ChatDotRound /></el-icon>
           <span>飞书</span>
         </el-menu-item>
 
-        <el-sub-menu v-if="showAdminMenus" index="module-wecom">
+        <el-sub-menu v-if="showAdminMenus" index="module-qywechat">
           <template #title>
             <el-icon><Comment /></el-icon>
             <span>企微</span>
           </template>
-          <el-menu-item :index="WECOM_ROUTES.mail">
+          <el-menu-item :index="QYWECHAT_ROUTES.mail">
             <el-icon><Message /></el-icon>
             <span>企微邮箱</span>
           </el-menu-item>
-          <el-menu-item :index="WECOM_ROUTES.approval">
+          <el-menu-item :index="QYWECHAT_ROUTES.approval">
             <el-icon><Stamp /></el-icon>
             <span>企微审批</span>
           </el-menu-item>
@@ -168,7 +168,7 @@ import {
   isUser,
   normalizeRole,
 } from '@/utils/permission'
-import { AUTH_ROUTES, FEISHU_ROUTES, INFLUENCER_ROUTES, MEETING_ROUTES, WECOM_ROUTES } from '@/constants/routes'
+import { AUTH_ROUTES, FLYBOOK_ROUTES, INFLUENCER_ROUTES, MEETING_ROUTES, QYWECHAT_ROUTES } from '@/constants/routes'
 
 const route = useRoute()
 const router = useRouter()
@@ -189,10 +189,10 @@ const activeMenu = computed(() => {
   if (path.startsWith('/meeting/create')) return MEETING_ROUTES.create
   if (path.startsWith('/meeting/room')) return MEETING_ROUTES.home
   if (path.startsWith('/meeting')) return MEETING_ROUTES.home
-  if (path.startsWith('/feishu')) return FEISHU_ROUTES.home
-  if (path.startsWith('/wecom/mail')) return WECOM_ROUTES.mail
-  if (path.startsWith('/wecom/approval')) return WECOM_ROUTES.approval
-  if (path.startsWith('/wecom')) return WECOM_ROUTES.mail
+  if (path.startsWith('/flybook') || path.startsWith('/feishu')) return FLYBOOK_ROUTES.home
+  if (path.startsWith('/qywechat/mail') || path.startsWith('/wecom/mail')) return QYWECHAT_ROUTES.mail
+  if (path.startsWith('/qywechat/approval') || path.startsWith('/wecom/approval')) return QYWECHAT_ROUTES.approval
+  if (path.startsWith('/qywechat') || path.startsWith('/wecom')) return QYWECHAT_ROUTES.mail
   if (path.startsWith('/influencer/dashboard')) return INFLUENCER_ROUTES.dashboard
   return path
 })
@@ -201,8 +201,8 @@ const defaultOpeneds = computed(() => {
   if (route.path.startsWith('/meeting')) {
     return ['module-meeting']
   }
-  if (route.path.startsWith('/wecom')) {
-    return ['module-wecom']
+  if (route.path.startsWith('/qywechat') || route.path.startsWith('/wecom')) {
+    return ['module-qywechat']
   }
   if (route.path.startsWith('/influencer/users') || route.path.startsWith('/influencer/access-review')) {
     return ['module-platform']
