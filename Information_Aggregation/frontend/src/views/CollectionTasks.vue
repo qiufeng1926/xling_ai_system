@@ -2,7 +2,7 @@
   <div class="page-card">
     <div class="filter-bar">
       <el-button type="primary" @click="showCreate = true">发起采集</el-button>
-      <el-button @click="loadData">刷新</el-button>
+      <el-button @click="loadData({ silent: false })" :loading="refreshing">刷新</el-button>
       <div style="flex: 1"></div>
       <el-button type="success" @click="$router.push(INFLUENCER_ROUTES.review)">待审核列表</el-button>
     </div>
@@ -51,7 +51,8 @@
           <el-button
             link
             type="warning"
-            :disabled="row.status === 'running'"
+            :disabled="row.status === 'running' || retryingId === row.id"
+            :loading="retryingId === row.id"
             @click="handleRetry(row.id)"
           >
             重试
@@ -66,11 +67,11 @@
         v-model:page-size="pagination.page_size"
         :total="pagination.total"
         layout="total, prev, pager, next"
-        @change="loadData"
+        @change="() => loadData({ silent: list.length > 0 })"
       />
     </div>
 
-    <el-dialog v-model="showCreate" title="发起采集任务" width="860px" top="4vh" destroy-on-close>
+    <el-dialog v-model="showCreate" title="发起采集任务" width="860px" top="4vh" lazy destroy-on-close>
       <el-form :model="form" label-width="72px" class="create-form">
         <el-row :gutter="16">
           <el-col :span="8">
@@ -167,9 +168,15 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { defineAsyncComponent, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+
+defineOptions({ name: 'CollectionTasks' })
+
+const CollectionFilterPanel = defineAsyncComponent(
+  () => import('@/components/CollectionFilterPanel.vue')
+)
 import {
   COLLECTION_PLATFORM_OPTIONS,
   TASK_STATUS_MAP,
@@ -185,12 +192,12 @@ import {
 } from '@/api/collection'
 import request, { type ApiResponse } from '@/api/request'
 import { INFLUENCER_ROUTES } from '@/constants/routes'
-import CollectionFilterPanel from '@/components/CollectionFilterPanel.vue'
 import {
   buildFiltersPayload,
   createEmptyFilters,
   type CollectionFilters,
 } from '@/constants/collectionFilters'
+import { prefetchFilterOptions } from '@/utils/filterOptionsCache'
 
 const playwrightReady = ref(false)
 const envHint = ref('')
@@ -201,10 +208,31 @@ const taskDetail = ref<CollectionTaskDetail | null>(null)
 
 const router = useRouter()
 const loading = ref(false)
+const refreshing = ref(false)
 const creating = ref(false)
+const retryingId = ref<number | null>(null)
 const showCreate = ref(false)
 const list = ref<CollectionTask[]>([])
 let timer: ReturnType<typeof setInterval> | null = null
+
+function hasRunningTasks() {
+  return list.value.some((task) => task.status === 'running' || task.status === 'pending')
+}
+
+function resetPollTimer() {
+  if (timer) clearInterval(timer)
+  const intervalMs = hasRunningTasks() ? 5000 : 15000
+  timer = setInterval(() => {
+    if (document.hidden || showCreate.value || showDetail.value) return
+    loadData({ silent: true })
+  }, intervalMs)
+}
+
+function onVisibilityChange() {
+  if (!document.hidden && !showCreate.value && !showDetail.value) {
+    loadData({ silent: true })
+  }
+}
 
 const pagination = reactive({ page: 1, page_size: 20, total: 0 })
 
@@ -223,6 +251,7 @@ function resetCreateForm() {
 function onPlatformChange() {
   filterForm.value = createEmptyFilters()
   loadCollectorConfig()
+  prefetchFilterOptions(form.platform).catch(() => {})
 }
 
 function formatTime(value: string) {
@@ -251,14 +280,18 @@ async function loadCollectorConfig() {
   }
 }
 
-async function loadData() {
-  loading.value = true
+async function loadData(options: { silent?: boolean } = {}) {
+  const silent = options.silent ?? list.value.length > 0
+  if (!silent) loading.value = true
+  else refreshing.value = true
   try {
     const res = await getCollectionTasks({ page: pagination.page, page_size: pagination.page_size })
     list.value = res.data.items
     pagination.total = res.data.total
+    resetPollTimer()
   } finally {
     loading.value = false
+    refreshing.value = false
   }
 }
 
@@ -292,9 +325,14 @@ function goReview(taskId: number) {
 }
 
 async function handleRetry(taskId: number) {
-  await retryCollectionTask(taskId)
-  ElMessage.success('任务已重新加入队列')
-  loadData()
+  retryingId.value = taskId
+  try {
+    await retryCollectionTask(taskId)
+    ElMessage.success('任务已重新加入队列')
+    loadData({ silent: true })
+  } finally {
+    retryingId.value = null
+  }
 }
 
 async function openDetail(taskId: number) {
@@ -315,12 +353,15 @@ watch(showCreate, (open) => {
 
 onMounted(() => {
   loadCollectorConfig()
+  prefetchFilterOptions(form.platform).catch(() => {})
   loadData()
-  timer = setInterval(loadData, 5000)
+  resetPollTimer()
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 </script>
 

@@ -17,4 +17,16 @@ export const flybookRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/flybook/FlybookDocs.vue'),
     meta: { title: '飞书云文档', module: 'flybook' },
   },
+  {
+    path: 'doc-library',
+    name: 'FlybookDocLibrary',
+    component: () => import('@/views/flybook/FlybookDocLibrary.vue'),
+    meta: { title: '文档库', module: 'flybook' },
+  },
+  {
+    path: 'minutes-ai',
+    name: 'FlybookMinutesAi',
+    component: () => import('@/views/flybook/FlybookMinutesAi.vue'),
+    meta: { title: '妙纪 AI', module: 'flybook' },
+  },
 ]

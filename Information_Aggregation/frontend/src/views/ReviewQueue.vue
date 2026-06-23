@@ -7,17 +7,24 @@
     </el-tabs>
 
     <div class="filter-bar">
-      <el-select v-model="taskId" placeholder="筛选任务" clearable style="width: 200px" @change="handleSearch">
+      <el-select
+        v-model="taskId"
+        placeholder="筛选任务"
+        clearable
+        style="width: 200px"
+        @visible-change="onTaskSelectVisible"
+        @change="handleSearch"
+      >
         <el-option v-for="t in tasks" :key="t.id" :label="`${t.keyword} (#${t.id})`" :value="t.id" />
       </el-select>
       <el-button type="primary" @click="handleSearch">搜索</el-button>
-      <el-button @click="loadData">刷新</el-button>
+      <el-button :loading="refreshing" @click="loadData({ silent: false })">刷新</el-button>
       <div style="flex: 1"></div>
       <template v-if="activeTab === 'pending'">
-        <el-button type="success" :disabled="!selectedIds.length" @click="handleBatchApprove">
+        <el-button type="success" :disabled="!selectedIds.length || actionLoading" :loading="actionLoading" @click="handleBatchApprove">
           批量通过 ({{ selectedIds.length }})
         </el-button>
-        <el-button type="danger" :disabled="!selectedIds.length" @click="handleBatchReject">
+        <el-button type="danger" :disabled="!selectedIds.length || actionLoading" :loading="actionLoading" @click="handleBatchReject">
           批量拒绝
         </el-button>
       </template>
@@ -94,8 +101,8 @@
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">详情</el-button>
           <template v-if="activeTab === 'pending'">
-            <el-button link type="success" @click="handleApprove([row.id])">通过</el-button>
-            <el-button link type="danger" @click="handleReject([row.id])">拒绝</el-button>
+            <el-button link type="success" :loading="actionLoading" @click="handleApprove([row.id])">通过</el-button>
+            <el-button link type="danger" :loading="actionLoading" @click="handleReject([row.id])">拒绝</el-button>
           </template>
         </template>
       </el-table-column>
@@ -108,8 +115,8 @@
         v-model:page-size="pagination.page_size"
         :total="pagination.total"
         layout="total, prev, pager, next"
-        @current-change="loadData"
-        @size-change="loadData"
+        @current-change="() => loadData({ silent: list.length > 0 })"
+        @size-change="() => loadData({ silent: list.length > 0 })"
       />
     </div>
 
@@ -204,8 +211,8 @@
         </el-descriptions>
 
         <div v-if="activeTab === 'pending'" class="drawer-actions">
-          <el-button type="success" @click="handleApprove([currentItem.id])">通过并入库</el-button>
-          <el-button type="danger" @click="handleReject([currentItem.id])">拒绝</el-button>
+          <el-button type="success" :loading="actionLoading" @click="handleApprove([currentItem.id])">通过并入库</el-button>
+          <el-button type="danger" :loading="actionLoading" @click="handleReject([currentItem.id])">拒绝</el-button>
         </div>
       </template>
     </el-drawer>
@@ -216,6 +223,8 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+
+defineOptions({ name: 'ReviewQueue' })
 import {
   approveCollected,
   formatFollowers,
@@ -230,6 +239,9 @@ import {
 
 const route = useRoute()
 const loading = ref(false)
+const refreshing = ref(false)
+const actionLoading = ref(false)
+const tasksLoaded = ref(false)
 const list = ref<CollectedInfluencer[]>([])
 const tasks = ref<CollectionTask[]>([])
 const selectedIds = ref<number[]>([])
@@ -296,10 +308,22 @@ function openDetail(row: CollectedInfluencer) {
 async function loadTasks() {
   const res = await getCollectionTasks({ page: 1, page_size: 100 })
   tasks.value = res.data.items
+  tasksLoaded.value = true
 }
 
-async function loadData() {
-  loading.value = true
+async function onTaskSelectVisible(visible: boolean) {
+  if (!visible || tasksLoaded.value) return
+  try {
+    await loadTasks()
+  } catch {
+    /* ignore */
+  }
+}
+
+async function loadData(options: { silent?: boolean } = {}) {
+  const silent = options.silent ?? list.value.length > 0
+  if (!silent) loading.value = true
+  else refreshing.value = true
   try {
     const params = {
       task_id: taskId.value,
@@ -314,6 +338,7 @@ async function loadData() {
     pagination.total = res.data.total
   } finally {
     loading.value = false
+    refreshing.value = false
   }
 }
 
@@ -329,20 +354,32 @@ function handleTabChange() {
 }
 
 async function handleApprove(ids: number[]) {
-  const res = await approveCollected(ids)
-  ElMessage.success(`已通过 ${res.data.approved} 条，已自动打标并关联机构`)
-  showDrawer.value = false
-  selectedIds.value = []
-  loadData()
+  actionLoading.value = true
+  try {
+    const res = await approveCollected(ids)
+    ElMessage.success(`已通过 ${res.data.approved} 条，已自动打标并关联机构`)
+    showDrawer.value = false
+    selectedIds.value = []
+    list.value = list.value.filter((item) => !ids.includes(item.id))
+    loadData({ silent: true })
+  } finally {
+    actionLoading.value = false
+  }
 }
 
 async function handleReject(ids: number[]) {
   await ElMessageBox.confirm('确认拒绝所选达人？', '提示', { type: 'warning' })
-  const res = await rejectCollected(ids)
-  ElMessage.success(`已拒绝 ${res.data.rejected} 条`)
-  showDrawer.value = false
-  selectedIds.value = []
-  loadData()
+  actionLoading.value = true
+  try {
+    const res = await rejectCollected(ids)
+    ElMessage.success(`已拒绝 ${res.data.rejected} 条`)
+    showDrawer.value = false
+    selectedIds.value = []
+    list.value = list.value.filter((item) => !ids.includes(item.id))
+    loadData({ silent: true })
+  } finally {
+    actionLoading.value = false
+  }
 }
 
 function handleBatchApprove() {
@@ -361,8 +398,7 @@ watch(
   }
 )
 
-onMounted(async () => {
-  await loadTasks()
+onMounted(() => {
   loadData()
 })
 </script>

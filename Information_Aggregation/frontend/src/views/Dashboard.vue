@@ -53,6 +53,8 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive } from 'vue'
+
+defineOptions({ name: 'Dashboard' })
 import CollectionSessionPanel from '@/components/CollectionSessionPanel.vue'
 import { getCollectionStats } from '@/api/collection'
 import { getInfluencers } from '@/api/influencer'

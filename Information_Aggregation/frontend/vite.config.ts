@@ -28,6 +28,7 @@ export default defineConfig(({ mode }) => {
     '/api/flybook': {
       target: flybookApiTarget,
       changeOrigin: true,
+      ws: true,
     },
     '/meeting-app': {
       target: meetingApiTarget,
@@ -67,6 +68,16 @@ export default defineConfig(({ mode }) => {
       port: Number(env.VITE_PREVIEW_PORT || 4173),
       allowedHosts: true,
       proxy,
+    },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            'element-plus': ['element-plus'],
+            'vue-vendor': ['vue', 'vue-router', 'pinia'],
+          },
+        },
+      },
     },
   }
 })

@@ -22,10 +22,30 @@ DOCS_DOCX_SCOPES = frozenset(
 DEFAULT_OAUTH_SCOPE = "offline_access drive:drive docx:document docx:document:create"
 
 
+MINUTES_SEARCH_SCOPES = frozenset({"minutes:minutes.search:read"})
+MINUTES_READ_SCOPES = frozenset(
+    {
+        "minutes:minutes",
+        "minutes:minutes:readonly",
+        "minutes:minutes.basic:read",
+    }
+)
+MINUTES_ARTIFACTS_SCOPES = frozenset({"minutes:minutes.artifacts:read"})
+MINUTES_CREATE_SCOPES = frozenset({"minutes:minutes"})
+
+
 def scope_tokens(scope: str | None) -> set[str]:
     if not scope:
         return set()
     return {part.strip() for part in scope.split() if part.strip()}
+
+
+def has_minutes_scope(scope: str | None) -> bool:
+    granted = scope_tokens(scope)
+    search_ok = bool(granted & MINUTES_SEARCH_SCOPES)
+    read_ok = bool(granted & MINUTES_READ_SCOPES)
+    artifacts_ok = bool(granted & MINUTES_ARTIFACTS_SCOPES)
+    return search_ok and read_ok and artifacts_ok
 
 
 def has_docs_drive_scope(scope: str | None) -> bool:

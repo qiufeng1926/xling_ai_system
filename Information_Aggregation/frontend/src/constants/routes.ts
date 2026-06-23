@@ -30,6 +30,8 @@ export const FLYBOOK_ROUTES = {
   home: '/flybook/messenger',
   messenger: '/flybook/messenger',
   docs: '/flybook/docs',
+  docLibrary: '/flybook/doc-library',
+  minutesAi: '/flybook/minutes-ai',
 } as const
 
 export const QYWECHAT_ROUTES = {

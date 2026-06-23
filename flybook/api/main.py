@@ -13,6 +13,9 @@ from api.routes.auth import router as auth_router
 from api.routes.callback import router as callback_router
 from api.routes.config import router as config_router
 from api.routes.docs import router as docs_router
+from api.routes.internal_docs import router as internal_docs_router
+from api.routes.minutes import router as minutes_router
+from api.ws.minutes_transcribe import router as minutes_ws_router
 
 
 @asynccontextmanager
@@ -59,6 +62,9 @@ app.include_router(auth_router, prefix="/api/flybook")
 app.include_router(config_router, prefix="/api/flybook")
 app.include_router(callback_router, prefix="/api/flybook")
 app.include_router(docs_router, prefix="/api/flybook")
+app.include_router(internal_docs_router, prefix="/api/flybook")
+app.include_router(minutes_router, prefix="/api/flybook")
+app.include_router(minutes_ws_router, prefix="/api/flybook")
 
 
 @app.get("/health")

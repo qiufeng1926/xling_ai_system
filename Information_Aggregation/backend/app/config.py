@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     # 飞书绑定（OAuth 由 flybook 服务处理，须配置相同 FLYBOOK_INTERNAL_KEY）
     ALLOW_FEISHU_BIND: bool = True
     FLYBOOK_INTERNAL_KEY: str = ""
+    FLYBOOK_API_URL: str = "http://127.0.0.1:8002"
 
     # 登录限流：窗口期内最大失败次数
     LOGIN_RATE_LIMIT_MAX_ATTEMPTS: int = 5

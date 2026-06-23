@@ -1,5 +1,5 @@
 <template>
-  <div v-loading="loading" class="filter-panel">
+  <div v-loading="loading && !groups.length" class="filter-panel">
     <el-collapse v-model="activeGroups">
       <el-collapse-item
         v-for="group in groups"
@@ -56,8 +56,8 @@
 
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import request, { type ApiResponse } from '@/api/request'
 import type { CollectionFilters, FilterGroup } from '@/constants/collectionFilters'
+import { getCachedFilterOptions, prefetchFilterOptions } from '@/utils/filterOptionsCache'
 
 const props = defineProps<{
   modelValue: CollectionFilters
@@ -70,7 +70,7 @@ const emit = defineEmits<{
 
 const loading = ref(false)
 const groups = ref<FilterGroup[]>([])
-const activeGroups = ref<string[]>(['cooperation', 'creator', 'metrics', 'cost', 'theme', 'task'])
+const activeGroups = ref<string[]>(['cooperation', 'creator'])
 
 function getSingle(key: string): string {
   return (props.modelValue as Record<string, string | undefined>)[key] || ''
@@ -107,14 +107,16 @@ function setNumber(key: string, value: number | undefined) {
 }
 
 async function loadOptions() {
+  const platform = props.platform || 'douyin'
+  const cached = getCachedFilterOptions(platform)
+  if (cached) {
+    groups.value = cached
+    return
+  }
+
   loading.value = true
   try {
-    const res = await request.get<any, ApiResponse<{ groups: FilterGroup[] }>>(
-      '/collection/filter-options',
-      { params: { platform: props.platform || 'douyin' } }
-    )
-    groups.value = res.data.groups
-    activeGroups.value = groups.value.map((g) => g.key)
+    groups.value = await prefetchFilterOptions(platform)
   } finally {
     loading.value = false
   }

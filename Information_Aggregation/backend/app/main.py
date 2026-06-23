@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
-from app.api.v1 import auth, agencies, collection, influencers, match, permissions, tags, users, qywechat_approval, qywechat_callback, qywechat_mail
+from app.api.v1 import auth, agencies, collection, influencers, match, permissions, tags, users, qywechat_approval, qywechat_callback, qywechat_mail, feishu_documents, feishu_documents_internal
 from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.middleware.request_log import RequestLogMiddleware
@@ -159,6 +159,8 @@ def _ensure_bootstrap_super_admin(db: Session) -> None:
 
 
 def init_db():
+    import app.models.feishu_document  # noqa: F401 — 注册 ORM 表
+
     try:
         Base.metadata.create_all(bind=engine)
     except Exception as exc:
@@ -245,6 +247,8 @@ app.include_router(match.router, prefix="/api/v1")
 app.include_router(qywechat_mail.router, prefix="/api/v1/qywechat/mail")
 app.include_router(qywechat_approval.router, prefix="/api/v1/qywechat/approval")
 app.include_router(qywechat_callback.router, prefix="/api/v1/qywechat")
+app.include_router(feishu_documents.router, prefix="/api/v1")
+app.include_router(feishu_documents_internal.router, prefix="/api/v1")
 # 兼容旧路径（企微管理后台回调 URL 可能仍指向 /wecom）
 app.include_router(qywechat_mail.router, prefix="/api/v1/wecom/mail", include_in_schema=False)
 app.include_router(qywechat_approval.router, prefix="/api/v1/wecom/approval", include_in_schema=False)

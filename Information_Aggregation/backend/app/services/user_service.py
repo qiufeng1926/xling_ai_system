@@ -122,6 +122,23 @@ class UserService:
         return drive_ok and docx_ok
 
     @staticmethod
+    def _feishu_minutes_authorized(scope: str | None) -> bool:
+        if not scope:
+            return False
+        granted = {part.strip() for part in scope.split() if part.strip()}
+        search_ok = "minutes:minutes.search:read" in granted
+        read_ok = bool(
+            granted
+            & {
+                "minutes:minutes",
+                "minutes:minutes:readonly",
+                "minutes:minutes.basic:read",
+            }
+        )
+        artifacts_ok = "minutes:minutes.artifacts:read" in granted
+        return search_ok and read_ok and artifacts_ok
+
+    @staticmethod
     def get_feishu_bind_status(user: User) -> dict:
         from datetime import datetime, timezone
 
@@ -135,11 +152,13 @@ class UserService:
         elif bound and user.feishu_access_token:
             token_valid = True
         docs_authorized = UserService._feishu_docs_authorized(user.feishu_oauth_scope) if bound else False
+        minutes_authorized = UserService._feishu_minutes_authorized(user.feishu_oauth_scope) if bound else False
         return {
             "bound": bound,
             "feishu_name": user.feishu_name if bound else None,
             "token_valid": token_valid,
             "docs_authorized": docs_authorized,
+            "minutes_authorized": minutes_authorized,
             "oauth_scope": user.feishu_oauth_scope if bound else None,
             "portal_username": user.username,
             "portal_nickname": user.nickname or user.username,

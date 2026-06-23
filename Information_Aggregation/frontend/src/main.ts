@@ -3,7 +3,26 @@ import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
 import 'element-plus/dist/index.css'
-import * as ElementPlusIconsVue from '@element-plus/icons-vue'
+import {
+  ChatDotRound,
+  Checked,
+  CollectionTag,
+  Comment,
+  Connection,
+  DataAnalysis,
+  Document,
+  Message,
+  Microphone,
+  Odometer,
+  OfficeBuilding,
+  Search,
+  Setting,
+  Stamp,
+  UploadFilled,
+  User,
+  UserFilled,
+  VideoCamera,
+} from '@element-plus/icons-vue'
 
 import App from './App.vue'
 import router from './router'
@@ -11,7 +30,28 @@ import './styles/main.css'
 
 const app = createApp(App)
 
-for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
+const icons = {
+  ChatDotRound,
+  Checked,
+  CollectionTag,
+  Comment,
+  Connection,
+  DataAnalysis,
+  Document,
+  Message,
+  Microphone,
+  Odometer,
+  OfficeBuilding,
+  Search,
+  Setting,
+  Stamp,
+  UploadFilled,
+  User,
+  UserFilled,
+  VideoCamera,
+} as const
+
+for (const [key, component] of Object.entries(icons)) {
   app.component(key, component)
 }
 

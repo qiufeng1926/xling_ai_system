@@ -80,6 +80,14 @@
             <el-icon><Document /></el-icon>
             <span>云文档</span>
           </el-menu-item>
+          <el-menu-item :index="FLYBOOK_ROUTES.docLibrary">
+            <el-icon><FolderOpened /></el-icon>
+            <span>文档库</span>
+          </el-menu-item>
+          <el-menu-item :index="FLYBOOK_ROUTES.minutesAi">
+            <el-icon><Microphone /></el-icon>
+            <span>妙纪 AI</span>
+          </el-menu-item>
         </el-sub-menu>
 
         <el-sub-menu v-if="showAdminMenus" index="module-qywechat">
@@ -155,7 +163,11 @@
         </div>
       </el-header>
       <el-main class="layout-main">
-        <router-view />
+        <router-view v-slot="{ Component }">
+          <keep-alive :include="['Dashboard', 'CollectionTasks', 'ReviewQueue', 'InfluencerList']">
+            <component :is="Component" />
+          </keep-alive>
+        </router-view>
       </el-main>
     </el-container>
   </el-container>
@@ -199,6 +211,8 @@ const activeMenu = computed(() => {
   if (path.startsWith('/meeting/create')) return MEETING_ROUTES.create
   if (path.startsWith('/meeting/room')) return MEETING_ROUTES.home
   if (path.startsWith('/meeting')) return MEETING_ROUTES.home
+  if (path.startsWith('/flybook/minutes-ai')) return FLYBOOK_ROUTES.minutesAi
+  if (path.startsWith('/flybook/doc-library')) return FLYBOOK_ROUTES.docLibrary
   if (path.startsWith('/flybook/docs')) return FLYBOOK_ROUTES.docs
   if (path.startsWith('/flybook') || path.startsWith('/feishu')) return FLYBOOK_ROUTES.messenger
   if (path.startsWith('/qywechat/mail') || path.startsWith('/wecom/mail')) return QYWECHAT_ROUTES.mail
@@ -271,7 +285,6 @@ async function refreshAccessRequestStats() {
     return
   }
   try {
-    await userStore.fetchUserInfo()
     const res = await getAccessRequestStats()
     pendingAccessReviewCount.value = res.data.pending_for_review || 0
     myPendingAccessCount.value = res.data.my_pending || 0

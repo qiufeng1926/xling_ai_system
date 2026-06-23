@@ -9,6 +9,7 @@ export interface FeishuBindStatus {
   feishu_name: string | null
   token_valid: boolean
   docs_authorized: boolean
+  minutes_authorized?: boolean
   oauth_scope?: string | null
   portal_username?: string | null
   portal_nickname?: string | null
@@ -208,6 +209,78 @@ export function getDocsComponentAuth(pageUrl: string) {
   return flybookRequest.post<FeishuComponentAuth>('/docs/component-auth', {
     page_url: pageUrl,
   })
+}
+
+export interface FeishuMinutesItem {
+  token: string
+  title: string
+  url?: string
+  cover?: string
+  display_info?: string
+}
+
+export interface FeishuMinutesChapter {
+  title: string
+  start_ms: string
+  stop_ms: string
+  summary_content: string
+}
+
+export interface FeishuMinutesTodo {
+  content: string
+  assignees: string[]
+}
+
+export interface FeishuMinutesArtifacts {
+  ready: boolean
+  status?: string
+  summary?: string
+  chapters?: FeishuMinutesChapter[]
+  todos?: FeishuMinutesTodo[]
+}
+
+export interface FeishuMinutesBindStatus {
+  bound: boolean
+  minutes_authorized: boolean
+  oauth_scope?: string | null
+}
+
+export function getMinutesBindStatus() {
+  return flybookRequest.get<FeishuMinutesBindStatus>('/minutes/bind-status')
+}
+
+export function searchFeishuMinutes(params?: { query?: string; page_token?: string }) {
+  return flybookRequest.get<{
+    items: FeishuMinutesItem[]
+    has_more: boolean
+    page_token: string
+  }>('/minutes/search', { params })
+}
+
+export function getFeishuMinuteArtifacts(minuteToken: string, wait = false) {
+  return flybookRequest.get<FeishuMinutesArtifacts>(`/minutes/${minuteToken}/artifacts`, {
+    params: { wait },
+    timeout: wait ? 180000 : 30000,
+  })
+}
+
+export function finishFeishuMinutesSession(file: Blob, filename: string) {
+  const form = new FormData()
+  form.append('file', file, filename)
+  form.append('wait_ai', 'true')
+  return flybookRequest.post<{
+    minute: { token: string; url?: string; title?: string }
+    artifacts: FeishuMinutesArtifacts
+  }>('/minutes/sessions/finish', form, {
+    timeout: 300000,
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
+
+export function buildMinutesTranscribeWsUrl(): string {
+  const token = localStorage.getItem('token') || ''
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}/api/flybook/ws/minutes/transcribe?token=${encodeURIComponent(token)}`
 }
 
 let sdkLoadPromise: Promise<void> | null = null

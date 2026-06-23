@@ -18,8 +18,10 @@ from integrations.feishu.docs import (
 from integrations.feishu.errors import FeishuError
 from integrations.feishu.file_types import CREATE_TYPE_LABELS, CREATE_TYPE_ORDER, LISTABLE_TYPES
 from integrations.feishu.import_docs import get_import_formats, import_local_file, suggest_import_target
+from integrations.feishu.docx_export import export_document_text
 from services.feishu_session import ensure_user_access_token
 from services.jssdk_auth import build_component_auth
+from services.portal_documents import register_document_mirror
 from services.portal_tokens import PortalTokenError
 from utils.logger import get_logger
 
@@ -41,6 +43,37 @@ def _require_user_id(user: PortalUser) -> int:
     if user.user_id is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法识别当前用户")
     return int(user.user_id)
+
+
+def _mirror_created_document(user_id: int, created: dict) -> None:
+    """创建/导入成功后注册 xlink 文档镜像（失败不影响主流程）"""
+    token = (created.get("token") or "").strip()
+    if not token:
+        return
+    file_type = (created.get("type") or "docx").strip().lower()
+    title = (created.get("title") or "").strip()
+    url = (created.get("url") or "").strip()
+    content = ""
+    if file_type in {"docx", "doc"}:
+        try:
+            access_token, _ = ensure_user_access_token(user_id=user_id)
+            exported = export_document_text(access_token, token=token, file_type=file_type)
+            title = (exported.get("title") or title).strip()
+            url = (exported.get("url") or url).strip()
+            content = (exported.get("content") or "").strip()
+        except Exception as exc:
+            logger.warning(
+                "导出文档正文用于镜像失败",
+                extra={"output_params": {"user_id": user_id, "token": token, "error": str(exc)[:200]}},
+            )
+    register_document_mirror(
+        user_id=user_id,
+        feishu_token=token,
+        feishu_type=file_type,
+        title=title,
+        feishu_url=url,
+        content=content,
+    )
 
 
 @router.get("/create-types")
@@ -159,6 +192,7 @@ def docs_create_file(body: CreateDocRequest, user: PortalUser = Depends(get_curr
             }
         },
     )
+    _mirror_created_document(user_id, created)
     return created
 
 
@@ -217,4 +251,5 @@ async def docs_import_file(
             }
         },
     )
+    _mirror_created_document(user_id, created)
     return created

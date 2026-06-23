@@ -148,6 +148,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadFile } from 'element-plus'
+
+defineOptions({ name: 'InfluencerList' })
 import {
   PLATFORM_OPTIONS,
   SOURCE_OPTIONS,
@@ -166,6 +168,7 @@ import { getAgencyOptions, type Agency } from '@/api/agencies'
 import { INFLUENCER_ROUTES } from '@/constants/routes'
 
 const loading = ref(false)
+const refreshing = ref(false)
 const creating = ref(false)
 const importing = ref(false)
 const showCreate = ref(false)
@@ -213,8 +216,10 @@ const createForm = reactive({
   source: 'manual',
 })
 
-async function loadData() {
-  loading.value = true
+async function loadData(options: { silent?: boolean } = {}) {
+  const silent = options.silent ?? list.value.length > 0
+  if (!silent) loading.value = true
+  else refreshing.value = true
   try {
     const res = await getInfluencers({
       page: pagination.page,
@@ -231,6 +236,7 @@ async function loadData() {
     pagination.total = res.data.total
   } finally {
     loading.value = false
+    refreshing.value = false
   }
 }
 

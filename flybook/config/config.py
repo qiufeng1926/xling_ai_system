@@ -89,14 +89,18 @@ feishu_oauth_scope = (
         "sheets:spreadsheet sheets:spreadsheet:create "
         "base:app:create bitable:app "
         "wiki:wiki wiki:node:create "
-        "docs:document:import drive:file:upload",
+        "docs:document:import drive:file:upload "
+        "minutes:minutes.search:read minutes:minutes:readonly "
+        "minutes:minutes.artifacts:read minutes:minutes",
     )
     or (
         "offline_access drive:drive docx:document docx:document:create "
         "sheets:spreadsheet sheets:spreadsheet:create "
         "base:app:create bitable:app "
         "wiki:wiki wiki:node:create "
-        "docs:document:import drive:file:upload"
+        "docs:document:import drive:file:upload "
+        "minutes:minutes.search:read minutes:minutes:readonly "
+        "minutes:minutes.artifacts:read minutes:minutes"
     )
 )
 

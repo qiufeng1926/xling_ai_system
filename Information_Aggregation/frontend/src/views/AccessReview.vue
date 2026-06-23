@@ -302,6 +302,72 @@
         </el-table-column>
       </el-table>
     </el-card>
+
+    <el-card v-if="canReviewMeetingViewPerm" shadow="never" class="section">
+      <template #header>
+        <div class="header-row">
+          <span>文档浏览申请审批</span>
+          <el-tag v-if="docViewPendingCount > 0" type="danger" size="small">
+            {{ docViewPendingCount }} 条待处理
+          </el-tag>
+        </div>
+      </template>
+      <p class="tip">用户按单篇文档申请浏览权限，规则与会议记录浏览一致（复用 view_all_meetings 等权限）。</p>
+      <el-table
+        v-loading="docViewReviewLoading"
+        :data="docViewReviewList"
+        stripe
+        empty-text="暂无文档浏览申请"
+      >
+        <el-table-column prop="id" label="ID" width="70" />
+        <el-table-column prop="document_title" label="文档" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="username" label="用户名" width="130" />
+        <el-table-column prop="nickname" label="昵称" width="120" />
+        <el-table-column prop="reason" label="申请理由" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="created_at" label="申请时间" width="170">
+          <template #default="{ row }">{{ formatTime(row.created_at || '') }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="180" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="success" @click="handleDocumentReview('view', row, true)">通过</el-button>
+            <el-button link type="danger" @click="handleDocumentReview('view', row, false)">拒绝</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <el-card v-if="canReviewMeetingDownloadPerm" shadow="never" class="section">
+      <template #header>
+        <div class="header-row">
+          <span>文档下载申请审批</span>
+          <el-tag v-if="docDownloadPendingCount > 0" type="danger" size="small">
+            {{ docDownloadPendingCount }} 条待处理
+          </el-tag>
+        </div>
+      </template>
+      <p class="tip">用户须先获得文档浏览权限方可申请下载；规则与会议记录下载一致。</p>
+      <el-table
+        v-loading="docDownloadReviewLoading"
+        :data="docDownloadReviewList"
+        stripe
+        empty-text="暂无文档下载申请"
+      >
+        <el-table-column prop="id" label="ID" width="70" />
+        <el-table-column prop="document_title" label="文档" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="username" label="用户名" width="130" />
+        <el-table-column prop="nickname" label="昵称" width="120" />
+        <el-table-column prop="reason" label="申请理由" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="created_at" label="申请时间" width="170">
+          <template #default="{ row }">{{ formatTime(row.created_at || '') }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="180" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="success" @click="handleDocumentReview('download', row, true)">通过</el-button>
+            <el-button link type="danger" @click="handleDocumentReview('download', row, false)">拒绝</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
   </div>
 </template>
 
@@ -335,6 +401,14 @@ import {
   reviewMeetingViewRequest,
   type MeetingPermissionRequest,
 } from '@/api/meetings'
+import {
+  getFeishuDocumentAccessStats,
+  getPendingFeishuDocumentDownloadRequests,
+  getPendingFeishuDocumentViewRequests,
+  reviewFeishuDocumentDownloadRequest,
+  reviewFeishuDocumentViewRequest,
+  type FeishuDocumentAccessRequest,
+} from '@/api/feishuDocuments'
 import { useUserStore } from '@/stores/user'
 import { canReviewAccess, canReviewMeetingDownload, canReviewMeetingView, isSuperAdmin } from '@/utils/permission'
 
@@ -378,6 +452,13 @@ const meetingViewStatusFilter = ref('pending')
 const meetingDownloadStatusFilter = ref('pending')
 const selectedViewRequests = ref<MeetingPermissionRequest[]>([])
 const selectedDownloadRequests = ref<MeetingPermissionRequest[]>([])
+
+const docViewReviewLoading = ref(false)
+const docDownloadReviewLoading = ref(false)
+const docViewReviewList = ref<FeishuDocumentAccessRequest[]>([])
+const docDownloadReviewList = ref<FeishuDocumentAccessRequest[]>([])
+const docViewPendingCount = ref(0)
+const docDownloadPendingCount = ref(0)
 
 function formatTime(v: string) {
   return v?.replace('T', ' ').slice(0, 19)
@@ -457,6 +538,19 @@ async function loadStats() {
   } catch {
     meetingViewPendingCount.value = 0
     meetingDownloadPendingCount.value = 0
+  }
+  try {
+    const docStats = await getFeishuDocumentAccessStats()
+    stats.value.my_pending += docStats.data.my_pending || 0
+    if (
+      canReview.value ||
+      canReviewMeetingViewPerm.value ||
+      canReviewMeetingDownloadPerm.value
+    ) {
+      stats.value.pending_for_review += docStats.data.pending_for_review || 0
+    }
+  } catch {
+    /* flybook/doc mirror optional */
   }
   return stats.value
 }
@@ -544,6 +638,30 @@ async function loadMeetingDownloadReviewData() {
   }
 }
 
+async function loadDocViewReviewData() {
+  if (!canReviewMeetingViewPerm.value) return
+  docViewReviewLoading.value = true
+  try {
+    const res = await getPendingFeishuDocumentViewRequests()
+    docViewReviewList.value = res.data.requests || []
+    docViewPendingCount.value = docViewReviewList.value.length
+  } finally {
+    docViewReviewLoading.value = false
+  }
+}
+
+async function loadDocDownloadReviewData() {
+  if (!canReviewMeetingDownloadPerm.value) return
+  docDownloadReviewLoading.value = true
+  try {
+    const res = await getPendingFeishuDocumentDownloadRequests()
+    docDownloadReviewList.value = res.data.requests || []
+    docDownloadPendingCount.value = docDownloadReviewList.value.length
+  } finally {
+    docDownloadReviewLoading.value = false
+  }
+}
+
 async function loadReviewData() {
   if (!canReview.value) return
   reviewLoading.value = true
@@ -576,6 +694,12 @@ async function refreshAll(notifyReviewer = false) {
   }
   if (canReviewMeetingDownloadPerm.value) {
     await loadMeetingDownloadReviewData()
+  }
+  if (canReviewMeetingViewPerm.value) {
+    await loadDocViewReviewData()
+  }
+  if (canReviewMeetingDownloadPerm.value) {
+    await loadDocDownloadReviewData()
   }
 }
 
@@ -666,6 +790,41 @@ async function handleMeetingReview(
     await reviewMeetingViewRequest(row.id, approve, reviewNote)
   } else {
     await reviewMeetingDownloadRequest(row.id, approve, reviewNote)
+  }
+  ElMessage.success(approve ? '已通过' : '已拒绝')
+  await refreshAll(false)
+}
+
+async function handleDocumentReview(
+  kind: 'view' | 'download',
+  row: FeishuDocumentAccessRequest,
+  approve: boolean
+) {
+  const applicant = row.username || row.nickname || '用户'
+  const docName = row.document_title || row.doc_id
+  const action = approve ? '通过' : '拒绝'
+  const title = kind === 'view' ? '文档浏览审批' : '文档下载审批'
+  let reviewNote: string | undefined
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `确定${action}用户「${applicant}」${kind === 'view' ? '浏览' : '下载'}文档「${docName}」的申请？`,
+      title,
+      {
+        type: approve ? 'success' : 'warning',
+        confirmButtonText: action,
+        cancelButtonText: '取消',
+        inputPlaceholder: '审批备注（可选）',
+        inputValue: '',
+      }
+    )
+    reviewNote = value || undefined
+  } catch {
+    return
+  }
+  if (kind === 'view') {
+    await reviewFeishuDocumentViewRequest(row.id, approve, reviewNote)
+  } else {
+    await reviewFeishuDocumentDownloadRequest(row.id, approve, reviewNote)
   }
   ElMessage.success(approve ? '已通过' : '已拒绝')
   await refreshAll(false)
