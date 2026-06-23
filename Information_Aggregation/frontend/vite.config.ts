@@ -8,6 +8,7 @@ export default defineConfig(({ mode }) => {
   const devHttps = env.VITE_DEV_HTTPS === 'true'
   const influencerApiTarget = env.VITE_INFLUENCER_API_TARGET || env.VITE_API_TARGET || 'http://127.0.0.1:8000'
   const meetingApiTarget = env.VITE_MEETING_API_TARGET || 'http://127.0.0.1:8001'
+  const flybookApiTarget = env.VITE_FLYBOOK_API_TARGET || 'http://127.0.0.1:8002'
 
   const meetingApiPrefixes = [
     '/api/auth',
@@ -22,6 +23,10 @@ export default defineConfig(({ mode }) => {
   const proxy: Record<string, object> = {
     '/api/v1': {
       target: influencerApiTarget,
+      changeOrigin: true,
+    },
+    '/api/flybook': {
+      target: flybookApiTarget,
       changeOrigin: true,
     },
     '/meeting-app': {

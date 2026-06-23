@@ -21,7 +21,7 @@ PROFILE_URL_KEYS = (
 SEC_UID_KEYS = ("sec_uid", "sec_user_id", "sec_user_uid")
 # 仅用于星图主页 URL，不用泛化的 id/uid（易误匹配标签、分类等嵌套 id）
 STAR_ID_KEYS = ("star_id",)
-AUTHOR_ID_FOR_URL_KEYS = ("star_id", "author_id")
+AUTHOR_ID_FOR_URL_KEYS = ("id", "star_id", "author_id")
 UNIQUE_ID_KEYS = ("unique_id", "short_id", "aweme_id", "douyin_id", "display_id")
 ENGAGEMENT_KEYS = (
     "engagement_rate",
@@ -148,12 +148,30 @@ def _is_valid_profile_url(url: str) -> bool:
     return False
 
 
+def extract_star_id_from_profile_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    match = re.search(
+        r"author-homepage/(?:douyin-video|abstract|live|short-video)/(\d{11,20})",
+        str(url),
+        re.I,
+    )
+    if match and _is_valid_star_id(match.group(1)):
+        return match.group(1)
+    return None
+
+
 def _pick_star_id(source: dict) -> str | None:
-    """仅从明确字段取 star_id，避免 deep_pick 误取嵌套 id"""
+    """仅从明确字段取 star_id，避免把 core_user_id 等抖音 UID 当成星图 ID"""
     for key in AUTHOR_ID_FOR_URL_KEYS:
         val = source.get(key)
         if val is not None and _is_valid_star_id(str(val)):
             return str(val)
+
+    for key in PROFILE_URL_KEYS:
+        star_id = extract_star_id_from_profile_url(_normalize_url(source.get(key)))
+        if star_id:
+            return star_id
 
     author = source.get("author")
     if isinstance(author, dict):
@@ -161,6 +179,10 @@ def _pick_star_id(source: dict) -> str | None:
             val = author.get(key)
             if val is not None and _is_valid_star_id(str(val)):
                 return str(val)
+        for key in PROFILE_URL_KEYS:
+            star_id = extract_star_id_from_profile_url(_normalize_url(author.get(key)))
+            if star_id:
+                return star_id
 
     star_info = source.get("star_info") or source.get("author_info")
     if isinstance(star_info, dict):
@@ -168,6 +190,10 @@ def _pick_star_id(source: dict) -> str | None:
             val = star_info.get(key)
             if val is not None and _is_valid_star_id(str(val)):
                 return str(val)
+        for key in PROFILE_URL_KEYS:
+            star_id = extract_star_id_from_profile_url(_normalize_url(star_info.get(key)))
+            if star_id:
+                return star_id
     return None
 
 
@@ -362,16 +388,22 @@ def extract_profile_url(item: dict) -> str | None:
     direct_urls = _collect_direct_urls(item)
     if direct_urls:
         for url in direct_urls:
+            if "xingtu.cn" in url.lower() and "author-homepage" in url.lower():
+                return url
+        for url in direct_urls:
             if "douyin.com/user/" in url.lower():
                 return url
         return direct_urls[0]
+
+    star_id = _pick_star_id(item)
+    if star_id:
+        return build_xingtu_homepage(star_id)
 
     sec_uid = _pick_sec_uid(item)
     if sec_uid:
         return build_douyin_homepage(sec_uid)
 
-    star_id = _pick_star_id(item)
-    return build_xingtu_homepage(star_id)
+    return None
 
 
 def choose_best_profile_url(parsed: dict[str, Any], item: dict[str, Any]) -> str | None:
@@ -380,7 +412,7 @@ def choose_best_profile_url(parsed: dict[str, Any], item: dict[str, Any]) -> str
     if url:
         return url
 
-    for key in ("douyin_homepage", "xingtu_homepage", "profile_url"):
+    for key in ("xingtu_homepage", "profile_url", "douyin_homepage"):
         candidate = parsed.get(key)
         if candidate and _is_valid_profile_url(str(candidate)):
             return str(candidate)

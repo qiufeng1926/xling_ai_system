@@ -12,19 +12,17 @@ PGY_DISPLAY_NAME_KEYS = ("nick_name", "nickname", "name", "user_name", "kol_name
 
 
 def resolve_xingtu_platform_uid(item: dict[str, Any]) -> str | None:
-    """解析星图达人稳定 ID，不使用昵称或 unique_id 作为 platform_uid"""
+    """解析星图达人 star_id（字段 id），不使用 core_user_id 等抖音 UID"""
     star = _pick_star_id(item)
     if star:
         return star
 
-    for key in ("author_id", "star_id", "uid", "user_id", "core_user_id"):
+    for key in ("id", "author_id", "star_id"):
         val = item.get(key)
         if val is None or str(val).strip() == "":
             continue
         text = str(val).strip()
         if _is_valid_star_id(text):
-            return text
-        if text.isdigit() and len(text) >= 8:
             return text
 
     for block_key in ("author", "star_info", "author_info", "user_info"):

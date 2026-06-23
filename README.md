@@ -10,6 +10,7 @@
 |------|------|------|
 | **达人信息管理** | `Information_Aggregation/` | 多平台达人数据采集、标签分类、智能匹配、MCN 管理 |
 | **会议 AI** | `meeting_ai/` | 实时语音转写、批量音频处理、AI 会议纪要、协作会议 |
+| **飞书** | `flybook/` | 飞书开放平台 API、事件回调（独立后端；前端仍在门户） |
 
 用户在门户登录一次，即可访问全部模块；两个后端独立部署，通过 **共享 JWT** 与 **Vite 反向代理** 打通。
 
@@ -114,12 +115,12 @@ xling_ai_system/
 │   │   │   │   └── meeting/           # 会议模块路由
 │   │   │   ├── shell/moduleRegistry.ts
 │   │   │   └── views/
-│   │   └── vite.config.ts             # 双后端代理配置
+│   │   └── vite.config.ts             # 多后端代理配置
 │   ├── scripts/                       # 启动脚本、数据库初始化
 │   ├── docker-compose.yml             # 达人系统容器编排（不含 meeting_ai）
 │   └── README.md                      # 达人系统详细文档
 │
-└── meeting_ai/                        # 会议 AI 独立后端
+├── meeting_ai/                        # 会议 AI 独立后端
     ├── api/
     │   ├── main.py                    # 应用入口
     │   ├── portal_auth.py             # 门户 JWT 用户解析
@@ -130,6 +131,14 @@ xling_ai_system/
     ├── static/transcribe.html         # 会议录制 Web UI（iframe 嵌入）
     ├── db/                            # 数据库模型与迁移
     └── README.md                      # 会议 AI 详细文档
+
+└── flybook/                           # 飞书独立后端
+    ├── api/
+    │   ├── main.py                    # 应用入口（:8002）
+    │   ├── portal_auth.py             # 门户 JWT 校验
+    │   └── routes/                    # config / callback
+    ├── integrations/feishu/           # 开放平台客户端、事件加解密
+    └── README.md
 ```
 
 ---
@@ -191,15 +200,21 @@ cp Information_Aggregation/frontend/.env.example Information_Aggregation/fronten
 
 # 会议 AI
 cp meeting_ai/.env.example meeting_ai/.env
+
+# 飞书
+cp flybook/.env.example flybook/.env
 ```
 
-**关键：两个后端的 JWT 密钥必须一致**
+**关键：各后端 JWT 密钥须与门户一致**
 
 ```env
 # Information_Aggregation/backend/.env
 SECRET_KEY=dev-local-secret-key-at-least-32-characters-long
 
 # meeting_ai/.env
+JWT_SECRET=dev-local-secret-key-at-least-32-characters-long
+
+# flybook/.env
 JWT_SECRET=dev-local-secret-key-at-least-32-characters-long
 ```
 
@@ -221,11 +236,15 @@ npm install
 cd ../../meeting_ai
 pip install -r requirements.txt
 python test_system.py   # 可选：验证各模块
+
+# 飞书
+cd ../flybook
+pip install -r requirements.txt
 ```
 
-### 5. 启动三个服务
+### 5. 启动服务
 
-在三个终端分别运行：
+在多个终端分别运行：
 
 ```bash
 # 终端 1 — 达人后端 (:8000)
@@ -236,7 +255,11 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 cd meeting_ai
 uvicorn api.main:app --reload --host 0.0.0.0 --port 8001
 
-# 终端 3 — 门户前端 (:5173)
+# 终端 3 — 飞书后端 (:8002)
+cd flybook
+uvicorn api.main:app --reload --host 0.0.0.0 --port 8002
+
+# 终端 4 — 门户前端 (:5173)
 cd Information_Aggregation/frontend
 npm run dev
 ```
@@ -247,7 +270,7 @@ npm run dev
 Information_Aggregation\scripts\start_dev.bat
 ```
 
-> 使用 `start_dev.bat` 后仍需手动启动 meeting_ai（:8001），否则会议模块不可用。
+> 使用 `start_dev.bat` 后仍需手动启动 meeting_ai（:8001）与 flybook（:8002），否则对应模块不可用。
 
 ### 6. 访问系统
 
@@ -256,6 +279,7 @@ Information_Aggregation\scripts\start_dev.bat
 | http://localhost:5173 | xlink 统一门户 |
 | http://localhost:8000/docs | 达人 API 文档 |
 | http://localhost:8001/docs | 会议 AI API 文档 |
+| http://localhost:8002/docs | 飞书 API 文档 |
 
 **默认超级管理员**（达人系统首次启动自动创建）：
 
@@ -273,7 +297,8 @@ Information_Aggregation\scripts\start_dev.bat
 | 门户前端 | 5173 | Vue 3 SPA |
 | 达人后端 | 8000 | `/api/v1/*` |
 | 会议 AI 后端 | **8001** | 门户集成模式（避免与 8000 冲突） |
-| MySQL | 3306 | 两个库可共用同一实例 |
+| 飞书后端 | **8002** | `/api/flybook/*` |
+| MySQL | 3306 | 达人/会议库可共用同一实例 |
 | Redis | 6379 | 达人采集队列 |
 
 ### Vite 代理规则
@@ -283,6 +308,7 @@ Information_Aggregation\scripts\start_dev.bat
 | 前端路径 | 代理目标 | 用途 |
 |----------|----------|------|
 | `/api/v1/*` | `:8000` | 达人 API |
+| `/api/flybook/*` | `:8002` | 飞书 API |
 | `/api/auth`, `/api/meetings`, `/api/meeting`, `/api/ws`, `/api/admin`, `/api/export`, `/api/settings` | `:8001` | 会议 AI API |
 | `/meeting-app/*` | `:8001` | 会议录制 iframe |
 | `/static/*` | `:8001` | 会议静态资源 |

@@ -10,6 +10,7 @@ from urllib.parse import quote
 from app.collectors.base import RawInfluencer, SearchFilters
 from app.config import settings
 from app.constants.xingtu_filters import (
+    PAGE_FILTER_CLICK,
     PAGE_FILTER_LABELS,
     PAGE_FILTER_SECTIONS,
     PAGE_FILTER_VALUE_ALIASES,
@@ -26,6 +27,7 @@ from app.utils.keyword_match import calc_keyword_match_score, passes_keyword_mat
 from app.utils.xingtu_fields import (
     build_xingtu_homepage,
     choose_best_profile_url,
+    extract_star_id_from_profile_url,
     merge_author_items,
     needs_detail_enrichment,
     parse_dom_text_fields,
@@ -62,6 +64,17 @@ EXCLUDE_URL_KEYWORDS = (
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 
 
+def _is_author_search_response(url: str, status: int = 200) -> bool:
+    if status != 200:
+        return False
+    url = url.lower()
+    if "xingtu.cn" not in url:
+        return False
+    if any(k in url for k in EXCLUDE_URL_KEYWORDS):
+        return False
+    return any(k in url for k in INTERCEPT_URL_KEYWORDS)
+
+
 def _save_failure_screenshot(page, keyword: str) -> str | None:
     if page is None:
         return None
@@ -92,6 +105,9 @@ class XingtuBrowserCollector:
         logger.info("Xingtu Playwright collect start: keyword=%s", keyword)
         authors: dict[str, dict[str, Any]] = {}
         from_search_api = False
+        has_keyword = bool((keyword or "").strip())
+        has_filters = self._has_active_filters(filters)
+        will_prepare_page = has_keyword or has_filters
         max_pages = max(
             1,
             min(
@@ -108,23 +124,19 @@ class XingtuBrowserCollector:
             context = self._create_context(browser)
             page = None
             api_authors: dict[str, dict[str, Any]] = {}
+            capture_enabled = not will_prepare_page
 
             try:
                 page = context.new_page()
 
                 def on_response(response) -> None:
                     nonlocal from_search_api
-                    if response.status != 200:
+                    if not capture_enabled:
+                        return
+                    if not _is_author_search_response(response.url, response.status):
                         return
                     content_type = response.headers.get("content-type", "")
                     if "json" not in content_type:
-                        return
-                    url = response.url.lower()
-                    if "xingtu.cn" not in url:
-                        return
-                    if any(k in url for k in EXCLUDE_URL_KEYWORDS):
-                        return
-                    if not any(k in url for k in INTERCEPT_URL_KEYWORDS):
                         return
                     try:
                         data = response.json()
@@ -149,17 +161,22 @@ class XingtuBrowserCollector:
                         "星图未登录或 Cookie 已过期。请在工作台配置星图登录态"
                     )
 
-                if (keyword or "").strip():
+                if has_keyword:
                     self._perform_search(page, keyword)
 
-                if self._has_active_filters(filters):
-                    api_authors.clear()
-                    from_search_api = False
+                if has_filters:
                     applied = self._apply_page_filters(page, filters)
                     if applied:
                         logger.info("Xingtu filters applied: %s", ", ".join(applied))
+
+                if will_prepare_page:
                     self._wait_for_results_refresh(page)
                     page.wait_for_timeout(settings.PLAYWRIGHT_WAIT_AFTER_SEARCH)
+                    api_authors.clear()
+                    from_search_api = False
+                    capture_enabled = True
+                    logger.info("Xingtu API capture enabled after search/filters settled")
+                    self._wait_for_filtered_results_api(page)
 
                 self._scroll_to_results_area(page)
                 self._collect_result_pages(page, api_authors, filters.limit, max_pages)
@@ -191,8 +208,7 @@ class XingtuBrowserCollector:
 
         authors = normalize_xingtu_authors(authors)
         captured = list(authors.values())
-        has_keyword = bool((keyword or "").strip())
-        page_filtered = from_search_api and self._has_active_filters(filters)
+        page_filtered = from_search_api and (has_filters or has_keyword)
         results = self._to_raw_influencers(
             keyword,
             captured,
@@ -308,6 +324,22 @@ class XingtuBrowserCollector:
     @staticmethod
     def _wait_for_results_refresh(page) -> None:
         page.wait_for_timeout(settings.PLAYWRIGHT_FILTER_WAIT)
+
+    @staticmethod
+    def _wait_for_filtered_results_api(page) -> None:
+        """筛选/搜索完成后等待首屏达人列表 API，避免采集到准备阶段的无关数据"""
+        try:
+            with page.expect_response(
+                lambda r: _is_author_search_response(r.url, r.status)
+                and "json" in r.headers.get("content-type", ""),
+                timeout=settings.PLAYWRIGHT_TIMEOUT,
+            ):
+                page.evaluate("window.scrollBy(0, Math.min(window.innerHeight, 600))")
+            page.wait_for_timeout(settings.PLAYWRIGHT_FILTER_WAIT)
+            logger.info("Xingtu filtered results API received")
+        except Exception:
+            logger.warning("Timed out waiting for filtered results API, fallback to DOM refresh wait")
+            page.wait_for_timeout(settings.PLAYWRIGHT_FILTER_WAIT)
 
     @staticmethod
     def _scroll_to_results_area(page) -> None:
@@ -468,7 +500,8 @@ class XingtuBrowserCollector:
                         const item = { nick_name: nickname };
                         if (link) {
                             const href = link.getAttribute('href') || '';
-                            const match = href.match(/(\\d{11,20})/);
+                            const match = href.match(/author-homepage\\/(?:douyin-video|abstract|live|short-video)\\/(\\d{11,20})/i)
+                                || href.match(/(\\d{11,20})/);
                             if (match) item.author_id = match[1];
                         }
                         if (!item.author_id && !/粉丝|万|互动率|预期播放/.test(text)) continue;
@@ -521,9 +554,9 @@ class XingtuBrowserCollector:
         try:
             page.evaluate(
                 """() => {
-                for (const text of ['合作要求', '匹配度', '合作目的', '达人类型']) {
-                    const node = [...document.querySelectorAll('*')].find(
-                        (el) => el.childElementCount <= 3 && (el.innerText || '').trim() === text
+                for (const text of ['合作诉求', '匹配度', '达人类型', '营销目标']) {
+                    const node = [...document.querySelectorAll('td.filter-list-group__title, .underline-tooltip')].find(
+                        (el) => (el.innerText || '').trim() === text
                     );
                     if (node) {
                         node.scrollIntoView({ block: 'center', behavior: 'instant' });
@@ -538,33 +571,102 @@ class XingtuBrowserCollector:
             pass
         page.wait_for_timeout(800)
 
+    @staticmethod
+    def _resolve_page_filter_value(field_key: str, value: Any) -> str:
+        text = str(value)
+        return PAGE_FILTER_VALUE_ALIASES.get(field_key, {}).get(text, text)
+
+    @staticmethod
+    def _scroll_to_filter_section(page, section: str | None) -> None:
+        if not section:
+            XingtuBrowserCollector._scroll_to_filter_area(page)
+            return
+        try:
+            title = page.locator("td.filter-list-group__title", has_text=section).first
+            title.scroll_into_view_if_needed(timeout=3000)
+            page.wait_for_timeout(400)
+        except Exception:
+            XingtuBrowserCollector._scroll_to_filter_area(page)
+
     def _apply_page_filters(self, page, filters: SearchFilters) -> list[str]:
-        """在星图页面上点击筛选项，处理下拉子选项"""
+        """在星图页面上点击筛选项，覆盖行内标签、下拉与粉丝画像弹层"""
         self._scroll_to_filter_area(page)
         applied: list[str] = []
+        failed: list[str] = []
 
-        for field_key, row_label in PAGE_FILTER_LABELS.items():
+        for field_key, click_cfg in PAGE_FILTER_CLICK.items():
             value = getattr(filters, field_key, None)
             if not value:
                 continue
-            display_value = PAGE_FILTER_VALUE_ALIASES.get(field_key, {}).get(str(value), str(value))
-            section = PAGE_FILTER_SECTIONS.get(field_key)
-            if field_key == "quote_duration":
+            if click_cfg.get("type") == "fans_panel":
+                continue
+
+            display_value = self._resolve_page_filter_value(field_key, value)
+            row_label = PAGE_FILTER_LABELS.get(field_key, field_key)
+            section = click_cfg.get("section") or PAGE_FILTER_SECTIONS.get(field_key)
+            self._scroll_to_filter_section(page, section)
+
+            click_type = click_cfg.get("type", "inline")
+            if click_type == "inline":
+                clicked = self._click_inline_filter(page, click_cfg["line"], display_value, section)
+            elif click_type == "dropdown":
+                clicked = self._click_dropdown_filter(
+                    page,
+                    click_cfg["parent_line"],
+                    click_cfg["dropdown"],
+                    display_value,
+                    section,
+                )
+            elif click_type == "quote":
                 clicked = self._click_quote_duration(page, display_value)
             else:
-                clicked = self._click_filter_option(page, row_label, display_value, section)
+                clicked = False
+
             if clicked:
                 applied.append(f"{row_label}={display_value}")
-                self._confirm_filter_panel(page)
                 page.wait_for_timeout(settings.PLAYWRIGHT_FILTER_WAIT)
+            else:
+                failed.append(f"{row_label}={display_value}")
+
+        fans_options: list[tuple[str, str]] = []
+        if filters.follower_gender:
+            fans_options.append(
+                (
+                    PAGE_FILTER_LABELS["follower_gender"],
+                    self._resolve_page_filter_value("follower_gender", filters.follower_gender),
+                )
+            )
+        if filters.follower_age:
+            fans_options.append(
+                (
+                    PAGE_FILTER_LABELS["follower_age"],
+                    self._resolve_page_filter_value("follower_age", filters.follower_age),
+                )
+            )
+        if fans_options:
+            self._scroll_to_filter_section(page, "匹配度")
+            if self._click_fans_panel_options(page, [opt for _, opt in fans_options]):
+                for row_label, display_value in fans_options:
+                    applied.append(f"{row_label}={display_value}")
+                page.wait_for_timeout(settings.PLAYWRIGHT_FILTER_WAIT)
+            else:
+                for row_label, display_value in fans_options:
+                    failed.append(f"{row_label}={display_value}")
 
         if filters.theme_tags:
+            self._scroll_to_filter_section(page, "主题推荐")
             for tag in filters.theme_tags:
-                if self._click_theme_tag(page, tag):
-                    applied.append(f"主题={tag}")
+                display_tag = self._resolve_page_filter_value("theme_tags", tag)
+                if self._click_theme_tag(page, display_tag):
+                    applied.append(f"主题={display_tag}")
                     page.wait_for_timeout(settings.PLAYWRIGHT_FILTER_WAIT)
+                else:
+                    failed.append(f"主题={display_tag}")
 
+        if failed:
+            logger.warning("Xingtu filters not applied on page: %s", ", ".join(failed))
         if applied:
+            logger.info("Xingtu filters applied on page: %s", ", ".join(applied))
             self._scroll_to_results_area(page)
             active = self._read_active_filter_chips(page)
             if active:
@@ -595,68 +697,184 @@ class XingtuBrowserCollector:
             return []
 
     @staticmethod
-    def _click_quote_duration(page, option: str) -> bool:
-        """性价比区块的达人报价（21-60s视频 等）"""
-        try:
-            page.get_by_text("性价比", exact=True).first.scroll_into_view_if_needed(timeout=3000)
-            page.wait_for_timeout(400)
-            for ancestor_level in (1, 2, 3, 4, 5, 6):
-                container = page.get_by_text("性价比", exact=True).first.locator(
-                    f"xpath=ancestor::div[{ancestor_level}]"
-                )
-                for exact in (True, False):
-                    try:
-                        tag = container.get_by_text(option, exact=exact).first
-                        if tag.is_visible(timeout=800):
-                            tag.click()
-                            logger.info("Clicked quote_duration=%s", option)
-                            return True
-                    except Exception:
-                        continue
-        except Exception:
-            logger.debug("Quote duration click failed: %s", option, exc_info=True)
-        return XingtuBrowserCollector._click_filter_option(page, "达人报价", option, "性价比")
+    def _filter_section_locator(page, section: str | None):
+        if section:
+            return page.locator("tr.filter-list-group").filter(has_text=section).first
+        return page.locator("tr.filter-list-group").first
 
     @staticmethod
-    def _click_filter_option(page, row_label: str, option: str, section: str | None = None) -> bool:
+    def _click_inline_filter(page, line_label: str, option: str, section: str | None = None) -> bool:
         if not option or option == "不限":
             return False
-
-        if section:
-            try:
-                page.get_by_text(section, exact=True).first.scroll_into_view_if_needed(timeout=3000)
-                page.wait_for_timeout(400)
-            except Exception:
-                pass
-
         try:
-            row = page.get_by_text(row_label, exact=True).first
-            row.scroll_into_view_if_needed(timeout=2000)
-            for ancestor_level in (2, 3, 4, 5, 6):
-                container = row.locator(f"xpath=ancestor::div[{ancestor_level}]")
-                for exact in (True, False):
-                    try:
-                        tag = container.get_by_text(option, exact=exact).first
-                        if tag.is_visible(timeout=800):
-                            tag.click()
-                            logger.info("Clicked filter %s=%s (section=%s)", row_label, option, section)
-                            return True
-                    except Exception:
-                        continue
+            section_loc = XingtuBrowserCollector._filter_section_locator(page, section)
+            line = section_loc.locator(".market-filter-wrapper--line").filter(has_text=line_label).first
+            line.scroll_into_view_if_needed(timeout=3000)
+            page.wait_for_timeout(300)
+            for exact in (True, False):
+                tag = line.get_by_text(option, exact=exact).first
+                if tag.is_visible(timeout=1000):
+                    tag.click()
+                    logger.info("Clicked inline filter %s=%s", line_label, option)
+                    return True
         except Exception:
-            logger.debug("Playwright filter click failed: %s=%s", row_label, option, exc_info=True)
+            logger.debug("Inline filter click failed: %s=%s", line_label, option, exc_info=True)
+        return False
 
-        return XingtuBrowserCollector._click_filter_tag(page, row_label, option)
+    @staticmethod
+    def _find_dropdown_in_line(parent, dropdown_label: str):
+        for selector in (
+            ".base-market-dropdown",
+            ".xt-dropdown",
+            ".star-select",
+        ):
+            dropdown = parent.locator(selector).filter(has_text=dropdown_label)
+            if dropdown.count() > 0:
+                return dropdown.last
+        return parent.get_by_text(dropdown_label, exact=True).last
+
+    @staticmethod
+    def _open_dropdown(parent, dropdown_label: str) -> bool:
+        dropdown = XingtuBrowserCollector._find_dropdown_in_line(parent, dropdown_label)
+        dropdown.scroll_into_view_if_needed(timeout=3000)
+        for trigger_sel in (
+            ".el-dropdown-selfdefine",
+            ".refer-label",
+            ".star-score-button",
+            ".base-market-dropdown-button",
+        ):
+            trigger = dropdown.locator(trigger_sel).first
+            try:
+                if trigger.is_visible(timeout=800):
+                    trigger.click()
+                    return True
+            except Exception:
+                continue
+        dropdown.click()
+        return True
+
+    @staticmethod
+    def _click_dropdown_filter(
+        page,
+        parent_line: str,
+        dropdown_label: str,
+        option: str,
+        section: str | None = None,
+    ) -> bool:
+        if not option or option == "不限":
+            return False
+        try:
+            section_loc = XingtuBrowserCollector._filter_section_locator(page, section)
+            parent = section_loc.locator(".market-filter-wrapper--line").filter(has_text=parent_line).first
+            parent.scroll_into_view_if_needed(timeout=3000)
+            XingtuBrowserCollector._open_dropdown(parent, dropdown_label)
+            page.wait_for_timeout(500)
+
+            menu = page.locator(".el-dropdown-menu:visible").last
+            item = menu.get_by_text(option, exact=True).first
+            if not item.is_visible(timeout=1500):
+                item = page.get_by_text(option, exact=True).last
+            item.click()
+            logger.info("Clicked dropdown filter %s=%s", dropdown_label, option)
+            return True
+        except Exception:
+            logger.debug(
+                "Dropdown filter click failed: %s/%s=%s",
+                parent_line,
+                dropdown_label,
+                option,
+                exc_info=True,
+            )
+        return False
+
+    @staticmethod
+    def _fans_panel_section(option: str) -> str:
+        if "占比大于" in option:
+            return "粉丝性别"
+        return "粉丝年龄"
+
+    @staticmethod
+    def _click_fans_panel_option(page, option: str) -> bool:
+        panel = page.locator("div.panel").filter(has_text="粉丝年龄").first
+        section = XingtuBrowserCollector._fans_panel_section(option)
+        block = panel.locator("div.panel-content").filter(has_text=section).first
+        block.locator("input.el-input__inner").first.click()
+        page.wait_for_timeout(500)
+        item = block.locator("li.el-select-dropdown__item").filter(has_text=option).first
+        if not item.is_visible(timeout=1200):
+            item = page.locator("div.el-select-dropdown:visible li.el-select-dropdown__item").filter(
+                has_text=option
+            ).first
+        item.click()
+        page.wait_for_timeout(300)
+        return True
+
+    @staticmethod
+    def _click_fans_panel_options(page, options: list[str], section: str | None = "匹配度") -> bool:
+        if not options:
+            return False
+        try:
+            section_loc = XingtuBrowserCollector._filter_section_locator(page, section)
+            parent = section_loc.locator(".market-filter-wrapper--line").filter(has_text="受众画像").first
+            parent.scroll_into_view_if_needed(timeout=3000)
+            XingtuBrowserCollector._open_dropdown(parent, "粉丝画像")
+            page.wait_for_timeout(900)
+
+            for option in options:
+                XingtuBrowserCollector._click_fans_panel_option(page, option)
+
+            panel = page.locator("div.panel").filter(has_text="粉丝年龄").first
+            panel.get_by_text("确定", exact=True).click()
+            page.wait_for_timeout(400)
+            logger.info("Clicked fans panel options: %s", ", ".join(options))
+            return True
+        except Exception:
+            logger.debug("Fans panel options click failed: %s", options, exc_info=True)
+        return False
+
+    @staticmethod
+    def _click_fans_panel_filter(
+        page,
+        parent_line: str,
+        dropdown_label: str,
+        option: str,
+        section: str | None = None,
+    ) -> bool:
+        return XingtuBrowserCollector._click_fans_panel_options(page, [option], section)
+
+    @staticmethod
+    def _click_quote_duration(page, option: str) -> bool:
+        """性价比区块的合作数据 -> 达人报价"""
+        if not option or option == "不限":
+            return False
+        try:
+            section_loc = XingtuBrowserCollector._filter_section_locator(page, "性价比")
+            line = section_loc.locator(".market-filter-wrapper--line").filter(has_text="合作数据").first
+            line.scroll_into_view_if_needed(timeout=3000)
+            trigger = line.get_by_text("达人报价", exact=False).first
+            trigger.click()
+            page.wait_for_timeout(600)
+            for exact in (True, False):
+                tag = page.get_by_text(option, exact=exact).last
+                if tag.is_visible(timeout=1200):
+                    tag.click()
+                    logger.info("Clicked quote_duration=%s", option)
+                    return True
+        except Exception:
+            logger.debug("Quote duration click failed: %s", option, exc_info=True)
+
+        return XingtuBrowserCollector._click_inline_filter(page, "合作数据", option, "性价比")
 
     @staticmethod
     def _confirm_filter_panel(page) -> None:
-        """达人类型等筛选项会弹出子面板，勾选全选并确认"""
-        for text in ("全选", "确定", "确认"):
+        """粉丝画像等弹层确认，不点击「全选」避免覆盖已选条件"""
+        for text in ("确定", "确认"):
             try:
-                el = page.get_by_text(text, exact=True).first
-                if el.is_visible(timeout=600):
+                el = page.get_by_text(text, exact=True).last
+                if el.is_visible(timeout=800):
                     el.click()
                     page.wait_for_timeout(400)
+                    return
             except Exception:
                 continue
         try:
@@ -666,56 +884,20 @@ class XingtuBrowserCollector:
 
     @staticmethod
     def _click_theme_tag(page, label: str) -> bool:
-        try:
-            section = page.get_by_text("主题推荐", exact=True).first
-            if section.is_visible(timeout=1500):
-                container = section.locator(
-                    "xpath=ancestor::*[contains(@class,'filter') or contains(@class,'section') or contains(@class,'block')][1]"
-                )
-                tag = container.get_by_text(label, exact=True).first
-                if tag.is_visible(timeout=1500):
-                    tag.click()
-                    return True
-        except Exception:
-            pass
-        return XingtuBrowserCollector._click_checkbox_option(page, label)
-
-    @staticmethod
-    def _click_filter_tag(page, row_label: str, option: str) -> bool:
-        if not option or option == "不限":
+        if not label:
             return False
         try:
-            label = page.get_by_text(row_label, exact=True).first
-            if not label.is_visible(timeout=1500):
-                return False
-            row = label.locator(
-                "xpath=ancestor::*[contains(@class,'filter') or contains(@class,'row') "
-                "or contains(@class,'item') or contains(@class,'line')][1]"
-            )
-            tag = row.get_by_text(option, exact=True).first
+            section_loc = XingtuBrowserCollector._filter_section_locator(page, "主题推荐")
+            line = section_loc.locator(".market-filter-wrapper--line").first
+            line.scroll_into_view_if_needed(timeout=3000)
+            page.wait_for_timeout(300)
+            tag = line.get_by_text(label, exact=True).first
             if tag.is_visible(timeout=1500):
                 tag.click()
+                logger.info("Clicked theme tag=%s", label)
                 return True
         except Exception:
-            pass
-        try:
-            tag = page.get_by_text(option, exact=True).first
-            if tag.is_visible(timeout=1000):
-                tag.click()
-                return True
-        except Exception:
-            pass
-        return False
-
-    @staticmethod
-    def _click_checkbox_option(page, label: str) -> bool:
-        try:
-            item = page.get_by_text(label, exact=True).first
-            if item.is_visible(timeout=1500):
-                item.click()
-                return True
-        except Exception:
-            pass
+            logger.debug("Theme tag click failed: %s", label, exc_info=True)
         return False
 
     @staticmethod
@@ -800,7 +982,8 @@ class XingtuBrowserCollector:
                         const link = cells[0]?.querySelector('a[href*="author-homepage"], a[href*="/creator/"]');
                         if (link) {
                             const href = link.getAttribute('href') || '';
-                            const match = href.match(/(\\d{11,20})/);
+                            const match = href.match(/author-homepage\\/(?:douyin-video|abstract|live|short-video)\\/(\\d{11,20})/i)
+                                || href.match(/(\\d{11,20})/);
                             if (match) item.author_id = match[1];
                         }
                         if (Object.keys(item).length > 1) results.push(item);

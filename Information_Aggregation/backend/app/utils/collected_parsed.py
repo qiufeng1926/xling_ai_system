@@ -52,19 +52,34 @@ def resolve_collected_profile_url(
     profile_url: str | None = None,
     extra_data: dict | None = None,
 ) -> str | None:
-    """从采集结果解析主页链接，必要时用 platform_uid 拼装"""
+    """从采集结果解析主页链接，必要时用 star_id 拼装"""
     if profile_url and is_valid_profile_url(profile_url, platform):
         return profile_url
 
     parsed = parse_collected_parsed(extra_data, platform) if extra_data else {}
-    for key in ("profile_url", "douyin_homepage", "xingtu_homepage", "pgy_homepage"):
+    for key in ("xingtu_homepage", "profile_url", "douyin_homepage", "pgy_homepage"):
         candidate = parsed.get(key)
         if candidate and is_valid_profile_url(str(candidate), platform):
             return str(candidate)
 
-    if platform == "douyin" and platform_uid:
-        from app.utils.xingtu_fields import build_xingtu_homepage, _is_valid_star_id
+    if platform == "douyin":
+        from app.utils.xingtu_fields import (
+            _is_valid_star_id,
+            _pick_star_id,
+            build_xingtu_homepage,
+            extract_star_id_from_profile_url,
+        )
 
+        raw = extra_data or {}
+        xingtu_raw = raw.get("xingtu_raw") if isinstance(raw.get("xingtu_raw"), dict) else {}
+        star_id = (
+            parsed.get("star_id")
+            or _pick_star_id(xingtu_raw)
+            or _pick_star_id(raw)
+            or extract_star_id_from_profile_url(profile_url)
+        )
+        if star_id and _is_valid_star_id(str(star_id)):
+            return build_xingtu_homepage(str(star_id))
         if _is_valid_star_id(str(platform_uid)):
             return build_xingtu_homepage(str(platform_uid))
 

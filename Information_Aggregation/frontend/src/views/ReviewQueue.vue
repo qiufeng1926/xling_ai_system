@@ -249,6 +249,16 @@ const parsedData = computed(() => {
 const profileLink = computed(() => {
   const item = currentItem.value
   if (!item) return ''
+  if (item.platform === 'douyin') {
+    return (
+      item.xingtu_homepage ||
+      item.profile_url ||
+      item.douyin_homepage ||
+      (parsedData.value.xingtu_homepage as string) ||
+      (parsedData.value.profile_url as string) ||
+      ''
+    )
+  }
   return (
     item.profile_url ||
     item.xhs_homepage ||
