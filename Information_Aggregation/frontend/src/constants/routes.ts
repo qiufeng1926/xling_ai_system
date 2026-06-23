@@ -27,7 +27,9 @@ export const MEETING_ROUTES = {
 } as const
 
 export const FLYBOOK_ROUTES = {
-  home: '/flybook',
+  home: '/flybook/messenger',
+  messenger: '/flybook/messenger',
+  docs: '/flybook/docs',
 } as const
 
 export const QYWECHAT_ROUTES = {
@@ -57,8 +59,10 @@ export const LEGACY_REDIRECTS: Record<string, string> = {
   '/agencies': INFLUENCER_ROUTES.agencies,
   '/access-review': INFLUENCER_ROUTES.accessReview,
   '/users': INFLUENCER_ROUTES.users,
-  '/feishu': FLYBOOK_ROUTES.home,
-  '/feishu/': FLYBOOK_ROUTES.home,
+  '/feishu': FLYBOOK_ROUTES.messenger,
+  '/feishu/': FLYBOOK_ROUTES.messenger,
+  '/flybook': FLYBOOK_ROUTES.messenger,
+  '/flybook/': FLYBOOK_ROUTES.messenger,
   '/wecom/mail': QYWECHAT_ROUTES.mail,
   '/wecom/approval': QYWECHAT_ROUTES.approval,
   '/wecom': QYWECHAT_ROUTES.mail,

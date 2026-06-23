@@ -12,7 +12,31 @@
         </div>
       </div>
 
-      <el-alert type="info" :closable="false" show-icon title="为何不能内嵌？">
+      <el-alert
+        v-if="bindStatus?.bound"
+        type="success"
+        :closable="false"
+        show-icon
+        :title="`已绑定飞书：${bindStatus.feishu_name || '飞书用户'}`"
+      >
+        <template #default>
+          绑定信息已保存，下次打开飞书窗口无需再次授权（飞书网页会话在浏览器中保持登录）。
+        </template>
+      </el-alert>
+
+      <el-alert
+        v-else
+        type="warning"
+        :closable="false"
+        show-icon
+        title="尚未绑定飞书账号"
+      >
+        <template #default>
+          首次使用请先绑定您的飞书账号，绑定后将与当前 xlink 用户关联并保存授权信息。
+        </template>
+      </el-alert>
+
+      <el-alert type="info" :closable="false" show-icon title="为何不能内嵌？" class="flybook-page__tip">
         <template #default>
           飞书只允许在字节/飞书自有域名下被嵌入。在 xlink 里用 iframe 加载会触发浏览器拦截，
           控制台会出现 <code>frame-ancestors</code> 相关报错，属于飞书安全策略，无法通过前端配置绕过。
@@ -20,9 +44,23 @@
       </el-alert>
 
       <div class="flybook-page__actions">
-        <el-button type="primary" size="large" @click="openFlybookWindow">
-          打开飞书窗口
+        <el-button
+          v-if="!bindStatus?.bound"
+          type="primary"
+          size="large"
+          :loading="binding"
+          @click="handleBindAndOpen"
+        >
+          绑定飞书并打开
         </el-button>
+        <template v-else>
+          <el-button type="primary" size="large" @click="openFlybookWindow">
+            打开飞书窗口
+          </el-button>
+          <el-button size="large" :loading="binding" @click="handleRebind">
+            重新绑定
+          </el-button>
+        </template>
         <el-button size="large" @click="openFlybookTab">在新标签页打开</el-button>
         <el-button v-if="windowOpen" size="large" link type="primary" @click="focusFlybookWindow">
           聚焦已打开的飞书窗口
@@ -30,7 +68,7 @@
       </div>
 
       <p v-if="windowOpen" class="flybook-page__status">
-        飞书已在独立窗口中运行，请切换到该窗口收发消息；关闭窗口后可再次点击上方按钮重新打开。
+        飞书已在独立窗口中运行，请切换到该窗口收发消息。
       </p>
 
       <p class="flybook-page__url">
@@ -42,10 +80,20 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import {
+  getFeishuBindStatus,
+  startFeishuBind,
+  type FeishuBindStatus,
+} from '@/api/flybook'
+import { FLYBOOK_ROUTES } from '@/constants/routes'
 
 const DEFAULT_FLYBOOK_URL = 'https://gcnnna81ata3.feishu.cn/next/messenger'
 const FLYBOOK_WINDOW_NAME = 'xlink-flybook-messenger'
-const AUTO_OPEN_KEY = 'xlink_flybook_auto_opened'
+
+const route = useRoute()
+const router = useRouter()
 
 const flybookUrl = computed(() => {
   const fromEnv =
@@ -53,9 +101,20 @@ const flybookUrl = computed(() => {
   return fromEnv || DEFAULT_FLYBOOK_URL
 })
 
+const bindStatus = ref<FeishuBindStatus | null>(null)
+const binding = ref(false)
 const windowOpen = ref(false)
 let flybookWindow: Window | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
+
+async function loadBindStatus() {
+  try {
+    const res = await getFeishuBindStatus()
+    bindStatus.value = res.data
+  } catch {
+    bindStatus.value = null
+  }
+}
 
 function openFlybookWindow() {
   const features = [
@@ -96,12 +155,52 @@ function syncWindowState() {
   windowOpen.value = !!(flybookWindow && !flybookWindow.closed)
 }
 
+async function redirectToFeishuBind() {
+  binding.value = true
+  try {
+    const url = await startFeishuBind(FLYBOOK_ROUTES.home)
+    window.location.href = url
+  } finally {
+    binding.value = false
+  }
+}
+
+async function handleBindAndOpen() {
+  await redirectToFeishuBind()
+}
+
+async function handleRebind() {
+  await redirectToFeishuBind()
+}
+
+function handleBindQuery() {
+  const bind = String(route.query.bind || '')
+  const bindError = String(route.query.bind_error || '')
+
+  if (bind === 'success') {
+    ElMessage.success('飞书绑定成功')
+    void loadBindStatus().then(() => openFlybookWindow())
+  } else if (bindError) {
+    const messages: Record<string, string> = {
+      access_denied: '您已取消飞书授权',
+      invalid_state: '绑定状态无效或已过期，请重试',
+      missing_code: '飞书未返回授权码',
+      feishu_api_error: '飞书接口调用失败',
+      bind_failed: '绑定失败，该飞书账号可能已绑定其他用户',
+      missing_user: '无法识别绑定用户，请重新登录后再试',
+    }
+    ElMessage.error(messages[bindError] || '飞书绑定失败')
+  }
+
+  if (bind || bindError) {
+    router.replace({ path: FLYBOOK_ROUTES.messenger })
+  }
+}
+
 onMounted(() => {
   pollTimer = setInterval(syncWindowState, 1000)
-  if (!sessionStorage.getItem(AUTO_OPEN_KEY)) {
-    sessionStorage.setItem(AUTO_OPEN_KEY, '1')
-    openFlybookWindow()
-  }
+  void loadBindStatus()
+  handleBindQuery()
 })
 
 onUnmounted(() => {
@@ -154,6 +253,10 @@ onUnmounted(() => {
   color: #606266;
   line-height: 1.6;
   font-size: 14px;
+}
+
+.flybook-page__tip {
+  margin-top: 12px;
 }
 
 .flybook-page__desc code,

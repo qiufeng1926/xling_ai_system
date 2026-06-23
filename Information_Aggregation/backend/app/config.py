@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     # 是否开放自助注册（注册后为普通用户，权限需申请或由超管下发）
     ALLOW_PUBLIC_REGISTER: bool = True
 
+    # 飞书绑定（OAuth 由 flybook 服务处理，须配置相同 FLYBOOK_INTERNAL_KEY）
+    ALLOW_FEISHU_BIND: bool = True
+    FLYBOOK_INTERNAL_KEY: str = ""
+
     # 登录限流：窗口期内最大失败次数
     LOGIN_RATE_LIMIT_MAX_ATTEMPTS: int = 5
     LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 60

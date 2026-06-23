@@ -9,8 +9,10 @@ from utils.startup import validate_startup_config
 
 logger = setup_logging(service_name="flybook", console=True)
 
+from api.routes.auth import router as auth_router
 from api.routes.callback import router as callback_router
 from api.routes.config import router as config_router
+from api.routes.docs import router as docs_router
 
 
 @asynccontextmanager
@@ -53,8 +55,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router, prefix="/api/flybook")
 app.include_router(config_router, prefix="/api/flybook")
 app.include_router(callback_router, prefix="/api/flybook")
+app.include_router(docs_router, prefix="/api/flybook")
 
 
 @app.get("/health")

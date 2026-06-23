@@ -67,10 +67,20 @@
           </el-menu-item>
         </el-sub-menu>
 
-        <el-menu-item :index="FLYBOOK_ROUTES.home">
-          <el-icon><ChatDotRound /></el-icon>
-          <span>飞书</span>
-        </el-menu-item>
+        <el-sub-menu index="module-flybook">
+          <template #title>
+            <el-icon><ChatDotRound /></el-icon>
+            <span>飞书</span>
+          </template>
+          <el-menu-item :index="FLYBOOK_ROUTES.messenger">
+            <el-icon><ChatDotRound /></el-icon>
+            <span>飞书消息</span>
+          </el-menu-item>
+          <el-menu-item :index="FLYBOOK_ROUTES.docs">
+            <el-icon><Document /></el-icon>
+            <span>云文档</span>
+          </el-menu-item>
+        </el-sub-menu>
 
         <el-sub-menu v-if="showAdminMenus" index="module-qywechat">
           <template #title>
@@ -189,7 +199,8 @@ const activeMenu = computed(() => {
   if (path.startsWith('/meeting/create')) return MEETING_ROUTES.create
   if (path.startsWith('/meeting/room')) return MEETING_ROUTES.home
   if (path.startsWith('/meeting')) return MEETING_ROUTES.home
-  if (path.startsWith('/flybook') || path.startsWith('/feishu')) return FLYBOOK_ROUTES.home
+  if (path.startsWith('/flybook/docs')) return FLYBOOK_ROUTES.docs
+  if (path.startsWith('/flybook') || path.startsWith('/feishu')) return FLYBOOK_ROUTES.messenger
   if (path.startsWith('/qywechat/mail') || path.startsWith('/wecom/mail')) return QYWECHAT_ROUTES.mail
   if (path.startsWith('/qywechat/approval') || path.startsWith('/wecom/approval')) return QYWECHAT_ROUTES.approval
   if (path.startsWith('/qywechat') || path.startsWith('/wecom')) return QYWECHAT_ROUTES.mail
@@ -203,6 +214,9 @@ const defaultOpeneds = computed(() => {
   }
   if (route.path.startsWith('/qywechat') || route.path.startsWith('/wecom')) {
     return ['module-qywechat']
+  }
+  if (route.path.startsWith('/flybook') || route.path.startsWith('/feishu')) {
+    return ['module-flybook']
   }
   if (route.path.startsWith('/influencer/users') || route.path.startsWith('/influencer/access-review')) {
     return ['module-platform']

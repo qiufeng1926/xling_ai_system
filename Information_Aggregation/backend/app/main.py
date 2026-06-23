@@ -55,6 +55,24 @@ def migrate_rbac(db: Session) -> None:
             ):
                 if col not in cols:
                     db.execute(text(f"ALTER TABLE users ADD COLUMN {col} TINYINT DEFAULT 0"))
+            if "feishu_open_id" not in cols:
+                db.execute(text("ALTER TABLE users ADD COLUMN feishu_open_id VARCHAR(64) NULL"))
+            if "feishu_union_id" not in cols:
+                db.execute(text("ALTER TABLE users ADD COLUMN feishu_union_id VARCHAR(64) NULL"))
+            if "feishu_name" not in cols:
+                db.execute(text("ALTER TABLE users ADD COLUMN feishu_name VARCHAR(100) NULL"))
+            if "feishu_access_token" not in cols:
+                db.execute(text("ALTER TABLE users ADD COLUMN feishu_access_token TEXT NULL"))
+            if "feishu_refresh_token" not in cols:
+                db.execute(text("ALTER TABLE users ADD COLUMN feishu_refresh_token TEXT NULL"))
+            if "feishu_token_expires_at" not in cols:
+                db.execute(text("ALTER TABLE users ADD COLUMN feishu_token_expires_at DATETIME NULL"))
+            if "feishu_oauth_scope" not in cols:
+                db.execute(text("ALTER TABLE users ADD COLUMN feishu_oauth_scope VARCHAR(512) NULL"))
+            try:
+                db.execute(text("CREATE UNIQUE INDEX ix_users_feishu_open_id ON users (feishu_open_id)"))
+            except Exception:
+                pass
         if "view_access_requests" in inspector.get_table_names():
             req_cols = {c["name"] for c in inspector.get_columns("view_access_requests")}
             if "request_type" not in req_cols:

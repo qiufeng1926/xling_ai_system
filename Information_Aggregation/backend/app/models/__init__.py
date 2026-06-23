@@ -43,6 +43,13 @@ class User(Base):
     approve_meeting_download: Mapped[int] = mapped_column(default=0)
     approve_meeting_view: Mapped[int] = mapped_column(default=0)
     status: Mapped[int] = mapped_column(default=1)
+    feishu_open_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    feishu_union_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    feishu_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    feishu_access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    feishu_refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    feishu_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    feishu_oauth_scope: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

@@ -30,3 +30,37 @@ declare module 'axios' {
     silent?: boolean
   }
 }
+
+interface FeishuDocComponentAuth {
+  appId: string
+  openId: string
+  signature: string
+  timestamp: number
+  nonceStr: string
+  url: string
+  jsApiList: string[]
+}
+
+interface FeishuDocComponentSdkOptions {
+  src: string
+  mount: HTMLElement
+  auth: FeishuDocComponentAuth
+  size?: {
+    width?: string | number
+    height?: string | number
+    minHeight?: string | number
+  }
+}
+
+interface FeishuDocComponentSdkInstance {
+  start(): Promise<void>
+  destroy?(): void
+}
+
+interface FeishuDocComponentSdkConstructor {
+  new (options: FeishuDocComponentSdkOptions): FeishuDocComponentSdkInstance
+}
+
+interface Window {
+  DocComponentSdk?: FeishuDocComponentSdkConstructor
+}

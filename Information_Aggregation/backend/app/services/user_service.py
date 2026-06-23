@@ -99,6 +99,133 @@ class UserService:
         return user
 
     @staticmethod
+    def _feishu_docs_authorized(scope: str | None) -> bool:
+        if not scope:
+            return False
+        granted = {part.strip() for part in scope.split() if part.strip()}
+        drive_ok = bool(
+            granted
+            & {
+                "drive:drive",
+                "drive:drive:readonly",
+                "space:document:retrieve",
+            }
+        )
+        docx_ok = bool(
+            granted
+            & {
+                "docx:document",
+                "docx:document:create",
+                "docx:document:readonly",
+            }
+        )
+        return drive_ok and docx_ok
+
+    @staticmethod
+    def get_feishu_bind_status(user: User) -> dict:
+        from datetime import datetime, timezone
+
+        bound = bool(user.feishu_open_id)
+        token_valid = False
+        if bound and user.feishu_token_expires_at:
+            expires = user.feishu_token_expires_at
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            token_valid = expires > datetime.now(timezone.utc)
+        elif bound and user.feishu_access_token:
+            token_valid = True
+        docs_authorized = UserService._feishu_docs_authorized(user.feishu_oauth_scope) if bound else False
+        return {
+            "bound": bound,
+            "feishu_name": user.feishu_name if bound else None,
+            "token_valid": token_valid,
+            "docs_authorized": docs_authorized,
+            "oauth_scope": user.feishu_oauth_scope if bound else None,
+        }
+
+    @staticmethod
+    def bind_feishu_to_user(
+        db: Session,
+        *,
+        user_id: int,
+        open_id: str,
+        union_id: str | None,
+        name: str,
+        access_token: str,
+        refresh_token: str | None = None,
+        token_expires_at=None,
+        oauth_scope: str | None = None,
+    ) -> User:
+        from app.config import settings
+
+        if not settings.ALLOW_FEISHU_BIND:
+            raise ValueError("当前未开放飞书绑定")
+
+        open_id = open_id.strip()
+        if not open_id:
+            raise ValueError("飞书 open_id 不能为空")
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise ValueError("用户不存在")
+        if user.status != 1:
+            raise ValueError("账号已禁用")
+
+        other = db.query(User).filter(User.feishu_open_id == open_id, User.id != user_id).first()
+        if other:
+            raise ValueError("该飞书账号已绑定其他系统用户")
+
+        nickname = (name or "").strip()
+        user.feishu_name = nickname or user.feishu_name
+        user.feishu_open_id = open_id
+        user.feishu_union_id = union_id
+        user.feishu_access_token = access_token
+        user.feishu_refresh_token = refresh_token
+        user.feishu_token_expires_at = token_expires_at
+        if oauth_scope is not None:
+            user.feishu_oauth_scope = oauth_scope.strip() or None
+        db.commit()
+        db.refresh(user)
+        return user
+
+    @staticmethod
+    def get_feishu_token_bundle(db: Session, user_id: int) -> dict:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise ValueError("用户不存在")
+        if not user.feishu_open_id or not user.feishu_access_token:
+            raise ValueError("用户尚未绑定飞书")
+        return {
+            "open_id": user.feishu_open_id,
+            "union_id": user.feishu_union_id,
+            "access_token": user.feishu_access_token,
+            "refresh_token": user.feishu_refresh_token,
+            "token_expires_at": user.feishu_token_expires_at,
+        }
+
+    @staticmethod
+    def update_feishu_tokens(
+        db: Session,
+        *,
+        user_id: int,
+        access_token: str,
+        refresh_token: str | None = None,
+        token_expires_at=None,
+    ) -> User:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise ValueError("用户不存在")
+        if not user.feishu_open_id:
+            raise ValueError("用户尚未绑定飞书")
+        user.feishu_access_token = access_token.strip()
+        if refresh_token:
+            user.feishu_refresh_token = refresh_token.strip()
+        user.feishu_token_expires_at = token_expires_at
+        db.commit()
+        db.refresh(user)
+        return user
+
+    @staticmethod
     def create_user(db: Session, data: UserCreate, operator: User) -> User:
         role = normalize_role(data.role)
         if role not in MANAGEABLE_ROLES:

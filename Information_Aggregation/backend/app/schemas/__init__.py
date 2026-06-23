@@ -47,6 +47,48 @@ class UserRegister(BaseModel):
         return self
 
 
+class FeishuBindRequest(BaseModel):
+    user_id: int = Field(..., ge=1)
+    open_id: str = Field(..., min_length=8, max_length=64)
+    union_id: str | None = Field(default=None, max_length=64)
+    name: str = Field(..., min_length=1, max_length=100)
+    avatar_url: str | None = None
+    email: str | None = None
+    mobile: str | None = None
+    tenant_key: str | None = None
+    access_token: str = Field(..., min_length=8)
+    refresh_token: str | None = None
+    token_expires_at: datetime | None = None
+    oauth_scope: str | None = Field(default=None, max_length=512)
+
+
+class FeishuBindStatus(BaseModel):
+    bound: bool
+    feishu_name: str | None = None
+    token_valid: bool = False
+    docs_authorized: bool = False
+    oauth_scope: str | None = None
+
+
+class FeishuTokenBundleRequest(BaseModel):
+    user_id: int = Field(..., ge=1)
+
+
+class FeishuTokenBundleUpdateRequest(BaseModel):
+    user_id: int = Field(..., ge=1)
+    access_token: str = Field(..., min_length=8)
+    refresh_token: str | None = None
+    token_expires_at: datetime | None = None
+
+
+class FeishuTokenBundle(BaseModel):
+    open_id: str
+    union_id: str | None = None
+    access_token: str
+    refresh_token: str | None = None
+    token_expires_at: datetime | None = None
+
+
 class UserInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
