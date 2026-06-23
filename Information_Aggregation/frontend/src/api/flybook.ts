@@ -56,12 +56,28 @@ export interface FeishuCreateType {
   embed_editable: boolean
 }
 
+export interface FeishuImportFormats {
+  max_size_bytes: number
+  targets: Array<{
+    type: string
+    label: string
+    extensions: string[]
+  }>
+}
+
+export interface FeishuImportSuggest {
+  extension: string
+  targets: string[]
+  default_target: string
+}
+
 export interface FeishuFileCreated {
   type: string
   token: string
   title: string
   url?: string
   embed_editable?: boolean
+  import_warnings?: string[]
   /** @deprecated 兼容旧 docx 响应 */
   document_id?: string
 }
@@ -147,6 +163,32 @@ export function listDocsFiles(params?: { folder_token?: string; page_token?: str
     has_more: boolean
     page_token: string
   }>('/docs/files', { params })
+}
+
+export function getImportFormats() {
+  return flybookRequest.get<FeishuImportFormats>('/docs/import/formats')
+}
+
+export function suggestImportTarget(filename: string) {
+  return flybookRequest.get<FeishuImportSuggest>('/docs/import/suggest', {
+    params: { filename },
+  })
+}
+
+export function importFeishuFile(
+  file: File,
+  targetType: string,
+  options?: { folderToken?: string; displayName?: string }
+) {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('target_type', targetType)
+  if (options?.folderToken) form.append('folder_token', options.folderToken)
+  if (options?.displayName) form.append('display_name', options.displayName)
+  return flybookRequest.post<FeishuFileCreated>('/docs/import', form, {
+    timeout: 120000,
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
 }
 
 export function createFeishuFile(type: string, title: string, folderToken = '') {

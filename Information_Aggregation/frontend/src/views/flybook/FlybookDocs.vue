@@ -9,24 +9,41 @@
             <span v-if="bindStatus?.bound"> · 飞书：{{ bindStatus.feishu_name || '已绑定' }}</span>
           </p>
         </div>
-        <el-dropdown trigger="click" :disabled="!bindStatus?.bound || creating" @command="handleCreateCommand">
-          <el-button type="primary" size="small" :loading="creating" :disabled="!bindStatus?.bound">
-            新建
-            <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+        <div class="flybook-docs__head-actions">
+          <el-dropdown trigger="click" :disabled="!bindStatus?.bound || creating || importing" @command="handleCreateCommand">
+            <el-button type="primary" size="small" :loading="creating" :disabled="!bindStatus?.bound || importing">
+              新建
+              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  v-for="item in createTypes"
+                  :key="item.type"
+                  :command="item.type"
+                >
+                  {{ item.label }}
+                  <span v-if="!item.embed_editable" class="flybook-docs__ext-hint">（飞书页打开）</span>
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <el-button
+            size="small"
+            :loading="importing"
+            :disabled="!bindStatus?.bound || creating"
+            @click="triggerUpload"
+          >
+            上传
           </el-button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item
-                v-for="item in createTypes"
-                :key="item.type"
-                :command="item.type"
-              >
-                {{ item.label }}
-                <span v-if="!item.embed_editable" class="flybook-docs__ext-hint">（飞书页打开）</span>
-              </el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
+          <input
+            ref="fileInputRef"
+            type="file"
+            class="flybook-docs__file-input"
+            :accept="uploadAccept"
+            @change="handleFileInputChange"
+          />
+        </div>
       </div>
 
       <el-alert
@@ -54,7 +71,7 @@
         class="flybook-docs__bind-alert"
       >
         <template #default>
-          当前飞书绑定仅有消息权限，缺少云文档所需的 drive:drive、docx:document 等权限。
+          当前飞书绑定缺少云文档权限（如 drive:drive、docx:document、docs:document:import 等）。
           请点击下方按钮重新授权（不会解除账号绑定关系）。
           <div class="flybook-docs__rebind-row">
             <el-button type="primary" size="small" :loading="binding" @click="handleBind">
@@ -80,14 +97,14 @@
             <span class="flybook-docs__file-name" :title="file.name">{{ file.name }}</span>
           </li>
         </ul>
-        <el-empty v-else description="暂无云文档，点击右上角新建" />
+        <el-empty v-else description="暂无云文档，可新建或上传本地文件" />
       </el-scrollbar>
     </aside>
 
     <section class="flybook-docs__editor">
       <div v-if="!selectedDocUrl" class="flybook-docs__placeholder">
         <p>从左侧选择文件，或新建云文档开始。</p>
-        <p class="flybook-docs__hint">仅「文档 docx」可在本页内嵌编辑；表格、幻灯片等将在飞书页面打开。</p>
+        <p class="flybook-docs__hint">支持上传 Word / Excel / CSV / Markdown 等（≤20MB），导入后 docx 可内嵌编辑。</p>
         <p v-if="bindStatus?.bound && !bindStatus.token_valid" class="flybook-docs__hint">
           飞书授权可能已过期，请前往
           <router-link :to="FLYBOOK_ROUTES.messenger">飞书消息</router-link>
@@ -100,6 +117,21 @@
       </div>
       <div ref="mountRef" class="flybook-docs__mount" />
     </section>
+
+    <el-dialog v-model="importDialogVisible" title="选择导入类型" width="420px" :close-on-click-modal="!importing">
+      <p v-if="pendingImportFile" class="flybook-docs__import-name">
+        文件：{{ pendingImportFile.name }}
+      </p>
+      <el-radio-group v-model="importTargetType">
+        <el-radio v-for="t in importTargetOptions" :key="t" :value="t">
+          {{ typeLabel(t) }}
+        </el-radio>
+      </el-radio-group>
+      <template #footer>
+        <el-button :disabled="importing" @click="cancelImportDialog">取消</el-button>
+        <el-button type="primary" :loading="importing" @click="confirmImport">开始导入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -114,13 +146,19 @@ import {
   getDocsCreateTypes,
   getFeishuBindStatus,
   getFlybookConfig,
+  getFlybookErrorMessage,
+  getImportFormats,
+  importFeishuFile,
   isFeishuScopeMissingError,
   listDocsFiles,
   loadFeishuDocsSdk,
   startFeishuBind,
+  suggestImportTarget,
   type FeishuBindStatus,
   type FeishuCreateType,
   type FeishuDriveFile,
+  type FeishuFileCreated,
+  type FeishuImportFormats,
 } from '@/api/flybook'
 import { FLYBOOK_ROUTES } from '@/constants/routes'
 import { useUserStore } from '@/stores/user'
@@ -139,6 +177,7 @@ const bindStatus = ref<FeishuBindStatus | null>(null)
 const binding = ref(false)
 const loadingList = ref(false)
 const creating = ref(false)
+const importing = ref(false)
 const mounting = ref(false)
 const files = ref<FeishuDriveFile[]>([])
 const createTypes = ref<FeishuCreateType[]>([
@@ -155,6 +194,24 @@ const selectedToken = ref('')
 const selectedDocUrl = ref('')
 const needsDocsReauth = ref(false)
 const mountRef = ref<HTMLElement | null>(null)
+const fileInputRef = ref<HTMLInputElement | null>(null)
+const importFormats = ref<FeishuImportFormats | null>(null)
+const importDialogVisible = ref(false)
+const importTargetType = ref('')
+const importTargetOptions = ref<string[]>([])
+const pendingImportFile = ref<File | null>(null)
+
+const uploadAccept = computed(() => {
+  const targets = importFormats.value?.targets
+  if (!targets?.length) return ''
+  const exts = new Set<string>()
+  for (const t of targets) {
+    for (const ext of t.extensions) exts.add(ext)
+  }
+  return Array.from(exts)
+    .map((ext) => `.${ext}`)
+    .join(',')
+})
 
 let docSdk: { destroy?: () => void; start: () => Promise<void> } | null = null
 
@@ -290,6 +347,99 @@ async function loadFiles() {
   }
 }
 
+async function openCreatedFile(created: FeishuFileCreated) {
+  const file: FeishuDriveFile = {
+    token: created.token,
+    name: created.title || '未命名',
+    type: created.type,
+    url: created.url,
+    embed_editable: created.embed_editable,
+  }
+  files.value = [file, ...files.value.filter((f) => f.token !== file.token)]
+  await openDocument(file)
+}
+
+function triggerUpload() {
+  if (needsDocsReauth.value || !bindStatus.value?.docs_authorized) {
+    ElMessage.warning('请先重新授权云文档权限')
+    return
+  }
+  fileInputRef.value?.click()
+}
+
+function resetFileInput() {
+  if (fileInputRef.value) fileInputRef.value.value = ''
+}
+
+function cancelImportDialog() {
+  if (importing.value) return
+  importDialogVisible.value = false
+  pendingImportFile.value = null
+  resetFileInput()
+}
+
+async function runImport(file: File, targetType: string) {
+  importing.value = true
+  try {
+    const created = await importFeishuFile(file, targetType, { folderToken: folderToken.value })
+    if (created.import_warnings?.length) {
+      ElMessage.warning(`导入完成：${created.import_warnings.join('；')}`)
+    } else {
+      ElMessage.success('导入成功')
+    }
+    await openCreatedFile(created)
+  } catch (err) {
+    if (isFeishuScopeMissingError(err)) {
+      needsDocsReauth.value = true
+    } else {
+      ElMessage.error(getFlybookErrorMessage(err, '导入失败'))
+    }
+  } finally {
+    importing.value = false
+    pendingImportFile.value = null
+    importDialogVisible.value = false
+    resetFileInput()
+  }
+}
+
+async function handleFileInputChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  const maxBytes = importFormats.value?.max_size_bytes ?? 20 * 1024 * 1024
+  if (file.size > maxBytes) {
+    ElMessage.error(`文件超过 ${Math.floor(maxBytes / (1024 * 1024))}MB 上限`)
+    resetFileInput()
+    return
+  }
+
+  try {
+    const suggest = await suggestImportTarget(file.name)
+    if (!suggest.targets.length) {
+      ElMessage.error('不支持的文件格式')
+      resetFileInput()
+      return
+    }
+    if (suggest.targets.length === 1 || suggest.default_target) {
+      await runImport(file, suggest.default_target || suggest.targets[0])
+      return
+    }
+    pendingImportFile.value = file
+    importTargetOptions.value = suggest.targets
+    importTargetType.value = suggest.targets[0]
+    importDialogVisible.value = true
+  } catch (err) {
+    ElMessage.error(getFlybookErrorMessage(err, '无法识别导入类型'))
+    resetFileInput()
+  }
+}
+
+async function confirmImport() {
+  if (!pendingImportFile.value || !importTargetType.value) return
+  await runImport(pendingImportFile.value, importTargetType.value)
+}
+
 async function handleCreateCommand(fileType: string) {
   if (needsDocsReauth.value || !bindStatus.value?.docs_authorized) {
     ElMessage.warning('请先重新授权云文档权限')
@@ -303,15 +453,7 @@ async function handleCreateCommand(fileType: string) {
       `xlink ${label} ${new Date().toLocaleString('zh-CN')}`,
       folderToken.value
     )
-    const file: FeishuDriveFile = {
-      token: created.token,
-      name: created.title || `未命名${label}`,
-      type: created.type || fileType,
-      url: created.url,
-      embed_editable: created.embed_editable,
-    }
-    files.value = [file, ...files.value]
-    await openDocument(file)
+    await openCreatedFile(created)
     ElMessage.success(`${label}已创建`)
   } catch (err) {
     if (isFeishuScopeMissingError(err)) {
@@ -367,6 +509,11 @@ async function initPage() {
     } catch {
       /* 使用默认 createTypes */
     }
+    try {
+      importFormats.value = await getImportFormats()
+    } catch {
+      /* 使用默认 accept / 大小限制 */
+    }
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '加载飞书配置失败')
     return
@@ -416,6 +563,24 @@ onBeforeUnmount(() => {
   padding: 16px;
   border-bottom: 1px solid #ebeef5;
   gap: 12px;
+}
+
+.flybook-docs__head-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.flybook-docs__file-input {
+  display: none;
+}
+
+.flybook-docs__import-name {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #606266;
+  word-break: break-all;
 }
 
 .flybook-docs__sidebar-head h2 {
