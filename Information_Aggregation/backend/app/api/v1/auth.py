@@ -38,9 +38,19 @@ def _issue_portal_token(user: User) -> ResponseBase[Token]:
 
 @router.get("/feishu/status", response_model=ResponseBase[FeishuBindStatus])
 def feishu_bind_status(current_user: User = Depends(get_current_user)):
-    """当前用户的飞书绑定状态"""
+    """当前 xlink 登录用户各自的飞书绑定状态"""
     data = UserService.get_feishu_bind_status(current_user)
     return ResponseBase(data=FeishuBindStatus(**data))
+
+
+@router.post("/feishu/unbind", response_model=ResponseBase[dict])
+def feishu_unbind(db: DbSession, current_user: User = Depends(get_current_user)):
+    """解除当前 xlink 用户与飞书的绑定（不影响其他用户）"""
+    try:
+        UserService.unbind_feishu(db, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return ResponseBase(data={"bound": False}, message="已解除飞书绑定")
 
 
 @router.post("/feishu/bind", response_model=ResponseBase[dict])

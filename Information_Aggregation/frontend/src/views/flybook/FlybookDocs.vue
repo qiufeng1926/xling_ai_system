@@ -2,16 +2,31 @@
   <div class="flybook-docs">
     <aside class="flybook-docs__sidebar">
       <div class="flybook-docs__sidebar-head">
-        <h2>云文档</h2>
-        <el-button
-          type="primary"
-          size="small"
-          :loading="creating"
-          :disabled="!bindStatus?.bound"
-          @click="handleCreateDoc"
-        >
-          新建
-        </el-button>
+        <div>
+          <h2>云文档</h2>
+          <p v-if="portalLabel" class="flybook-docs__account">
+            xlink：{{ portalLabel }}
+            <span v-if="bindStatus?.bound"> · 飞书：{{ bindStatus.feishu_name || '已绑定' }}</span>
+          </p>
+        </div>
+        <el-dropdown trigger="click" :disabled="!bindStatus?.bound || creating" @command="handleCreateCommand">
+          <el-button type="primary" size="small" :loading="creating" :disabled="!bindStatus?.bound">
+            新建
+            <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item
+                v-for="item in createTypes"
+                :key="item.type"
+                :command="item.type"
+              >
+                {{ item.label }}
+                <span v-if="!item.embed_editable" class="flybook-docs__ext-hint">（飞书页打开）</span>
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
 
       <el-alert
@@ -23,7 +38,7 @@
         class="flybook-docs__bind-alert"
       >
         <template #default>
-          云文档需先绑定飞书账号并授权文档权限。
+          云文档按 xlink 账号隔离，请绑定<strong>您本人</strong>的飞书账号（当前：{{ portalLabel || '未登录' }}）。
           <el-button link type="primary" :loading="binding" @click="handleBind">
             去绑定
           </el-button>
@@ -58,17 +73,21 @@
             :class="{ active: selectedToken === file.token }"
             @click="openDocument(file)"
           >
-            <span class="flybook-docs__file-icon">{{ fileIcon(file.type) }}</span>
+            <span
+              class="flybook-docs__file-icon"
+              :class="`flybook-docs__file-icon--${file.type}`"
+            >{{ fileIcon(file.type) }}</span>
             <span class="flybook-docs__file-name" :title="file.name">{{ file.name }}</span>
           </li>
         </ul>
-        <el-empty v-else description="暂无文档，点击右上角新建" />
+        <el-empty v-else description="暂无云文档，点击右上角新建" />
       </el-scrollbar>
     </aside>
 
     <section class="flybook-docs__editor">
       <div v-if="!selectedDocUrl" class="flybook-docs__placeholder">
-        <p>从左侧选择文档，或新建一篇云文档开始编辑。</p>
+        <p>从左侧选择文件，或新建云文档开始。</p>
+        <p class="flybook-docs__hint">仅「文档 docx」可在本页内嵌编辑；表格、幻灯片等将在飞书页面打开。</p>
         <p v-if="bindStatus?.bound && !bindStatus.token_valid" class="flybook-docs__hint">
           飞书授权可能已过期，请前往
           <router-link :to="FLYBOOK_ROUTES.messenger">飞书消息</router-link>
@@ -85,13 +104,14 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Loading } from '@element-plus/icons-vue'
+import { ArrowDown, Loading } from '@element-plus/icons-vue'
 import {
-  createFeishuDoc,
+  createFeishuFile,
   getDocsComponentAuth,
+  getDocsCreateTypes,
   getFeishuBindStatus,
   getFlybookConfig,
   isFeishuScopeMissingError,
@@ -99,12 +119,21 @@ import {
   loadFeishuDocsSdk,
   startFeishuBind,
   type FeishuBindStatus,
+  type FeishuCreateType,
   type FeishuDriveFile,
 } from '@/api/flybook'
 import { FLYBOOK_ROUTES } from '@/constants/routes'
+import { useUserStore } from '@/stores/user'
 
 const route = useRoute()
 const router = useRouter()
+const userStore = useUserStore()
+
+const portalLabel = computed(() => {
+  const fromStatus = bindStatus.value?.portal_nickname || bindStatus.value?.portal_username
+  if (fromStatus) return fromStatus
+  return userStore.userInfo?.nickname || userStore.userInfo?.username || ''
+})
 
 const bindStatus = ref<FeishuBindStatus | null>(null)
 const binding = ref(false)
@@ -112,6 +141,13 @@ const loadingList = ref(false)
 const creating = ref(false)
 const mounting = ref(false)
 const files = ref<FeishuDriveFile[]>([])
+const createTypes = ref<FeishuCreateType[]>([
+  { type: 'docx', label: '文档', embed_editable: true },
+  { type: 'sheet', label: '表格', embed_editable: false },
+  { type: 'bitable', label: '多维表格', embed_editable: false },
+  { type: 'slides', label: '幻灯片', embed_editable: false },
+  { type: 'mindnote', label: '思维笔记', embed_editable: false },
+])
 const folderToken = ref('')
 const docBaseUrl = ref('')
 const sdkUrl = ref('')
@@ -126,16 +162,43 @@ function fileIcon(type: string) {
   if (type === 'docx' || type === 'doc') return '文'
   if (type === 'sheet') return '表'
   if (type === 'bitable') return '库'
+  if (type === 'slides') return '演'
+  if (type === 'mindnote') return '脑'
+  if (type === 'file') return '件'
   return '档'
+}
+
+function typeLabel(type: string) {
+  return createTypes.value.find((t) => t.type === type)?.label || type
+}
+
+function isEmbedEditable(type: string) {
+  return type === 'docx' || type === 'doc'
 }
 
 function buildDocUrl(file: FeishuDriveFile): string {
   if (file.url) return file.url
   const base = docBaseUrl.value.replace(/\/$/, '')
-  if (file.type === 'docx' || file.type === 'doc') {
-    return `${base}/docx/${file.token}`
+  const paths: Record<string, string> = {
+    docx: 'docx',
+    doc: 'docx',
+    sheet: 'sheets',
+    bitable: 'base',
+    slides: 'slides',
+    mindnote: 'mindnote',
+    file: 'file',
   }
-  return `${base}/${file.type}/${file.token}`
+  const path = paths[file.type] || file.type
+  return `${base}/${path}/${file.token}`
+}
+
+function openInFeishu(url: string, label: string) {
+  const opened = window.open(url, '_blank', 'noopener,noreferrer')
+  if (opened) {
+    ElMessage.success(`已在飞书打开${label}`)
+  } else {
+    ElMessage.warning('浏览器拦截了弹窗，请允许本站打开新窗口')
+  }
 }
 
 async function destroyEditor() {
@@ -183,12 +246,16 @@ async function mountEditor(docUrl: string) {
 }
 
 async function openDocument(file: FeishuDriveFile) {
-  if (file.type !== 'docx' && file.type !== 'doc') {
-    ElMessage.info('当前仅支持在云文档组件中打开 docx 文档')
-    return
-  }
   const url = buildDocUrl(file)
   selectedToken.value = file.token
+
+  if (!isEmbedEditable(file.type)) {
+    selectedDocUrl.value = ''
+    await destroyEditor()
+    openInFeishu(url, typeLabel(file.type))
+    return
+  }
+
   selectedDocUrl.value = url
   await nextTick()
   try {
@@ -211,7 +278,7 @@ async function loadFiles() {
   loadingList.value = true
   try {
     const res = await listDocsFiles({ folder_token: folderToken.value })
-    files.value = (res.files || []).filter((f) => f.type === 'docx' || f.type === 'doc')
+    files.value = res.files || []
     needsDocsReauth.value = false
   } catch (err) {
     files.value = []
@@ -223,24 +290,29 @@ async function loadFiles() {
   }
 }
 
-async function handleCreateDoc() {
+async function handleCreateCommand(fileType: string) {
   if (needsDocsReauth.value || !bindStatus.value?.docs_authorized) {
     ElMessage.warning('请先重新授权云文档权限')
     return
   }
+  const label = typeLabel(fileType)
   creating.value = true
   try {
-    const doc = await createFeishuDoc(`xlink 文档 ${new Date().toLocaleString('zh-CN')}`, folderToken.value)
-    const url = doc.url || `${docBaseUrl.value.replace(/\/$/, '')}/docx/${doc.document_id}`
+    const created = await createFeishuFile(
+      fileType,
+      `xlink ${label} ${new Date().toLocaleString('zh-CN')}`,
+      folderToken.value
+    )
     const file: FeishuDriveFile = {
-      token: doc.document_id,
-      name: doc.title || '未命名文档',
-      type: 'docx',
-      url,
+      token: created.token,
+      name: created.title || `未命名${label}`,
+      type: created.type || fileType,
+      url: created.url,
+      embed_editable: created.embed_editable,
     }
     files.value = [file, ...files.value]
     await openDocument(file)
-    ElMessage.success('文档已创建')
+    ElMessage.success(`${label}已创建`)
   } catch (err) {
     if (isFeishuScopeMissingError(err)) {
       needsDocsReauth.value = true
@@ -287,6 +359,14 @@ async function initPage() {
     docBaseUrl.value = cfg.doc_base_url
     sdkUrl.value = cfg.docs_component_sdk_url
     await loadFeishuDocsSdk(cfg.docs_component_sdk_url)
+    try {
+      const typesRes = await getDocsCreateTypes()
+      if (typesRes.types?.length) {
+        createTypes.value = typesRes.types
+      }
+    } catch {
+      /* 使用默认 createTypes */
+    }
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '加载飞书配置失败')
     return
@@ -331,16 +411,23 @@ onBeforeUnmount(() => {
 
 .flybook-docs__sidebar-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   padding: 16px;
   border-bottom: 1px solid #ebeef5;
+  gap: 12px;
 }
 
 .flybook-docs__sidebar-head h2 {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
+}
+
+.flybook-docs__account {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #909399;
 }
 
 .flybook-docs__bind-alert {
@@ -387,6 +474,18 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+.flybook-docs__file-icon--sheet { background: #34c724; }
+.flybook-docs__file-icon--bitable { background: #7b61ff; }
+.flybook-docs__file-icon--slides { background: #ff8800; }
+.flybook-docs__file-icon--mindnote { background: #14c0ff; }
+.flybook-docs__file-icon--file { background: #8f959e; }
+
+.flybook-docs__ext-hint {
+  margin-left: 4px;
+  font-size: 12px;
+  color: #909399;
 }
 
 .flybook-docs__file-name {

@@ -83,8 +83,19 @@ feishu_docs_component_sdk_url = (
 
 # OAuth scope：云文档需 drive / docx 权限（用户重新绑定后生效）
 feishu_oauth_scope = (
-    _env("FEISHU_OAUTH_SCOPE", "offline_access drive:drive docx:document docx:document:create")
-    or "offline_access drive:drive docx:document docx:document:create"
+    _env(
+        "FEISHU_OAUTH_SCOPE",
+        "offline_access drive:drive docx:document docx:document:create "
+        "sheets:spreadsheet sheets:spreadsheet:create "
+        "base:app:create bitable:app "
+        "wiki:wiki wiki:node:create",
+    )
+    or (
+        "offline_access drive:drive docx:document docx:document:create "
+        "sheets:spreadsheet sheets:spreadsheet:create "
+        "base:app:create bitable:app "
+        "wiki:wiki wiki:node:create"
+    )
 )
 
 log_dir = _env("LOG_DIR") or str(_project_root / "logs")

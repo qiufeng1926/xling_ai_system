@@ -22,6 +22,8 @@ class UserOut(BaseModel):
     approve_meeting_view: bool = False
     permissions: dict[str, bool] = Field(default_factory=dict)
     created_at: datetime
+    feishu_bound: bool = False
+    feishu_name: str | None = None
 
 
 class UserCreate(BaseModel):

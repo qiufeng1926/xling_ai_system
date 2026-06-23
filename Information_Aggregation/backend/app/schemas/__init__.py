@@ -68,6 +68,8 @@ class FeishuBindStatus(BaseModel):
     token_valid: bool = False
     docs_authorized: bool = False
     oauth_scope: str | None = None
+    portal_username: str | None = None
+    portal_nickname: str | None = None
 
 
 class FeishuTokenBundleRequest(BaseModel):

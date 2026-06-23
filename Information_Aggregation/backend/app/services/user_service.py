@@ -141,6 +141,8 @@ class UserService:
             "token_valid": token_valid,
             "docs_authorized": docs_authorized,
             "oauth_scope": user.feishu_oauth_scope if bound else None,
+            "portal_username": user.username,
+            "portal_nickname": user.nickname or user.username,
         }
 
     @staticmethod
@@ -184,6 +186,22 @@ class UserService:
         user.feishu_token_expires_at = token_expires_at
         if oauth_scope is not None:
             user.feishu_oauth_scope = oauth_scope.strip() or None
+        db.commit()
+        db.refresh(user)
+        return user
+
+    @staticmethod
+    def unbind_feishu(db: Session, user_id: int) -> User:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise ValueError("用户不存在")
+        user.feishu_open_id = None
+        user.feishu_union_id = None
+        user.feishu_name = None
+        user.feishu_access_token = None
+        user.feishu_refresh_token = None
+        user.feishu_token_expires_at = None
+        user.feishu_oauth_scope = None
         db.commit()
         db.refresh(user)
         return user
@@ -428,4 +446,6 @@ class UserService:
             **stored,
             "permissions": effective,
             "created_at": user.created_at,
+            "feishu_bound": bool(user.feishu_open_id),
+            "feishu_name": user.feishu_name if user.feishu_open_id else None,
         }

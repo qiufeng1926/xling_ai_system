@@ -12,6 +12,15 @@
         </div>
       </div>
 
+      <el-alert type="info" :closable="false" show-icon class="flybook-page__account-tip">
+        <template #title>个人绑定说明</template>
+        <template #default>
+          飞书绑定按 <strong>xlink 账号</strong> 隔离：当前登录
+          <strong>{{ portalLabel }}</strong>
+          需单独绑定自己的飞书账号。不同 xlink 用户互不影响；同一飞书账号不能绑定多个 xlink 用户。
+        </template>
+      </el-alert>
+
       <el-alert
         v-if="bindStatus?.bound"
         type="success"
@@ -20,7 +29,7 @@
         :title="`已绑定飞书：${bindStatus.feishu_name || '飞书用户'}`"
       >
         <template #default>
-          绑定信息已保存，下次打开飞书窗口无需再次授权（飞书网页会话在浏览器中保持登录）。
+          此绑定仅属于 xlink 账号「{{ portalLabel }}」。打开飞书窗口时将使用该飞书身份。
         </template>
       </el-alert>
 
@@ -32,7 +41,7 @@
         title="尚未绑定飞书账号"
       >
         <template #default>
-          首次使用请先绑定您的飞书账号，绑定后将与当前 xlink 用户关联并保存授权信息。
+          请使用<strong>您本人</strong>的飞书账号完成授权，绑定后将与 xlink 账号「{{ portalLabel }}」一一对应。
         </template>
       </el-alert>
 
@@ -60,6 +69,9 @@
           <el-button size="large" :loading="binding" @click="handleRebind">
             重新绑定
           </el-button>
+          <el-button size="large" :loading="unbinding" @click="handleUnbind">
+            解除绑定
+          </el-button>
         </template>
         <el-button size="large" @click="openFlybookTab">在新标签页打开</el-button>
         <el-button v-if="windowOpen" size="large" link type="primary" @click="focusFlybookWindow">
@@ -81,19 +93,28 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getFeishuBindStatus,
   startFeishuBind,
+  unbindFeishu,
   type FeishuBindStatus,
 } from '@/api/flybook'
 import { FLYBOOK_ROUTES } from '@/constants/routes'
+import { useUserStore } from '@/stores/user'
 
 const DEFAULT_FLYBOOK_URL = 'https://gcnnna81ata3.feishu.cn/next/messenger'
 const FLYBOOK_WINDOW_NAME = 'xlink-flybook-messenger'
 
 const route = useRoute()
 const router = useRouter()
+const userStore = useUserStore()
+
+const portalLabel = computed(() => {
+  const fromStatus = bindStatus.value?.portal_nickname || bindStatus.value?.portal_username
+  if (fromStatus) return fromStatus
+  return userStore.userInfo?.nickname || userStore.userInfo?.username || '当前用户'
+})
 
 const flybookUrl = computed(() => {
   const fromEnv =
@@ -103,6 +124,7 @@ const flybookUrl = computed(() => {
 
 const bindStatus = ref<FeishuBindStatus | null>(null)
 const binding = ref(false)
+const unbinding = ref(false)
 const windowOpen = ref(false)
 let flybookWindow: Window | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -171,6 +193,31 @@ async function handleBindAndOpen() {
 
 async function handleRebind() {
   await redirectToFeishuBind()
+}
+
+async function handleUnbind() {
+  try {
+    await ElMessageBox.confirm(
+      `确定解除 xlink 账号「${portalLabel.value}」与飞书的绑定？其他 xlink 用户的绑定不受影响。`,
+      '解除飞书绑定',
+      { type: 'warning', confirmButtonText: '解除绑定', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  unbinding.value = true
+  try {
+    await unbindFeishu()
+    bindStatus.value = {
+      bound: false,
+      feishu_name: null,
+      token_valid: false,
+      docs_authorized: false,
+    }
+    ElMessage.success('已解除飞书绑定')
+  } finally {
+    unbinding.value = false
+  }
 }
 
 function handleBindQuery() {
@@ -257,6 +304,10 @@ onUnmounted(() => {
 
 .flybook-page__tip {
   margin-top: 12px;
+}
+
+.flybook-page__account-tip {
+  margin-bottom: 12px;
 }
 
 .flybook-page__desc code,

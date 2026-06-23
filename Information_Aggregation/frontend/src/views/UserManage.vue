@@ -48,6 +48,12 @@
           <span v-else>—</span>
         </template>
       </el-table-column>
+      <el-table-column label="飞书绑定" width="120">
+        <template #default="{ row }">
+          <span v-if="row.feishu_bound">{{ row.feishu_name || '已绑定' }}</span>
+          <span v-else style="color: #909399">未绑定</span>
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="80">
         <template #default="{ row }">
           <el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">

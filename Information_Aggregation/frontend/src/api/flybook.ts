@@ -10,6 +10,8 @@ export interface FeishuBindStatus {
   token_valid: boolean
   docs_authorized: boolean
   oauth_scope?: string | null
+  portal_username?: string | null
+  portal_nickname?: string | null
 }
 
 export interface FlybookApiErrorDetail {
@@ -43,24 +45,25 @@ export interface FeishuDriveFile {
   name: string
   type: string
   url?: string
+  embed_editable?: boolean
   created_time?: string
   modified_time?: string
 }
 
-export interface FeishuComponentAuth {
-  appId: string
-  openId: string
-  signature: string
-  timestamp: number
-  nonceStr: string
-  url: string
-  jsApiList: string[]
+export interface FeishuCreateType {
+  type: string
+  label: string
+  embed_editable: boolean
 }
 
-export interface FeishuDocCreated {
-  document_id: string
-  title?: string
+export interface FeishuFileCreated {
+  type: string
+  token: string
+  title: string
   url?: string
+  embed_editable?: boolean
+  /** @deprecated 兼容旧 docx 响应 */
+  document_id?: string
 }
 
 const flybookRequest = axios.create({
@@ -103,6 +106,10 @@ export function getFeishuBindStatus() {
   return request.get<any, ApiResponse<FeishuBindStatus>>('/auth/feishu/status')
 }
 
+export function unbindFeishu() {
+  return request.post<any, ApiResponse<{ bound: boolean }>>('/auth/feishu/unbind')
+}
+
 export async function startFeishuBind(returnTo = '/flybook/messenger') {
   const data = await flybookRequest.post<{ authorize_url: string }>(
     '/auth/bind/start',
@@ -114,6 +121,20 @@ export async function startFeishuBind(returnTo = '/flybook/messenger') {
 
 export function getFlybookConfig() {
   return flybookRequest.get<FlybookConfig>('/config')
+}
+
+export interface FeishuComponentAuth {
+  appId: string
+  openId: string
+  signature: string
+  timestamp: number
+  nonceStr: string
+  url: string
+  jsApiList: string[]
+}
+
+export function getDocsCreateTypes() {
+  return flybookRequest.get<{ types: FeishuCreateType[] }>('/docs/create-types')
 }
 
 export function getDocsRootFolder() {
@@ -128,11 +149,17 @@ export function listDocsFiles(params?: { folder_token?: string; page_token?: str
   }>('/docs/files', { params })
 }
 
-export function createFeishuDoc(title: string, folderToken = '') {
-  return flybookRequest.post<FeishuDocCreated>('/docs/files', {
+export function createFeishuFile(type: string, title: string, folderToken = '') {
+  return flybookRequest.post<FeishuFileCreated>('/docs/files', {
+    type,
     title,
     folder_token: folderToken,
   })
+}
+
+/** @deprecated 使用 createFeishuFile('docx', title) */
+export function createFeishuDoc(title: string, folderToken = '') {
+  return createFeishuFile('docx', title, folderToken)
 }
 
 export function getDocsComponentAuth(pageUrl: string) {

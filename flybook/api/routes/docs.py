@@ -1,4 +1,4 @@
-"""飞书云文档 API（列表、创建、组件鉴权）"""
+"""飞书云文档 API（列表、多类型创建、组件鉴权）"""
 
 from __future__ import annotations
 
@@ -6,10 +6,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from api.auth_utils import get_current_user
-from api.portal_auth import PortalUser
-from integrations.feishu.docs import build_doc_url, create_document, get_root_folder_meta, list_files
-from integrations.feishu.errors import FeishuError
 from api.feishu_errors import feishu_error_to_http
+from api.portal_auth import PortalUser
+from integrations.feishu.docs import (
+    CREATE_TYPES,
+    create_cloud_file,
+    enrich_file_item,
+    get_root_folder_meta,
+    list_files,
+)
+from integrations.feishu.errors import FeishuError
+from integrations.feishu.file_types import CREATE_TYPE_LABELS, CREATE_TYPE_ORDER, LISTABLE_TYPES
 from services.feishu_session import ensure_user_access_token
 from services.jssdk_auth import build_component_auth
 from services.portal_tokens import PortalTokenError
@@ -25,6 +32,7 @@ class ComponentAuthRequest(BaseModel):
 
 class CreateDocRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
+    type: str = Field(default="docx", max_length=32)
     folder_token: str = Field(default="", max_length=128)
 
 
@@ -32,6 +40,21 @@ def _require_user_id(user: PortalUser) -> int:
     if user.user_id is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法识别当前用户")
     return int(user.user_id)
+
+
+@router.get("/create-types")
+def docs_create_types(_user: PortalUser = Depends(get_current_user)):
+    """前端「新建」菜单可选类型"""
+    return {
+        "types": [
+            {
+                "type": t,
+                "label": CREATE_TYPE_LABELS.get(t, t),
+                "embed_editable": t in {"docx"},
+            }
+            for t in CREATE_TYPE_ORDER
+        ]
+    }
 
 
 @router.post("/component-auth")
@@ -86,10 +109,14 @@ def docs_list_files(
     except FeishuError as exc:
         raise feishu_error_to_http(exc) from exc
 
-    files = data.get("files") or []
-    for item in files:
-        if isinstance(item, dict) and item.get("type") == "docx" and item.get("token"):
-            item["url"] = build_doc_url(item["token"], item.get("url"))
+    files = []
+    for item in data.get("files") or []:
+        if not isinstance(item, dict):
+            continue
+        file_type = (item.get("type") or "").strip()
+        if file_type not in LISTABLE_TYPES:
+            continue
+        files.append(enrich_file_item(item))
     return {
         "files": files,
         "has_more": bool(data.get("has_more")),
@@ -100,20 +127,35 @@ def docs_list_files(
 @router.post("/files")
 def docs_create_file(body: CreateDocRequest, user: PortalUser = Depends(get_current_user)):
     user_id = _require_user_id(user)
+    file_type = (body.type or "docx").strip().lower()
+    if file_type not in CREATE_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"不支持的类型: {body.type}，可选: {', '.join(sorted(CREATE_TYPES))}",
+        )
     try:
         access_token, _ = ensure_user_access_token(user_id=user_id)
-        document = create_document(
+        created = create_cloud_file(
             access_token,
+            file_type=file_type,
             title=body.title.strip(),
             folder_token=body.folder_token.strip(),
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except PortalTokenError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except FeishuError as exc:
         raise feishu_error_to_http(exc) from exc
 
     logger.info(
-        "创建飞书文档",
-        extra={"output_params": {"user_id": user_id, "document_id": document.get("document_id")}},
+        "创建飞书云文件",
+        extra={
+            "output_params": {
+                "user_id": user_id,
+                "type": file_type,
+                "token": created.get("token"),
+            }
+        },
     )
-    return document
+    return created
