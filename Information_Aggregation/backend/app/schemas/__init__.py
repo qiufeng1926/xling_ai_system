@@ -101,6 +101,7 @@ class UserInfo(BaseModel):
     role: str
     view_library: bool = False
     permissions: dict[str, bool] = Field(default_factory=dict)
+    account_status: str = "active"
 
 
 class TagBrief(BaseModel):

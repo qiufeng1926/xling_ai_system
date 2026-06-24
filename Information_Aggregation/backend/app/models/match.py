@@ -16,6 +16,7 @@ class MatchRequest(Base):
     requirements: Mapped[dict] = mapped_column(JSON, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     result_count: Mapped[int | None] = mapped_column(Integer)
+    transfer_pending_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     results: Mapped[list["MatchResult"]] = relationship(

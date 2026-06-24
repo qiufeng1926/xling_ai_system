@@ -108,6 +108,9 @@ class MatchService:
             match_request.result_count = 0
             raise
         finally:
+            if match_request.transfer_pending_user_id and match_request.status in ("completed", "failed"):
+                match_request.user_id = match_request.transfer_pending_user_id
+                match_request.transfer_pending_user_id = None
             db.commit()
             db.refresh(match_request)
 

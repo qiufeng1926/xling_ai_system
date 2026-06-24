@@ -54,9 +54,11 @@
           <span v-else style="color: #909399">未绑定</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="80">
+      <el-table-column label="状态" width="110">
         <template #default="{ row }">
-          <el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">
+          <el-tag v-if="row.account_status === 'offboarded'" type="info" size="small">已离职</el-tag>
+          <el-tag v-else-if="row.account_status === 'offboarding'" type="warning" size="small">申请中</el-tag>
+          <el-tag v-else :type="row.status === 1 ? 'success' : 'danger'" size="small">
             {{ row.status === 1 ? '启用' : '禁用' }}
           </el-tag>
         </template>
@@ -64,10 +66,18 @@
       <el-table-column prop="created_at" label="创建时间" min-width="160">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="180" fixed="right">
+      <el-table-column label="操作" width="240" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" :disabled="isOtherSuperAdmin(row)" @click="openEdit(row)">
             编辑
+          </el-button>
+          <el-button
+            v-if="row.account_status === 'offboarded'"
+            link
+            type="success"
+            @click="handleRehire(row.id)"
+          >
+            重新开通
           </el-button>
           <el-popconfirm title="确定删除该用户？" @confirm="handleDelete(row.id)">
             <template #reference>
@@ -169,6 +179,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { createUser, deleteUser, getUsers, updateUser, type ManagedUser } from '@/api/users'
+import { rehireUser } from '@/api/offboarding'
 import { ROLE_LABELS, isHiddenSuperUser } from '@/utils/permission'
 import { useUserStore } from '@/stores/user'
 
@@ -231,6 +242,7 @@ function canDeleteUser(row: ManagedUser) {
   if (row.id === currentUserId.value) return false
   if (isHiddenSuperUser(row.username)) return false
   if (row.role === 'super_admin' && !isHiddenSuperUser(currentUsername.value)) return false
+  if (row.account_status === 'offboarding' || row.account_status === 'offboarded') return false
   return true
 }
 
@@ -345,6 +357,12 @@ async function handleSave() {
 async function handleDelete(userId: number) {
   await deleteUser(userId)
   ElMessage.success('用户已删除')
+  loadData()
+}
+
+async function handleRehire(userId: number) {
+  await rehireUser(userId)
+  ElMessage.success('账号已重新开通')
   loadData()
 }
 

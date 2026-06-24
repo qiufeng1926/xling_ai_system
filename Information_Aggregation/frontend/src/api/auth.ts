@@ -12,6 +12,7 @@ export interface UserInfo {
   role: string
   view_library?: boolean
   permissions?: Record<string, boolean>
+  account_status?: string
 }
 
 export function login(username: string, password: string) {

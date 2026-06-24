@@ -119,6 +119,9 @@ def main():
         task.status = "completed"
         task.result_count = saved
         task.completed_at = datetime.now()
+        if task.transfer_pending_user_id:
+            task.user_id = task.transfer_pending_user_id
+            task.transfer_pending_user_id = None
         db.commit()
         print(json.dumps({"ok": True, "count": saved, "skipped_duplicates": skipped}))
 

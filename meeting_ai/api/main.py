@@ -27,6 +27,7 @@ from api.routes.settings import router as settings_router
 from api.routes.collaborative import router as collaborative_router
 from api.routes.meeting_access import router as meeting_access_router
 from api.routes.notifications import router as notifications_router
+from api.routes.internal_offboard import router as internal_offboard_router
 
 
 @asynccontextmanager
@@ -127,6 +128,12 @@ app.include_router(
     notifications_router,
     prefix="/api",
     tags=["通知"]
+)
+
+app.include_router(
+    internal_offboard_router,
+    prefix="/api",
+    tags=["内部-离职交接"]
 )
 
 

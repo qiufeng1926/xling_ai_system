@@ -114,6 +114,17 @@
             <el-icon><UserFilled /></el-icon>
             <span>用户管理</span>
           </el-menu-item>
+          <el-menu-item v-if="showUserManage" :index="INFLUENCER_ROUTES.offboardingManage">
+            <el-icon><Switch /></el-icon>
+            <span>离职交接</span>
+          </el-menu-item>
+          <el-menu-item
+            v-if="showOffboardingApply"
+            :index="INFLUENCER_ROUTES.offboardingApply"
+          >
+            <el-icon><DocumentRemove /></el-icon>
+            <span>离职申请</span>
+          </el-menu-item>
           <el-menu-item v-if="showAccessReview" :index="INFLUENCER_ROUTES.accessReview">
             <el-icon><Stamp /></el-icon>
             <span class="menu-item-with-badge">
@@ -189,6 +200,7 @@ import {
   canReviewMeetingDownload,
   canReviewMeetingView,
   canUseMatch,
+  isSuperAdmin,
   isUser,
   normalizeRole,
 } from '@/utils/permission'
@@ -207,6 +219,8 @@ const activeMenu = computed(() => {
   if (path.startsWith('/influencer/match')) return INFLUENCER_ROUTES.match
   if (path.startsWith('/influencer/agencies')) return INFLUENCER_ROUTES.agencies
   if (path.startsWith('/influencer/users')) return INFLUENCER_ROUTES.users
+  if (path.startsWith('/influencer/offboarding-manage')) return INFLUENCER_ROUTES.offboardingManage
+  if (path.startsWith('/influencer/offboarding-apply')) return INFLUENCER_ROUTES.offboardingApply
   if (path.startsWith('/influencer/access-review')) return INFLUENCER_ROUTES.accessReview
   if (path.startsWith('/meeting/solo')) return MEETING_ROUTES.solo
   if (path.startsWith('/meeting/records')) return MEETING_ROUTES.records
@@ -234,7 +248,7 @@ const defaultOpeneds = computed(() => {
   if (route.path.startsWith('/flybook') || route.path.startsWith('/feishu')) {
     return ['module-flybook']
   }
-  if (route.path.startsWith('/influencer/users') || route.path.startsWith('/influencer/access-review')) {
+  if (route.path.startsWith('/influencer/users') || route.path.startsWith('/influencer/access-review') || route.path.startsWith('/influencer/offboarding')) {
     return ['module-platform']
   }
   return ['module-influencer']
@@ -251,6 +265,9 @@ const role = computed(() => normalizeRole(userStore.userInfo?.role))
 const roleLabel = computed(() => ROLE_LABELS[role.value] || role.value)
 const showAdminMenus = computed(() => canUseMatch(role.value))
 const showUserManage = computed(() => canManageUsers(role.value))
+const showOffboardingApply = computed(
+  () => !isSuperAdmin(userStore.userInfo?.role) && userStore.userInfo?.account_status !== 'offboarded'
+)
 const showAccessReview = computed(
   () => canReviewAccess(role.value) || isUser(userStore.userInfo?.role)
 )

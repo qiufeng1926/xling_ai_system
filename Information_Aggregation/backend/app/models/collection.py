@@ -25,6 +25,7 @@ class CollectionTask(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    transfer_pending_user_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
 
     items: Mapped[list["CollectedInfluencer"]] = relationship(back_populates="task")
 

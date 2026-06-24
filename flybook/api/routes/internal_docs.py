@@ -8,7 +8,9 @@ from api.feishu_errors import feishu_error_to_http
 from integrations.feishu.docx_export import export_document_text
 from integrations.feishu.errors import FeishuError
 from integrations.feishu.file_types import build_file_url
+from services.document_mirror_all import list_all_files_recursive
 from services.feishu_session import ensure_user_access_token
+from services.portal_documents import register_document_mirror
 from services.portal_tokens import PortalTokenError
 from config.config import flybook_internal_key
 
@@ -45,3 +47,43 @@ def export_text(
         "content": exported.get("content") or "",
         "url": exported.get("url") or build_file_url(normalized, token),
     }
+
+
+@router.post("/mirror-all/{user_id}", dependencies=[Depends(_verify_internal_key)])
+def mirror_all_documents(user_id: int):
+    """离职交接：列举并镜像用户全部飞书云文档到 xlink"""
+    try:
+        access_token, _ = ensure_user_access_token(user_id=user_id)
+    except PortalTokenError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    files = list_all_files_recursive(access_token)
+    mirrored = 0
+    errors: list[str] = []
+    for item in files:
+        token = (item.get("token") or "").strip()
+        file_type = (item.get("type") or "docx").strip().lower()
+        title = (item.get("name") or item.get("title") or "未命名文档").strip()
+        url = (item.get("url") or "").strip()
+        content = ""
+        if file_type in {"docx", "doc"}:
+            try:
+                exported = export_document_text(access_token, token=token, file_type=file_type)
+                title = (exported.get("title") or title).strip()
+                url = (exported.get("url") or url).strip()
+                content = (exported.get("content") or "").strip()
+            except (FeishuError, ValueError) as exc:
+                errors.append(f"{token}: {str(exc)[:120]}")
+        try:
+            register_document_mirror(
+                user_id=user_id,
+                feishu_token=token,
+                feishu_type=file_type,
+                title=title,
+                feishu_url=url,
+                content=content,
+            )
+            mirrored += 1
+        except Exception as exc:
+            errors.append(f"{token}: register {str(exc)[:120]}")
+    return {"mirrored": mirrored, "total_found": len(files), "errors": errors}

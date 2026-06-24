@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 
+from app.constants.account_status import ACTIVE, OFFBOARDED, OFFBOARDING
 from app.constants.auth import HIDDEN_SUPER_USERNAME
 from app.constants.roles import ADMIN, MANAGEABLE_ROLES, SUPER_ADMIN, USER
 from app.models import User
@@ -36,7 +37,7 @@ class UserService:
         viewer: User | None = None,
     ) -> list[User]:
         keyword = (keyword or "").strip()
-        query = db.query(User).filter(User.status == 1)
+        query = db.query(User).filter(User.status == 1, User.account_status == ACTIVE)
         if exclude_username:
             query = query.filter(User.username != exclude_username)
         if viewer is not None:
@@ -425,6 +426,8 @@ class UserService:
             raise ValueError("用户不存在")
         if user.id == operator.id:
             raise ValueError("不能删除自己")
+        if getattr(user, "account_status", ACTIVE) in (OFFBOARDING, OFFBOARDED):
+            raise ValueError("离职相关账号请通过离职交接流程处理")
         if is_hidden_super_user(user):
             raise ValueError("不能删除系统内置超级管理员")
         if should_hide_user_from(operator, user):
@@ -467,4 +470,6 @@ class UserService:
             "created_at": user.created_at,
             "feishu_bound": bool(user.feishu_open_id),
             "feishu_name": user.feishu_name if user.feishu_open_id else None,
+            "account_status": getattr(user, "account_status", ACTIVE),
+            "offboarded_at": getattr(user, "offboarded_at", None),
         }

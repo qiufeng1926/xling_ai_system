@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 
 from app.api.deps import DbSession, get_current_user
-from app.config import settings
+from app.constants.account_status import ACTIVE, OFFBOARDED
 from app.models import User
 from app.schemas import (
     FeishuBindRequest,
@@ -133,6 +133,9 @@ def login(db: DbSession, request: Request, form_data: OAuth2PasswordRequestForm 
     if user.status != 1:
         record_login_failure(request)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已禁用")
+    if getattr(user, "account_status", ACTIVE) == OFFBOARDED:
+        record_login_failure(request)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已离职封存")
 
     clear_login_attempts(request)
     return _issue_portal_token(user)
@@ -163,5 +166,6 @@ def get_me(current_user: User = Depends(get_current_user)):
             role=normalize_role(current_user.role),
             view_library=perms["view_library"],
             permissions=perms,
+            account_status=getattr(current_user, "account_status", "active"),
         )
     )

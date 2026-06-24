@@ -15,6 +15,8 @@ export const INFLUENCER_ROUTES = {
   agencyDetail: (id: number | string) => `${INFLUENCER_BASE}/agencies/${id}`,
   accessReview: `${INFLUENCER_BASE}/access-review`,
   users: `${INFLUENCER_BASE}/users`,
+  offboardingApply: `${INFLUENCER_BASE}/offboarding-apply`,
+  offboardingManage: `${INFLUENCER_BASE}/offboarding-manage`,
 } as const
 
 export const MEETING_ROUTES = {

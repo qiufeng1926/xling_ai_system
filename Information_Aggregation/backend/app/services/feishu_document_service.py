@@ -143,7 +143,12 @@ class FeishuDocumentService:
         offset: int = 0,
         query: str = "",
     ) -> tuple[list[dict], int]:
-        q = db.query(FeishuDocumentMirror).filter(FeishuDocumentMirror.status == "active")
+        q = db.query(FeishuDocumentMirror).filter(
+            or_(
+                FeishuDocumentMirror.status == "active",
+                FeishuDocumentMirror.user_id == viewer.id,
+            )
+        )
         q = apply_hidden_user_scope(db, q, viewer, FeishuDocumentMirror.user_id)
 
         if query.strip():
@@ -175,6 +180,7 @@ class FeishuDocumentService:
                     "owner_id": mirror.user_id,
                     "owner_username": owner.username if owner else None,
                     "owner_nickname": (owner.nickname or owner.username) if owner else None,
+                    "archived": mirror.status == "archived",
                     "synced_at": mirror.synced_at.isoformat() if mirror.synced_at else None,
                     "has_snapshot": latest is not None,
                     "preview": preview if allowed else "",

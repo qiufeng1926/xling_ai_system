@@ -93,6 +93,7 @@ jwt_expire_hours = int(_env("JWT_EXPIRE_HOURS", "72") or "72")
 
 # xling 门户 API（用于实时拉取用户权限，避免 JWT 内 perms 过期）
 portal_api_url = _env("PORTAL_API_URL", "http://127.0.0.1:8000") or ""
+portal_internal_key = _env("PORTAL_INTERNAL_KEY", "") or _env("FLYBOOK_INTERNAL_KEY", "") or ""
 
 # CORS（逗号分隔；生产环境勿使用 *）
 cors_origins = _env("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000") or ""

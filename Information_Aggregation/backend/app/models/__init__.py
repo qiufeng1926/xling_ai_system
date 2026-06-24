@@ -10,6 +10,8 @@ from app.models.match import MatchRequest, MatchResult
 
 from app.models.permission import SystemSetting, ViewAccessRequest
 
+from app.models.offboarding import UserOffboardingRecord
+
 __all__ = [
     "User",
     "Agency",
@@ -23,6 +25,7 @@ __all__ = [
     "MatchResult",
     "ViewAccessRequest",
     "SystemSetting",
+    "UserOffboardingRecord",
 ]
 
 
@@ -43,6 +46,8 @@ class User(Base):
     approve_meeting_download: Mapped[int] = mapped_column(default=0)
     approve_meeting_view: Mapped[int] = mapped_column(default=0)
     status: Mapped[int] = mapped_column(default=1)
+    account_status: Mapped[str] = mapped_column(String(20), default="active")
+    offboarded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     feishu_open_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
     feishu_union_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     feishu_name: Mapped[str | None] = mapped_column(String(100), nullable=True)

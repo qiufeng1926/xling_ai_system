@@ -88,3 +88,45 @@ def notify_feishu_doc_request_reviewed(user_id: int, kind: str, status: str) -> 
             "status": status,
         },
     )
+
+
+def _super_admin_ids(db: Session) -> list[int]:
+    return [
+        row[0]
+        for row in db.query(User.id).filter(User.role == SUPER_ADMIN, User.status == 1).all()
+    ]
+
+
+def notify_offboarding_pending(db: Session, record) -> None:
+    user = db.query(User).filter(User.id == record.user_id).first()
+    event = {
+        "channel": "user_offboarding",
+        "action": "pending",
+        "offboarding_id": record.id,
+        "departed_username": user.username if user else None,
+        "departed_nickname": (user.nickname or user.username) if user else None,
+    }
+    notification_hub.publish_many(_super_admin_ids(db), event)
+
+
+def notify_offboarding_completed(db: Session, record) -> None:
+    user = db.query(User).filter(User.id == record.user_id).first()
+    handover = (
+        db.query(User).filter(User.id == record.handover_user_id).first()
+        if record.handover_user_id
+        else None
+    )
+    summary = record.content_snapshot or {}
+    event = {
+        "channel": "user_offboarding",
+        "action": "completed",
+        "offboarding_id": record.id,
+        "departed_username": user.username if user else None,
+        "departed_nickname": (user.nickname or user.username) if user else None,
+        "handover_username": handover.username if handover else None,
+        "summary": summary,
+    }
+    targets = set(_super_admin_ids(db))
+    if record.handover_user_id:
+        targets.add(record.handover_user_id)
+    notification_hub.publish_many(list(targets), event)

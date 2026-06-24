@@ -24,6 +24,8 @@ class UserOut(BaseModel):
     created_at: datetime
     feishu_bound: bool = False
     feishu_name: str | None = None
+    account_status: str = "active"
+    offboarded_at: datetime | None = None
 
 
 class UserCreate(BaseModel):

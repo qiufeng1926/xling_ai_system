@@ -14,6 +14,10 @@ export interface ManagedUser {
   approve_meeting_download: boolean
   approve_meeting_view: boolean
   permissions?: Record<string, boolean>
+  account_status?: string
+  offboarded_at?: string | null
+  feishu_bound?: boolean
+  feishu_name?: string | null
   created_at: string
 }
 

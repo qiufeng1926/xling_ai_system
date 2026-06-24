@@ -5,9 +5,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
-from app.api.v1 import auth, agencies, collection, influencers, match, notifications, permissions, tags, users, qywechat_approval, qywechat_callback, qywechat_mail, feishu_documents, feishu_documents_internal
+from app.api.v1 import auth, agencies, collection, influencers, match, notifications, offboarding, permissions, tags, users, qywechat_approval, qywechat_callback, qywechat_mail, feishu_documents, feishu_documents_internal
 from app.config import settings
 from app.database import Base, SessionLocal, engine
+from app.middleware.offboarding_guard import OffboardingGuardMiddleware
 from app.middleware.request_log import RequestLogMiddleware
 from app.models import User
 from app.models.permission import SystemSetting
@@ -69,10 +70,22 @@ def migrate_rbac(db: Session) -> None:
                 db.execute(text("ALTER TABLE users ADD COLUMN feishu_token_expires_at DATETIME NULL"))
             if "feishu_oauth_scope" not in cols:
                 db.execute(text("ALTER TABLE users ADD COLUMN feishu_oauth_scope VARCHAR(512) NULL"))
+            if "account_status" not in cols:
+                db.execute(text("ALTER TABLE users ADD COLUMN account_status VARCHAR(20) DEFAULT 'active'"))
+            if "offboarded_at" not in cols:
+                db.execute(text("ALTER TABLE users ADD COLUMN offboarded_at DATETIME NULL"))
             try:
                 db.execute(text("CREATE UNIQUE INDEX ix_users_feishu_open_id ON users (feishu_open_id)"))
             except Exception:
                 pass
+        if "collection_tasks" in inspector.get_table_names():
+            task_cols = {c["name"] for c in inspector.get_columns("collection_tasks")}
+            if "transfer_pending_user_id" not in task_cols:
+                db.execute(text("ALTER TABLE collection_tasks ADD COLUMN transfer_pending_user_id BIGINT NULL"))
+        if "match_requests" in inspector.get_table_names():
+            match_cols = {c["name"] for c in inspector.get_columns("match_requests")}
+            if "transfer_pending_user_id" not in match_cols:
+                db.execute(text("ALTER TABLE match_requests ADD COLUMN transfer_pending_user_id BIGINT NULL"))
         if "view_access_requests" in inspector.get_table_names():
             req_cols = {c["name"] for c in inspector.get_columns("view_access_requests")}
             if "request_type" not in req_cols:
@@ -160,6 +173,7 @@ def _ensure_bootstrap_super_admin(db: Session) -> None:
 
 def init_db():
     import app.models.feishu_document  # noqa: F401 — 注册 ORM 表
+    import app.models.offboarding  # noqa: F401
 
     try:
         Base.metadata.create_all(bind=engine)
@@ -217,12 +231,35 @@ async def lifespan(app: FastAPI):
         print(f"CORS origins : {settings.CORS_ORIGINS}")
         if settings.CORS_ORIGIN_REGEX:
             print(f"CORS regex   : {settings.CORS_ORIGIN_REGEX}")
-    yield
+
+    import asyncio
+
+    async def _expire_offboarded_loop():
+        while True:
+            await asyncio.sleep(3600)
+            db = SessionLocal()
+            try:
+                from app.services.offboarding_service import OffboardingService
+
+                n = OffboardingService.expire_offboarded_accounts(db)
+                if n:
+                    print(f"已清理 {n} 个到期离职账号")
+            except Exception as exc:
+                print(f"离职账号清理任务失败: {exc}")
+            finally:
+                db.close()
+
+    task = asyncio.create_task(_expire_offboarded_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
 
 app.add_middleware(RequestLogMiddleware)
+app.add_middleware(OffboardingGuardMiddleware)
 
 _cors_kwargs: dict = {
     "allow_origins": settings.CORS_ORIGINS,
@@ -243,6 +280,7 @@ app.include_router(collection.router, prefix="/api/v1")
 app.include_router(tags.router, prefix="/api/v1")
 app.include_router(agencies.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
+app.include_router(offboarding.router, prefix="/api/v1")
 app.include_router(permissions.router, prefix="/api/v1")
 app.include_router(match.router, prefix="/api/v1")
 app.include_router(qywechat_mail.router, prefix="/api/v1/qywechat/mail")

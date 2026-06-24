@@ -69,6 +69,18 @@ export const influencerRoutes: RouteRecordRaw[] = [
           meta: { title: '平台用户管理', module: 'platform', roles: [ROLES.SUPER_ADMIN] },
         },
         {
+          path: 'offboarding-manage',
+          name: 'OffboardingManage',
+          component: () => import('@/views/OffboardingManage.vue'),
+          meta: { title: '离职交接管理', module: 'platform', roles: [ROLES.SUPER_ADMIN] },
+        },
+        {
+          path: 'offboarding-apply',
+          name: 'OffboardingApply',
+          component: () => import('@/views/OffboardingApply.vue'),
+          meta: { title: '离职交接申请', module: 'platform' },
+        },
+        {
           path: 'access-review',
           name: 'AccessReview',
           component: () => import('@/views/AccessReview.vue'),
