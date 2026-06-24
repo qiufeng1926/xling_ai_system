@@ -119,6 +119,9 @@ class PermissionService:
         db.add(req)
         db.commit()
         db.refresh(req)
+        from app.services.notification_emit import notify_access_request_created
+
+        notify_access_request_created(db, user.id, data.request_type)
         return req
 
     @staticmethod
@@ -281,6 +284,9 @@ class PermissionService:
 
         db.commit()
         db.refresh(req)
+        from app.services.notification_emit import notify_access_request_reviewed
+
+        notify_access_request_reviewed(req.user_id, req.request_type, req.status)
         return req
 
     @staticmethod

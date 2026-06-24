@@ -86,9 +86,10 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useNotificationListener } from '@/composables/useUserNotifications'
 import {
   acceptInvitation,
   listMyRooms,
@@ -164,19 +165,14 @@ async function loadData() {
   pending.value = res.pending_invitations || []
 }
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
-
 onMounted(() => {
   loadData().catch((err) => {
     ElMessage.error(err?.message || '加载会议列表失败，请确认会议服务已启动')
   })
-  pollTimer = setInterval(() => {
-    loadData().catch(() => {})
-  }, 30000)
 })
 
-onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer)
+useNotificationListener(() => {
+  loadData().catch(() => {})
 })
 </script>
 

@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
     '/api/auth',
     '/api/meeting',
     '/api/meetings',
+    '/api/notifications',
     '/api/ws',
     '/api/admin',
     '/api/export',

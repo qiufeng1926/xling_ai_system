@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
-from app.api.v1 import auth, agencies, collection, influencers, match, permissions, tags, users, qywechat_approval, qywechat_callback, qywechat_mail, feishu_documents, feishu_documents_internal
+from app.api.v1 import auth, agencies, collection, influencers, match, notifications, permissions, tags, users, qywechat_approval, qywechat_callback, qywechat_mail, feishu_documents, feishu_documents_internal
 from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.middleware.request_log import RequestLogMiddleware
@@ -237,6 +237,7 @@ if settings.CORS_ORIGIN_REGEX:
 app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 app.include_router(auth.router, prefix="/api/v1")
+app.include_router(notifications.router, prefix="/api/v1")
 app.include_router(influencers.router, prefix="/api/v1")
 app.include_router(collection.router, prefix="/api/v1")
 app.include_router(tags.router, prefix="/api/v1")

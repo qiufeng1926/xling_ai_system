@@ -211,6 +211,9 @@ def _review_view_request(
 
     db.commit()
     db.refresh(req)
+    from services.notification_emit import notify_meeting_access_reviewed
+
+    notify_meeting_access_reviewed(req.user_id, "view", req.status)
     return req
 
 
@@ -246,6 +249,9 @@ def _review_download_request(
 
     db.commit()
     db.refresh(req)
+    from services.notification_emit import notify_meeting_access_reviewed
+
+    notify_meeting_access_reviewed(req.user_id, "download", req.status)
     return req
 
 
@@ -312,6 +318,9 @@ def apply_meeting_view_access(
         raise HTTPException(status_code=400, detail=detail)
 
     db.commit()
+    from services.notification_emit import notify_meeting_access_created
+
+    notify_meeting_access_created(db, current_user.id, "view")
     return {
         'success': True,
         'created': created,
@@ -386,6 +395,9 @@ def apply_meeting_download_access(
         raise HTTPException(status_code=400, detail=detail)
 
     db.commit()
+    from services.notification_emit import notify_meeting_access_created
+
+    notify_meeting_access_created(db, current_user.id, "download")
     return {
         'success': True,
         'created': created,

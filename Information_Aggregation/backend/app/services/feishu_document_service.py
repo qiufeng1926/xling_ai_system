@@ -263,6 +263,10 @@ class FeishuDocumentService:
             db.flush()
             created.append(req)
         db.commit()
+        if created:
+            from app.services.notification_emit import notify_feishu_doc_request_created
+
+            notify_feishu_doc_request_created(db, viewer.id, "view", len(created))
         return {"created": len(created), "skipped": skipped}
 
     @staticmethod
@@ -305,6 +309,10 @@ class FeishuDocumentService:
             db.flush()
             created.append(req)
         db.commit()
+        if created:
+            from app.services.notification_emit import notify_feishu_doc_request_created
+
+            notify_feishu_doc_request_created(db, viewer.id, "download", len(created))
         return {"created": len(created), "skipped": skipped}
 
     @staticmethod
@@ -361,6 +369,9 @@ class FeishuDocumentService:
                 )
             )
         db.commit()
+        from app.services.notification_emit import notify_feishu_doc_request_reviewed
+
+        notify_feishu_doc_request_reviewed(req.user_id, "view", req.status)
 
     @staticmethod
     def review_download_request(db: Session, reviewer: User, request_id: int, approve: bool, note: str = "") -> None:
@@ -384,6 +395,9 @@ class FeishuDocumentService:
                 )
             )
         db.commit()
+        from app.services.notification_emit import notify_feishu_doc_request_reviewed
+
+        notify_feishu_doc_request_reviewed(req.user_id, "download", req.status)
 
     @staticmethod
     def access_request_stats(db: Session, viewer: User) -> dict:

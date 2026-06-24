@@ -26,6 +26,7 @@ from api.routes.export import router as export_router
 from api.routes.settings import router as settings_router
 from api.routes.collaborative import router as collaborative_router
 from api.routes.meeting_access import router as meeting_access_router
+from api.routes.notifications import router as notifications_router
 
 
 @asynccontextmanager
@@ -120,6 +121,12 @@ app.include_router(
     meeting_access_router,
     prefix="/api",
     tags=["会议浏览权限"]
+)
+
+app.include_router(
+    notifications_router,
+    prefix="/api",
+    tags=["通知"]
 )
 
 

@@ -174,12 +174,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { listMyRooms } from '@/api/meetingRooms'
 import { getAccessRequestStats } from '@/api/permissions'
 import { getMeetingViewRequestStats } from '@/api/meetings'
+import { getFeishuDocumentAccessStats } from '@/api/feishuDocuments'
+import { useUserNotifications } from '@/composables/useUserNotifications'
 import {
   ROLE_LABELS,
   canManageUsers,
@@ -258,7 +260,6 @@ const influencerMenuLabel = computed(() => (isUser(userStore.userInfo?.role) ? '
 const pendingInviteCount = ref(0)
 const pendingAccessReviewCount = ref(0)
 const myPendingAccessCount = ref(0)
-let invitePollTimer: ReturnType<typeof setInterval> | null = null
 
 const accessBadgeCount = computed(() => {
   if (canReviewAccess(role.value)) return pendingAccessReviewCount.value
@@ -301,6 +302,19 @@ async function refreshAccessRequestStats() {
     } catch {
       // meeting 服务不可用时静默忽略
     }
+    try {
+      const docStats = await getFeishuDocumentAccessStats()
+      myPendingAccessCount.value += docStats.data.my_pending || 0
+      if (
+        canReviewAccess(userStore.userInfo?.role) ||
+        canReviewMeetingView(userStore.userInfo?.role, userStore.userInfo?.permissions) ||
+        canReviewMeetingDownload(userStore.userInfo?.role, userStore.userInfo?.permissions)
+      ) {
+        pendingAccessReviewCount.value += docStats.data.pending_for_review || 0
+      }
+    } catch {
+      // 飞书文档服务不可用时静默忽略
+    }
   } catch {
     pendingAccessReviewCount.value = 0
     myPendingAccessCount.value = 0
@@ -311,14 +325,10 @@ onMounted(() => {
   userStore.fetchUserInfo()
   refreshPendingInvites()
   refreshAccessRequestStats()
-  invitePollTimer = setInterval(() => {
-    refreshPendingInvites().catch(() => {})
-    refreshAccessRequestStats().catch(() => {})
-  }, 30000)
 })
 
-onUnmounted(() => {
-  if (invitePollTimer) clearInterval(invitePollTimer)
+useUserNotifications(async () => {
+  await Promise.all([refreshPendingInvites(), refreshAccessRequestStats()])
 })
 
 function handleLogout() {

@@ -261,6 +261,10 @@ def invite_users(
         created.append(inv)
 
     db.commit()
+    from services.notification_emit import notify_meeting_invite
+
+    for inv in created:
+        notify_meeting_invite(db, inv.invitee_username)
     return created
 
 

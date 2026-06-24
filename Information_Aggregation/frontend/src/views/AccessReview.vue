@@ -78,8 +78,8 @@
         <div class="header-row">
           <span>权限申请审批</span>
           <div class="filters">
-            <el-tag v-if="stats.pending_for_review > 0" type="danger" size="small">
-              {{ stats.pending_for_review }} 条待处理
+            <el-tag v-if="portalPendingForReview > 0" type="danger" size="small">
+              {{ portalPendingForReview }} 条待处理
             </el-tag>
             <el-select
               v-model="typeFilter"
@@ -372,8 +372,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
+import { useNotificationListener } from '@/composables/useUserNotifications'
 import {
   getAccessRequestStats,
   getAccessRequests,
@@ -432,6 +433,7 @@ const stats = ref<AccessRequestStats>({
   pending_for_review: 0,
   can_review: false,
 })
+const portalPendingForReview = ref(0)
 
 const canReview = computed(() => canReviewAccess(userStore.userInfo?.role))
 const isSuperAdminUser = computed(() => isSuperAdmin(userStore.userInfo?.role))
@@ -522,10 +524,14 @@ function notifyPendingForReviewer(count: number) {
 
 async function loadStats() {
   const res = await getAccessRequestStats()
-  stats.value = res.data
+  const base = { ...res.data }
+  portalPendingForReview.value = base.pending_for_review || 0
+  let totalPending = portalPendingForReview.value
+  let myPending = base.my_pending || 0
+
   try {
     const meetingStats = await getMeetingViewRequestStats()
-    stats.value.my_pending += meetingStats.my_pending || 0
+    myPending += meetingStats.my_pending || 0
     meetingViewPendingCount.value = meetingStats.view?.pending_for_review ?? 0
     meetingDownloadPendingCount.value = meetingStats.download?.pending_for_review ?? 0
     if (
@@ -533,7 +539,7 @@ async function loadStats() {
       canReviewMeetingViewPerm.value ||
       canReviewMeetingDownloadPerm.value
     ) {
-      stats.value.pending_for_review += meetingStats.pending_for_review || 0
+      totalPending += meetingStats.pending_for_review || 0
     }
   } catch {
     meetingViewPendingCount.value = 0
@@ -541,16 +547,22 @@ async function loadStats() {
   }
   try {
     const docStats = await getFeishuDocumentAccessStats()
-    stats.value.my_pending += docStats.data.my_pending || 0
+    myPending += docStats.data.my_pending || 0
     if (
       canReview.value ||
       canReviewMeetingViewPerm.value ||
       canReviewMeetingDownloadPerm.value
     ) {
-      stats.value.pending_for_review += docStats.data.pending_for_review || 0
+      totalPending += docStats.data.pending_for_review || 0
     }
   } catch {
     /* flybook/doc mirror optional */
+  }
+
+  stats.value = {
+    ...base,
+    my_pending: myPending,
+    pending_for_review: totalPending,
   }
   return stats.value
 }
@@ -568,8 +580,8 @@ async function loadApplyTypes() {
   }
 }
 
-async function loadMyRequests() {
-  myLoading.value = true
+async function loadMyRequests(silent = false) {
+  if (!silent) myLoading.value = true
   try {
     const res = await getAccessRequests({
       scope: 'mine',
@@ -610,61 +622,61 @@ async function loadMyRequests() {
     )
     notifyReviewResults(myRequests.value)
   } finally {
-    myLoading.value = false
+    if (!silent) myLoading.value = false
   }
 }
 
-async function loadMeetingViewReviewData() {
+async function loadMeetingViewReviewData(silent = false) {
   if (!canReviewMeetingViewPerm.value) return
-  meetingViewReviewLoading.value = true
+  if (!silent) meetingViewReviewLoading.value = true
   try {
     const res = await getPendingMeetingViewRequests(meetingViewStatusFilter.value)
     meetingViewReviewList.value = res.requests || []
     selectedViewRequests.value = []
   } finally {
-    meetingViewReviewLoading.value = false
+    if (!silent) meetingViewReviewLoading.value = false
   }
 }
 
-async function loadMeetingDownloadReviewData() {
+async function loadMeetingDownloadReviewData(silent = false) {
   if (!canReviewMeetingDownloadPerm.value) return
-  meetingDownloadReviewLoading.value = true
+  if (!silent) meetingDownloadReviewLoading.value = true
   try {
     const res = await getPendingMeetingDownloadRequests(meetingDownloadStatusFilter.value)
     meetingDownloadReviewList.value = res.requests || []
     selectedDownloadRequests.value = []
   } finally {
-    meetingDownloadReviewLoading.value = false
+    if (!silent) meetingDownloadReviewLoading.value = false
   }
 }
 
-async function loadDocViewReviewData() {
+async function loadDocViewReviewData(silent = false) {
   if (!canReviewMeetingViewPerm.value) return
-  docViewReviewLoading.value = true
+  if (!silent) docViewReviewLoading.value = true
   try {
     const res = await getPendingFeishuDocumentViewRequests()
     docViewReviewList.value = res.data.requests || []
     docViewPendingCount.value = docViewReviewList.value.length
   } finally {
-    docViewReviewLoading.value = false
+    if (!silent) docViewReviewLoading.value = false
   }
 }
 
-async function loadDocDownloadReviewData() {
+async function loadDocDownloadReviewData(silent = false) {
   if (!canReviewMeetingDownloadPerm.value) return
-  docDownloadReviewLoading.value = true
+  if (!silent) docDownloadReviewLoading.value = true
   try {
     const res = await getPendingFeishuDocumentDownloadRequests()
     docDownloadReviewList.value = res.data.requests || []
     docDownloadPendingCount.value = docDownloadReviewList.value.length
   } finally {
-    docDownloadReviewLoading.value = false
+    if (!silent) docDownloadReviewLoading.value = false
   }
 }
 
-async function loadReviewData() {
+async function loadReviewData(silent = false) {
   if (!canReview.value) return
-  reviewLoading.value = true
+  if (!silent) reviewLoading.value = true
   try {
     const res = await getAccessRequests({
       scope: 'review',
@@ -675,31 +687,33 @@ async function loadReviewData() {
     })
     reviewList.value = res.data.items
   } finally {
-    reviewLoading.value = false
+    if (!silent) reviewLoading.value = false
   }
 }
 
-async function refreshAll(notifyReviewer = false) {
-  await userStore.fetchUserInfo()
+async function refreshAll(notifyReviewer = false, silent = false) {
+  if (!silent) {
+    await userStore.fetchUserInfo()
+  }
   const data = await loadStats()
-  await loadMyRequests()
+  await loadMyRequests(silent)
   if (canReview.value) {
-    await loadReviewData()
+    await loadReviewData(silent)
     if (notifyReviewer && data.pending_for_review > 0) {
       notifyPendingForReviewer(data.pending_for_review)
     }
   }
   if (canReviewMeetingViewPerm.value) {
-    await loadMeetingViewReviewData()
+    await loadMeetingViewReviewData(silent)
   }
   if (canReviewMeetingDownloadPerm.value) {
-    await loadMeetingDownloadReviewData()
+    await loadMeetingDownloadReviewData(silent)
   }
   if (canReviewMeetingViewPerm.value) {
-    await loadDocViewReviewData()
+    await loadDocViewReviewData(silent)
   }
   if (canReviewMeetingDownloadPerm.value) {
-    await loadDocDownloadReviewData()
+    await loadDocDownloadReviewData(silent)
   }
 }
 
@@ -914,8 +928,6 @@ async function saveSettings() {
   ElMessage.success('策略已更新')
 }
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
-
 onMounted(async () => {
   await userStore.fetchUserInfo()
   await loadApplyTypes()
@@ -923,14 +935,9 @@ onMounted(async () => {
     await loadSettings()
   }
   await refreshAll(true)
-  pollTimer = setInterval(() => {
-    refreshAll(false).catch(() => {})
-  }, 30000)
 })
 
-onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer)
-})
+useNotificationListener(() => refreshAll(false, true))
 </script>
 
 <style scoped>
