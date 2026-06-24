@@ -29,15 +29,18 @@
           <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
+      <el-table-column prop="error_message" label="失败原因" min-width="180" show-overflow-tooltip />
       <el-table-column prop="reason" label="原因" min-width="160" show-overflow-tooltip />
       <el-table-column label="提交时间" width="170">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="220" fixed="right">
+      <el-table-column label="操作" width="260" fixed="right">
         <template #default="{ row }">
-          <template v-if="row.status === 'pending'">
-            <el-button link type="primary" @click="openComplete(row)">完成交接</el-button>
-            <el-popconfirm title="确定取消该申请？" @confirm="handleCancel(row.id)">
+          <template v-if="isActiveRecord(row.status)">
+            <el-button link type="primary" @click="openComplete(row)">
+              {{ row.status === 'pending' && !row.error_message ? '完成交接' : '重试交接' }}
+            </el-button>
+            <el-popconfirm title="确定取消该申请？取消后员工账号将恢复正常。" @confirm="handleCancel(row.id)">
               <template #reference>
                 <el-button link type="danger">取消</el-button>
               </template>
@@ -130,6 +133,10 @@ function statusType(s: string) {
   return ({ pending: 'warning', processing: '', completed: 'success', cancelled: 'info', failed: 'danger' } as const)[s] || 'info'
 }
 
+function isActiveRecord(status: string) {
+  return status === 'pending' || status === 'processing' || status === 'failed'
+}
+
 async function load() {
   loading.value = true
   try {
@@ -147,8 +154,10 @@ async function load() {
 
 function openComplete(row: OffboardingRecord) {
   completing.value = row
-  handoverUserId.value = null
-  handoverOptions.value = []
+  handoverUserId.value = row.handover_user_id ?? null
+  handoverOptions.value = row.handover_user_id && row.handover_username
+    ? [{ id: row.handover_user_id, username: row.handover_username, nickname: row.handover_nickname || row.handover_username }]
+    : []
   completeVisible.value = true
 }
 

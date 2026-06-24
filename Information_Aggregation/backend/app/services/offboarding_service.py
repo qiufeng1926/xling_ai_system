@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.constants.account_status import (
     ACTIVE,
+    ACTIVE_RECORD_STATUSES,
     OFFBOARDED,
     OFFBOARDING,
     OFFBOARD_RETENTION_DAYS,
@@ -75,16 +76,20 @@ class OffboardingService:
         }
 
     @staticmethod
-    def get_my_pending(db: Session, user: User) -> UserOffboardingRecord | None:
+    def get_my_active(db: Session, user: User) -> UserOffboardingRecord | None:
         return (
             db.query(UserOffboardingRecord)
             .filter(
                 UserOffboardingRecord.user_id == user.id,
-                UserOffboardingRecord.status == RECORD_PENDING,
+                UserOffboardingRecord.status.in_(ACTIVE_RECORD_STATUSES),
             )
             .order_by(UserOffboardingRecord.id.desc())
             .first()
         )
+
+    @staticmethod
+    def get_my_pending(db: Session, user: User) -> UserOffboardingRecord | None:
+        return OffboardingService.get_my_active(db, user)
 
     @staticmethod
     def apply(db: Session, user: User, *, reason: str | None = None, last_work_day: date | None = None) -> UserOffboardingRecord:
@@ -95,7 +100,7 @@ class OffboardingService:
         if getattr(user, "account_status", ACTIVE) != ACTIVE:
             raise ValueError("当前账号状态不可申请离职")
 
-        existing = OffboardingService.get_my_pending(db, user)
+        existing = OffboardingService.get_my_active(db, user)
         if existing:
             raise ValueError("已有进行中的离职申请")
 
@@ -135,22 +140,46 @@ class OffboardingService:
     @staticmethod
     def cancel(db: Session, record_id: int, operator: User) -> UserOffboardingRecord:
         record = OffboardingService.get_record(db, record_id)
-        if not record or record.status != RECORD_PENDING:
+        if not record or record.status not in ACTIVE_RECORD_STATUSES:
             raise ValueError("离职申请不存在或不可取消")
 
         user = db.query(User).filter(User.id == record.user_id).first()
         if not user:
             raise ValueError("用户不存在")
 
+        if record.meeting_snapshot:
+            try:
+                revert_offboard(record.meeting_snapshot)
+            except MeetingAiClientError:
+                pass
+
         record.status = RECORD_CANCELLED
+        record.error_message = None
+        record.meeting_snapshot = None
+        record.started_at = None
         user.account_status = ACTIVE
         db.commit()
         db.refresh(record)
         return record
 
     @staticmethod
+    def _recover_partial_meeting(db: Session, record: UserOffboardingRecord) -> None:
+        if not record.meeting_snapshot:
+            return
+        try:
+            revert_offboard(record.meeting_snapshot)
+        except MeetingAiClientError:
+            pass
+        record.meeting_snapshot = None
+        db.flush()
+
+    @staticmethod
     def _mirror_feishu_documents(db: Session, user: User) -> dict:
-        stats = {"mirrored": 0, "synced_existing": 0, "errors": []}
+        stats = {"mirrored": 0, "synced_existing": 0, "skipped": False, "errors": []}
+        if not user.feishu_open_id:
+            stats["skipped"] = True
+            return stats
+
         try:
             remote = mirror_all_documents_for_user(user.id)
             stats["mirrored"] = int(remote.get("mirrored") or 0)
@@ -287,7 +316,7 @@ class OffboardingService:
             raise ValueError("需要超级管理员权限")
 
         record = OffboardingService.get_record(db, record_id)
-        if not record or record.status != RECORD_PENDING:
+        if not record or record.status not in ACTIVE_RECORD_STATUSES:
             raise ValueError("离职申请不存在或不可完成")
 
         user = db.query(User).filter(User.id == record.user_id).first()
@@ -306,9 +335,13 @@ class OffboardingService:
         if handover.id == user.id:
             raise ValueError("对接人员不能是离职员工本人")
 
+        if record.status in (RECORD_PROCESSING, RECORD_FAILED):
+            OffboardingService._recover_partial_meeting(db, record)
+
         record.handover_user_id = handover.id
         record.operator_id = operator.id
         record.status = RECORD_PROCESSING
+        record.error_message = None
         record.started_at = datetime.now()
         db.commit()
 
@@ -326,6 +359,7 @@ class OffboardingService:
             snapshot = OffboardingService._transfer_portal_content(db, user, handover, record)
             snapshot["feishu_mirror"] = feishu_stats
             record.content_snapshot = snapshot
+            record.error_message = None
             db.commit()
             db.refresh(record)
             notify_offboarding_completed(db, record)
@@ -339,8 +373,10 @@ class OffboardingService:
                 except MeetingAiClientError:
                     pass
             if record:
-                record.status = RECORD_FAILED
+                record.status = RECORD_PENDING
                 record.error_message = str(exc)[:500]
+                record.meeting_snapshot = None
+                record.started_at = None
                 user = db.query(User).filter(User.id == record.user_id).first()
                 if user:
                     user.account_status = OFFBOARDING

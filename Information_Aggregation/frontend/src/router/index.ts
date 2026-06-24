@@ -81,14 +81,6 @@ router.beforeEach(async (to) => {
     return AUTH_ROUTES.login
   }
   if (to.path === AUTH_ROUTES.login && token) {
-    return INFLUENCER_ROUTES.dashboard
-  }
-  if (to.path === AUTH_ROUTES.register && token) {
-    return INFLUENCER_ROUTES.dashboard
-  }
-
-  const requiredRoles = to.meta.roles as string[] | undefined
-  if (token && requiredRoles?.length) {
     const store = useUserStore()
     if (!store.userInfo) {
       try {
@@ -98,9 +90,36 @@ router.beforeEach(async (to) => {
         return AUTH_ROUTES.login
       }
     }
-    const role = normalizeRole(store.userInfo?.role)
-    if (!canAccessRoute(requiredRoles, role)) {
-      return INFLUENCER_ROUTES.dashboard
+    if (store.userInfo?.account_status === 'offboarding') {
+      return INFLUENCER_ROUTES.offboardingApply
+    }
+    return INFLUENCER_ROUTES.dashboard
+  }
+  if (to.path === AUTH_ROUTES.register && token) {
+    return INFLUENCER_ROUTES.dashboard
+  }
+
+  const requiredRoles = to.meta.roles as string[] | undefined
+  if (token) {
+    const store = useUserStore()
+    if (!store.userInfo) {
+      try {
+        await store.fetchUserInfo()
+      } catch {
+        store.logout()
+        return AUTH_ROUTES.login
+      }
+    }
+
+    if (store.userInfo?.account_status === 'offboarding' && to.path.startsWith('/meeting')) {
+      return INFLUENCER_ROUTES.offboardingApply
+    }
+
+    if (requiredRoles?.length) {
+      const role = normalizeRole(store.userInfo?.role)
+      if (!canAccessRoute(requiredRoles, role)) {
+        return INFLUENCER_ROUTES.dashboard
+      }
     }
   }
 })

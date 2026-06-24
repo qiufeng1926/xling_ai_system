@@ -5,12 +5,15 @@
       提交申请后，在超级管理员完成交接前，您仅可使用本页面相关功能，其他系统功能将暂时不可用。
     </p>
 
-    <el-alert v-if="pending" type="warning" show-icon :closable="false" class="status-alert">
+    <el-alert v-if="pending" :type="pending.error_message ? 'error' : 'warning'" show-icon :closable="false" class="status-alert">
       <template #title>
         申请处理中（{{ statusLabel(pending.status) }}）
       </template>
       提交时间：{{ formatTime(pending.created_at) }}
       <span v-if="pending.reason"> · 原因：{{ pending.reason }}</span>
+      <div v-if="pending.error_message" class="error-msg">
+        上次交接失败：{{ pending.error_message }}。请联系超级管理员重试或取消申请。
+      </div>
     </el-alert>
 
     <el-form v-else label-width="100px" class="apply-form">
@@ -81,5 +84,9 @@ onMounted(load)
 .apply-form {
   max-width: 560px;
   margin-top: 16px;
+}
+.error-msg {
+  margin-top: 8px;
+  line-height: 1.5;
 }
 </style>

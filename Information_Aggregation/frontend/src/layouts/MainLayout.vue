@@ -45,7 +45,7 @@
           </el-menu-item>
         </el-sub-menu>
 
-        <el-sub-menu index="module-meeting">
+        <el-sub-menu v-if="!isOffboardingPending" index="module-meeting">
           <template #title>
             <el-icon><Microphone /></el-icon>
             <span>会议 AI</span>
@@ -161,7 +161,7 @@
             您有 {{ myPendingAccessCount }} 条权限申请待审核
           </el-button>
           <el-button
-            v-if="pendingInviteCount > 0"
+            v-if="pendingInviteCount > 0 && !isOffboardingPending"
             type="primary"
             link
             @click="router.push(MEETING_ROUTES.home)"
@@ -268,6 +268,7 @@ const showUserManage = computed(() => canManageUsers(role.value))
 const showOffboardingApply = computed(
   () => !isSuperAdmin(userStore.userInfo?.role) && userStore.userInfo?.account_status !== 'offboarded'
 )
+const isOffboardingPending = computed(() => userStore.userInfo?.account_status === 'offboarding')
 const showAccessReview = computed(
   () => canReviewAccess(role.value) || isUser(userStore.userInfo?.role)
 )

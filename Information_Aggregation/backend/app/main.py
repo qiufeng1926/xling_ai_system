@@ -86,6 +86,13 @@ def migrate_rbac(db: Session) -> None:
             match_cols = {c["name"] for c in inspector.get_columns("match_requests")}
             if "transfer_pending_user_id" not in match_cols:
                 db.execute(text("ALTER TABLE match_requests ADD COLUMN transfer_pending_user_id BIGINT NULL"))
+        if "user_offboarding_records" in inspector.get_table_names():
+            db.execute(
+                text(
+                    "UPDATE user_offboarding_records SET status='pending', started_at=NULL "
+                    "WHERE status IN ('failed', 'processing')"
+                )
+            )
         if "view_access_requests" in inspector.get_table_names():
             req_cols = {c["name"] for c in inspector.get_columns("view_access_requests")}
             if "request_type" not in req_cols:
