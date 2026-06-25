@@ -45,7 +45,7 @@ from app.services.notification_emit import (
     notify_offboarding_pending,
 )
 from app.services.offboarding_document_service import OffboardingDocumentService
-from app.utils.access_control import is_hidden_super_user, normalize_role, should_hide_user_from
+from app.utils.access_control import can_manage_users, is_hidden_super_user, normalize_role, should_hide_user_from
 
 
 class OffboardingService:
@@ -155,21 +155,18 @@ class OffboardingService:
         return db.query(UserOffboardingRecord).filter(UserOffboardingRecord.id == record_id).first()
 
     @staticmethod
-    def list_handover_tasks(db: Session, handover_user: User) -> list[dict]:
-        rows = (
-            db.query(UserOffboardingRecord)
-            .filter(
-                UserOffboardingRecord.handover_user_id == handover_user.id,
-                UserOffboardingRecord.status == RECORD_AWAITING_HANDOVER_CONFIRM,
-            )
-            .order_by(UserOffboardingRecord.documents_submitted_at.desc())
-            .all()
+    def list_handover_tasks(db: Session, user: User) -> list[dict]:
+        q = db.query(UserOffboardingRecord).filter(
+            UserOffboardingRecord.status == RECORD_AWAITING_HANDOVER_CONFIRM,
         )
+        if not can_manage_users(user):
+            q = q.filter(UserOffboardingRecord.handover_user_id == user.id)
+        rows = q.order_by(UserOffboardingRecord.documents_submitted_at.desc()).all()
         return [OffboardingService._record_out(db, r) for r in rows]
 
     @staticmethod
-    def list_handover_archive(db: Session, handover_user: User) -> list[dict]:
-        """交接人可查档：已提交文档的交接记录（含已确认、已完成）"""
+    def list_handover_archive(db: Session, user: User) -> list[dict]:
+        """交接人/超管查档：已提交文档的交接记录（含已确认、已完成）"""
         archive_statuses = (
             RECORD_AWAITING_HANDOVER_CONFIRM,
             RECORD_AWAITING_FINAL_APPROVAL,
@@ -177,16 +174,13 @@ class OffboardingService:
             RECORD_COMPLETED,
             RECORD_FAILED,
         )
-        rows = (
-            db.query(UserOffboardingRecord)
-            .filter(
-                UserOffboardingRecord.handover_user_id == handover_user.id,
-                UserOffboardingRecord.status.in_(archive_statuses),
-                UserOffboardingRecord.documents_submitted_at.isnot(None),
-            )
-            .order_by(UserOffboardingRecord.documents_submitted_at.desc())
-            .all()
+        q = db.query(UserOffboardingRecord).filter(
+            UserOffboardingRecord.status.in_(archive_statuses),
+            UserOffboardingRecord.documents_submitted_at.isnot(None),
         )
+        if not can_manage_users(user):
+            q = q.filter(UserOffboardingRecord.handover_user_id == user.id)
+        rows = q.order_by(UserOffboardingRecord.documents_submitted_at.desc()).all()
         return [OffboardingService._record_out(db, r) for r in rows if r.documents_submitted_at]
 
     @staticmethod

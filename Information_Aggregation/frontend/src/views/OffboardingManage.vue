@@ -35,6 +35,19 @@
       <el-table-column label="提交时间" width="170">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
+      <el-table-column label="交接文档" min-width="120">
+        <template #default="{ row }">
+          <el-button
+            v-if="hasDocuments(row)"
+            link
+            type="primary"
+            @click="showDetail(row)"
+          >
+            {{ row.documents?.length || 0 }} 个文件
+          </el-button>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
           <el-button v-if="row.status === 'pending'" link type="primary" @click="openAssign(row)">
@@ -48,7 +61,10 @@
           >
             {{ row.error_message ? '重试批准' : '批准离职' }}
           </el-button>
-          <el-button v-if="isActiveRecord(row.status)" link type="primary" @click="showDetail(row)">
+          <el-button v-if="hasDocuments(row)" link type="primary" @click="showDetail(row)">
+            查看文档
+          </el-button>
+          <el-button v-else-if="isActiveRecord(row.status)" link type="primary" @click="showDetail(row)">
             详情
           </el-button>
           <el-popconfirm
@@ -103,8 +119,12 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="detailVisible" title="交接详情" width="600px">
+    <el-dialog v-model="detailVisible" title="交接文档" width="600px">
       <template v-if="detailRow">
+        <p>离职员工：{{ detailRow.user_nickname || detailRow.user_username }} (@{{ detailRow.user_username }})</p>
+        <p v-if="detailRow.handover_username">
+          交接人：{{ detailRow.handover_nickname || detailRow.handover_username }} (@{{ detailRow.handover_username }})
+        </p>
         <p>状态：{{ statusLabel(detailRow.status) }}</p>
         <p v-if="detailRow.applicant_note">员工说明：{{ detailRow.applicant_note }}</p>
         <p v-if="detailRow.handover_confirm_note">交接人备注：{{ detailRow.handover_confirm_note }}</p>
@@ -118,6 +138,7 @@
             <template #default="{ row }">{{ formatSize(row.file_size) }}</template>
           </el-table-column>
         </el-table>
+        <el-empty v-else description="暂无交接文档" />
         <pre v-if="detailRow.content_snapshot" class="snapshot">{{ JSON.stringify(detailRow.content_snapshot, null, 2) }}</pre>
       </template>
     </el-dialog>
@@ -132,6 +153,7 @@ import {
   assignHandover,
   cancelOffboarding,
   downloadOffboardingDocument,
+  getOffboarding,
   listOffboarding,
   OFFBOARDING_STATUS_LABELS,
   type OffboardingRecord,
@@ -184,6 +206,10 @@ function statusType(s: string) {
 
 function isActiveRecord(status: string) {
   return !['completed', 'cancelled'].includes(status)
+}
+
+function hasDocuments(row: OffboardingRecord) {
+  return Boolean(row.documents_submitted_at || row.documents?.length)
 }
 
 async function load() {
@@ -248,9 +274,15 @@ async function handleCancel(id: number) {
   load()
 }
 
-function showDetail(row: OffboardingRecord) {
-  detailRow.value = row
+async function showDetail(row: OffboardingRecord) {
   detailVisible.value = true
+  detailRow.value = row
+  try {
+    const res = await getOffboarding(row.id)
+    detailRow.value = res.data
+  } catch {
+    /* 回退使用列表数据 */
+  }
 }
 
 async function downloadDoc(docId: number, filename: string) {

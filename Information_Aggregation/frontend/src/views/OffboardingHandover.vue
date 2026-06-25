@@ -1,16 +1,28 @@
 <template>
   <div class="page-card">
     <h2 class="page-title">交接文档</h2>
-    <p class="hint">查阅员工提交的交接文档；待确认任务处理完成后，可在「归档查阅」中随时再次下载。</p>
+    <p class="hint">
+      <template v-if="isAdminViewer">
+        超级管理员可查阅全部离职交接文档；「待确认」仅供交接人操作，您可在此预览或于归档中下载。
+      </template>
+      <template v-else>
+        查阅员工提交的交接文档；待确认任务处理完成后，可在「归档查阅」中随时再次下载。
+      </template>
+    </p>
 
     <el-tabs v-model="activeTab" @tab-change="onTabChange">
-      <el-tab-pane label="待确认" name="pending">
+      <el-tab-pane :label="isAdminViewer ? '待交接人确认' : '待确认'" name="pending">
         <el-empty v-if="!pendingLoading && !pendingList.length" description="暂无待确认的交接任务" />
         <el-table v-else v-loading="pendingLoading" :data="pendingList" stripe>
           <el-table-column label="离职员工" min-width="140">
             <template #default="{ row }">
               {{ row.user_nickname || row.user_username }}
               <span class="sub">@{{ row.user_username }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column v-if="isAdminViewer" label="交接人" min-width="120">
+            <template #default="{ row }">
+              {{ row.handover_nickname || row.handover_username || '—' }}
             </template>
           </el-table-column>
           <el-table-column prop="applicant_note" label="员工说明" min-width="160" show-overflow-tooltip />
@@ -26,7 +38,10 @@
           </el-table-column>
           <el-table-column label="操作" width="140" fixed="right">
             <template #default="{ row }">
-              <el-button link type="primary" @click="openConfirm(row)">确认交接</el-button>
+              <el-button v-if="canConfirmHandover(row)" link type="primary" @click="openConfirm(row)">
+                确认交接
+              </el-button>
+              <span v-else-if="isAdminViewer" class="muted">—</span>
             </template>
           </el-table-column>
         </el-table>
@@ -39,6 +54,11 @@
             <template #default="{ row }">
               {{ row.user_nickname || row.user_username }}
               <span class="sub">@{{ row.user_username }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column v-if="isAdminViewer" label="交接人" min-width="120">
+            <template #default="{ row }">
+              {{ row.handover_nickname || row.handover_username || '—' }}
             </template>
           </el-table-column>
           <el-table-column label="状态" width="130">
@@ -79,7 +99,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   confirmHandover,
@@ -89,6 +109,11 @@ import {
   OFFBOARDING_STATUS_LABELS,
   type OffboardingRecord,
 } from '@/api/offboarding'
+import { useUserStore } from '@/stores/user'
+import { canManageUsers } from '@/utils/permission'
+
+const userStore = useUserStore()
+const isAdminViewer = computed(() => canManageUsers(userStore.userInfo?.role))
 
 const activeTab = ref('pending')
 const pendingLoading = ref(false)
@@ -118,6 +143,10 @@ function statusType(s: string) {
       failed: 'danger',
     } as const
   )[s] || 'info'
+}
+
+function canConfirmHandover(row: OffboardingRecord) {
+  return row.handover_user_id === userStore.userInfo?.id
 }
 
 async function loadPending() {
@@ -195,5 +224,8 @@ onMounted(() => {
 }
 .doc-row + .doc-row {
   margin-top: 4px;
+}
+.muted {
+  color: #c0c4cc;
 }
 </style>

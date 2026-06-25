@@ -289,7 +289,9 @@ const pendingAccessReviewCount = ref(0)
 const myPendingAccessCount = ref(0)
 const handoverTaskCount = ref(0)
 const handoverArchiveCount = ref(0)
-const showHandoverMenu = computed(() => handoverTaskCount.value > 0 || handoverArchiveCount.value > 0)
+const showHandoverMenu = computed(
+  () => showUserManage.value || handoverTaskCount.value > 0 || handoverArchiveCount.value > 0
+)
 
 const accessBadgeCount = computed(() => {
   if (canReviewAccess(role.value)) return pendingAccessReviewCount.value
