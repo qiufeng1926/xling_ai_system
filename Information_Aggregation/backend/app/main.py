@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
-from app.api.v1 import auth, agencies, collection, influencers, match, notifications, offboarding, permissions, tags, users, qywechat_approval, qywechat_callback, qywechat_mail, feishu_documents, feishu_documents_internal
+from app.api.v1 import auth, agencies, collection, influencers, match, notifications, offboarding, permissions, tags, users, qywechat_approval, qywechat_callback, qywechat_mail, feishu_documents, feishu_documents_internal, daily_export_internal
 from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.middleware.offboarding_guard import OffboardingGuardMiddleware
@@ -260,6 +260,7 @@ async def lifespan(app: FastAPI):
             print(f"CORS regex   : {settings.CORS_ORIGIN_REGEX}")
 
     import asyncio
+    from datetime import datetime, timedelta
 
     async def _expire_offboarded_loop():
         while True:
@@ -276,11 +277,40 @@ async def lifespan(app: FastAPI):
             finally:
                 db.close()
 
+    async def _daily_export_loop():
+        if not settings.DAILY_EXPORT_ENABLED:
+            return
+        while True:
+            now = datetime.now()
+            next_run = now.replace(
+                hour=settings.DAILY_EXPORT_HOUR,
+                minute=settings.DAILY_EXPORT_MINUTE,
+                second=0,
+                microsecond=0,
+            )
+            if next_run <= now:
+                next_run += timedelta(days=1)
+            wait_seconds = (next_run - now).total_seconds()
+            print(f"每日全量导出已调度，下次执行: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+            await asyncio.sleep(wait_seconds)
+            db = SessionLocal()
+            try:
+                from app.services.daily_export_service import DailyExportService
+
+                manifest = await asyncio.to_thread(DailyExportService.run_export, db)
+                print(f"每日全量导出完成: {manifest.get('dest_root')}")
+            except Exception as exc:
+                print(f"每日全量导出失败: {exc}")
+            finally:
+                db.close()
+
     task = asyncio.create_task(_expire_offboarded_loop())
+    export_task = asyncio.create_task(_daily_export_loop())
     try:
         yield
     finally:
         task.cancel()
+        export_task.cancel()
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
@@ -315,6 +345,7 @@ app.include_router(qywechat_approval.router, prefix="/api/v1/qywechat/approval")
 app.include_router(qywechat_callback.router, prefix="/api/v1/qywechat")
 app.include_router(feishu_documents.router, prefix="/api/v1")
 app.include_router(feishu_documents_internal.router, prefix="/api/v1")
+app.include_router(daily_export_internal.router, prefix="/api/v1")
 # 兼容旧路径（企微管理后台回调 URL 可能仍指向 /wecom）
 app.include_router(qywechat_mail.router, prefix="/api/v1/wecom/mail", include_in_schema=False)
 app.include_router(qywechat_approval.router, prefix="/api/v1/wecom/approval", include_in_schema=False)

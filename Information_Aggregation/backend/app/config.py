@@ -7,6 +7,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+REPO_ROOT = BACKEND_DIR.parent.parent
 # 强制以 backend/.env 为准，避免 shell/conda 中的旧 SECRET_KEY 覆盖文件配置
 load_dotenv(BACKEND_DIR / ".env", override=True)
 
@@ -154,6 +155,14 @@ class Settings(BaseSettings):
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     )
 
+    # 每日定时导出（凌晨将全量文件备份到本地目录）
+    DAILY_EXPORT_ENABLED: bool = True
+    DAILY_EXPORT_HOUR: int = 3
+    DAILY_EXPORT_MINUTE: int = 0
+    DAILY_EXPORT_ROOT: str = "exports"
+    MEETING_AI_UPLOAD_DIR: str = ""
+    MEETING_AI_OUTPUT_DIR: str = ""
+
     @model_validator(mode="after")
     def build_database_url(self) -> "Settings":
         if not self.DATABASE_URL:
@@ -174,6 +183,19 @@ class Settings(BaseSettings):
 
         if self.PUGONGYING_COOKIE_FILE and not Path(self.PUGONGYING_COOKIE_FILE).is_absolute():
             self.PUGONGYING_COOKIE_FILE = str(BACKEND_DIR / self.PUGONGYING_COOKIE_FILE)
+
+        if not self.MEETING_AI_UPLOAD_DIR:
+            self.MEETING_AI_UPLOAD_DIR = str(REPO_ROOT / "meeting_ai" / "upload")
+        elif not Path(self.MEETING_AI_UPLOAD_DIR).is_absolute():
+            self.MEETING_AI_UPLOAD_DIR = str(REPO_ROOT / self.MEETING_AI_UPLOAD_DIR)
+
+        if not self.MEETING_AI_OUTPUT_DIR:
+            self.MEETING_AI_OUTPUT_DIR = str(REPO_ROOT / "meeting_ai" / "output")
+        elif not Path(self.MEETING_AI_OUTPUT_DIR).is_absolute():
+            self.MEETING_AI_OUTPUT_DIR = str(REPO_ROOT / self.MEETING_AI_OUTPUT_DIR)
+
+        if not Path(self.DAILY_EXPORT_ROOT).is_absolute():
+            self.DAILY_EXPORT_ROOT = str(BACKEND_DIR / self.DAILY_EXPORT_ROOT)
 
         return self
 
