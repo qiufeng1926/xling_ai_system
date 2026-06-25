@@ -132,9 +132,17 @@
           </el-link>
         </div>
         <pre v-if="detail?.content" class="doc-library__detail-content">{{ detail.content }}</pre>
-        <el-empty v-else description="暂无正文快照，所有者可在云文档中编辑后同步" />
+        <el-empty v-else :description="emptyDetailHint" />
       </div>
       <template #footer>
+        <el-button
+          v-if="detail?.can_sync"
+          type="primary"
+          :loading="syncing"
+          @click="handleSyncDetail"
+        >
+          从飞书同步
+        </el-button>
         <el-button v-if="detail?.can_download && detail?.content" @click="downloadContent">下载正文</el-button>
         <el-button @click="detailVisible = false">关闭</el-button>
       </template>
@@ -151,6 +159,7 @@ import {
   applyFeishuDocumentViewAccess,
   getFeishuDocument,
   listFeishuDocuments,
+  syncFeishuDocument,
   type FeishuDocumentDetail,
   type FeishuDocumentListItem,
 } from '@/api/feishuDocuments'
@@ -175,7 +184,20 @@ const selectedDownloadIds = ref<string[]>([])
 
 const detailVisible = ref(false)
 const detailLoading = ref(false)
+const syncing = ref(false)
 const detail = ref<FeishuDocumentDetail | null>(null)
+const currentDocId = ref('')
+
+const emptyDetailHint = computed(() => {
+  const t = detail.value?.feishu_type
+  if (t === 'slides' || t === 'mindnote') {
+    return '幻灯片/思维笔记暂不支持正文快照，请使用「在飞书打开」查看'
+  }
+  if (detail.value?.can_sync) {
+    return '暂无正文快照，请点击「从飞书同步」拉取最新内容'
+  }
+  return '暂无正文快照，请联系文档所有者同步'
+})
 
 const viewSelectableCount = computed(() => documents.value.filter(isViewSelectable).length)
 const downloadSelectableCount = computed(() => documents.value.filter(isDownloadSelectable).length)
@@ -363,6 +385,7 @@ async function openDocument(item: FeishuDocumentListItem) {
   detailVisible.value = true
   detailLoading.value = true
   detail.value = null
+  currentDocId.value = item.doc_id
   try {
     const res = await getFeishuDocument(item.doc_id)
     detail.value = res.data
@@ -371,6 +394,22 @@ async function openDocument(item: FeishuDocumentListItem) {
     detailVisible.value = false
   } finally {
     detailLoading.value = false
+  }
+}
+
+async function handleSyncDetail() {
+  if (!currentDocId.value) return
+  syncing.value = true
+  try {
+    await syncFeishuDocument(currentDocId.value)
+    const res = await getFeishuDocument(currentDocId.value)
+    detail.value = res.data
+    ElMessage.success('同步完成')
+    await loadData()
+  } catch (err: any) {
+    ElMessage.error(err?.message || '同步失败')
+  } finally {
+    syncing.value = false
   }
 }
 

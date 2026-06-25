@@ -205,6 +205,22 @@ export function createFeishuDoc(title: string, folderToken = '') {
   return createFeishuFile('docx', title, folderToken)
 }
 
+/** 同步云文档到 xlink 文档库镜像（静默调用，失败不阻断 UI） */
+export function mirrorFeishuFileToLibrary(file: {
+  token: string
+  type: string
+  name?: string
+  title?: string
+  url?: string
+}) {
+  return flybookRequest.post<{ success: boolean }>('/docs/files/mirror', {
+    token: file.token,
+    type: file.type,
+    title: file.title || file.name || '',
+    url: file.url || '',
+  })
+}
+
 export function getDocsComponentAuth(pageUrl: string) {
   return flybookRequest.post<FeishuComponentAuth>('/docs/component-auth', {
     page_url: pageUrl,

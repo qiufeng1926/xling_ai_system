@@ -30,6 +30,9 @@ export interface FeishuDocumentDetail {
   content: string
   content_format: string
   can_download: boolean
+  is_owner?: boolean
+  can_sync?: boolean
+  has_snapshot?: boolean
 }
 
 export interface FeishuDocumentAccessStats {

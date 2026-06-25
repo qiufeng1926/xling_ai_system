@@ -201,7 +201,7 @@ class FeishuDocumentService:
         return items, total
 
     @staticmethod
-    def get_detail(db: Session, viewer: User, doc_id: str) -> dict:
+    def get_detail(db: Session, viewer: User, doc_id: str, *, auto_sync: bool = True) -> dict:
         mirror = db.query(FeishuDocumentMirror).filter(FeishuDocumentMirror.doc_id == doc_id).first()
         if not mirror:
             raise ValueError("文档不存在")
@@ -209,12 +209,27 @@ class FeishuDocumentService:
         if not can_access_document(db, viewer, mirror, owner):
             raise PermissionError("无权查看该文档")
 
-        latest = (
-            db.query(FeishuDocumentSnapshot)
-            .filter(FeishuDocumentSnapshot.mirror_id == mirror.id)
-            .order_by(desc(FeishuDocumentSnapshot.synced_at))
-            .first()
-        )
+        is_owner = mirror.user_id == viewer.id
+
+        def _latest_snapshot():
+            return (
+                db.query(FeishuDocumentSnapshot)
+                .filter(FeishuDocumentSnapshot.mirror_id == mirror.id)
+                .order_by(desc(FeishuDocumentSnapshot.synced_at))
+                .first()
+            )
+
+        latest = _latest_snapshot()
+        content = (latest.content if latest else "") or ""
+
+        if auto_sync and is_owner and not content.strip():
+            try:
+                mirror = FeishuDocumentService.sync_from_flybook(db, mirror)
+                latest = _latest_snapshot()
+                content = (latest.content if latest else "") or ""
+            except ValueError:
+                pass
+
         return {
             "doc_id": mirror.doc_id,
             "feishu_token": mirror.feishu_token,
@@ -224,9 +239,12 @@ class FeishuDocumentService:
             "owner_id": mirror.user_id,
             "owner_username": owner.username if owner else None,
             "synced_at": mirror.synced_at.isoformat() if mirror.synced_at else None,
-            "content": latest.content if latest else "",
+            "content": content,
             "content_format": latest.content_format if latest else "plain_text",
             "can_download": can_download_document(db, viewer, mirror, owner),
+            "is_owner": is_owner,
+            "can_sync": is_owner,
+            "has_snapshot": bool(content.strip()),
         }
 
     @staticmethod

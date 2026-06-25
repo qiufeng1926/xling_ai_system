@@ -152,6 +152,7 @@ import {
   isFeishuScopeMissingError,
   listDocsFiles,
   loadFeishuDocsSdk,
+  mirrorFeishuFileToLibrary,
   startFeishuBind,
   suggestImportTarget,
   type FeishuBindStatus,
@@ -303,6 +304,7 @@ async function mountEditor(docUrl: string) {
 }
 
 async function openDocument(file: FeishuDriveFile) {
+  mirrorFeishuFileToLibrary(file).catch(() => {})
   const url = buildDocUrl(file)
   selectedToken.value = file.token
 

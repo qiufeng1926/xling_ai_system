@@ -39,6 +39,13 @@ class CreateDocRequest(BaseModel):
     folder_token: str = Field(default="", max_length=128)
 
 
+class MirrorFileRequest(BaseModel):
+    token: str = Field(..., min_length=4, max_length=128)
+    type: str = Field(default="docx", max_length=32)
+    title: str = Field(default="", max_length=500)
+    url: str = Field(default="", max_length=2048)
+
+
 def _require_user_id(user: PortalUser) -> int:
     if user.user_id is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法识别当前用户")
@@ -46,31 +53,30 @@ def _require_user_id(user: PortalUser) -> int:
 
 
 def _mirror_created_document(user_id: int, created: dict) -> None:
-    """创建/导入成功后注册 xlink 文档镜像（失败不影响主流程）"""
+    """创建/导入/打开后注册 xlink 文档镜像（失败不影响主流程）"""
     token = (created.get("token") or "").strip()
     if not token:
         return
     file_type = (created.get("type") or "docx").strip().lower()
-    title = (created.get("title") or "").strip()
+    title = (created.get("title") or created.get("name") or "").strip()
     url = (created.get("url") or "").strip()
     content = ""
-    if file_type in {"docx", "doc"}:
-        try:
-            access_token, _ = ensure_user_access_token(user_id=user_id)
-            exported = export_document_text(access_token, token=token, file_type=file_type)
-            title = (exported.get("title") or title).strip()
-            url = (exported.get("url") or url).strip()
-            content = (exported.get("content") or "").strip()
-        except Exception as exc:
-            logger.warning(
-                "导出文档正文用于镜像失败",
-                extra={"output_params": {"user_id": user_id, "token": token, "error": str(exc)[:200]}},
-            )
+    try:
+        access_token, _ = ensure_user_access_token(user_id=user_id)
+        exported = export_document_text(access_token, token=token, file_type=file_type)
+        title = (exported.get("title") or title).strip()
+        url = (exported.get("url") or url).strip()
+        content = (exported.get("content") or "").strip()
+    except Exception as exc:
+        logger.warning(
+            "导出文档正文用于镜像失败",
+            extra={"output_params": {"user_id": user_id, "token": token, "type": file_type, "error": str(exc)[:200]}},
+        )
     register_document_mirror(
         user_id=user_id,
         feishu_token=token,
         feishu_type=file_type,
-        title=title,
+        title=title or "未命名文档",
         feishu_url=url,
         content=content,
     )
@@ -194,6 +200,22 @@ def docs_create_file(body: CreateDocRequest, user: PortalUser = Depends(get_curr
     )
     _mirror_created_document(user_id, created)
     return created
+
+
+@router.post("/files/mirror")
+def docs_mirror_file(body: MirrorFileRequest, user: PortalUser = Depends(get_current_user)):
+    """将云空间文件同步到 xlink 文档库镜像（打开/列表时触发）"""
+    user_id = _require_user_id(user)
+    _mirror_created_document(
+        user_id,
+        {
+            "token": body.token.strip(),
+            "type": body.type.strip().lower(),
+            "title": body.title.strip(),
+            "url": body.url.strip(),
+        },
+    )
+    return {"success": True}
 
 
 @router.get("/import/formats")
