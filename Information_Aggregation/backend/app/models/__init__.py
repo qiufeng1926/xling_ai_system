@@ -10,7 +10,7 @@ from app.models.match import MatchRequest, MatchResult
 
 from app.models.permission import SystemSetting, ViewAccessRequest
 
-from app.models.offboarding import UserOffboardingRecord
+from app.models.offboarding import UserOffboardingDocument, UserOffboardingRecord
 
 __all__ = [
     "User",
@@ -26,6 +26,7 @@ __all__ = [
     "ViewAccessRequest",
     "SystemSetting",
     "UserOffboardingRecord",
+    "UserOffboardingDocument",
 ]
 
 

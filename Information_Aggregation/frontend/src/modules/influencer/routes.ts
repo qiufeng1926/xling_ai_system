@@ -81,6 +81,12 @@ export const influencerRoutes: RouteRecordRaw[] = [
           meta: { title: '离职交接申请', module: 'platform' },
         },
         {
+          path: 'offboarding-handover',
+          name: 'OffboardingHandover',
+          component: () => import('@/views/OffboardingHandover.vue'),
+          meta: { title: '交接文档', module: 'platform' },
+        },
+        {
           path: 'access-review',
           name: 'AccessReview',
           component: () => import('@/views/AccessReview.vue'),

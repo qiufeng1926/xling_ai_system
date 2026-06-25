@@ -79,6 +79,9 @@ db_user = _env("DB_USER", "root")
 db_password = _env("DB_PASSWORD", "")
 db_name = _env("DB_NAME", "meeting_ai")
 db_charset = _env("DB_CHARSET", "utf8mb4")
+# Windows 本地 MySQL 默认 SSL 握手易失败；远程库需加密时可设 DB_SSL=true
+db_ssl = _env_bool("DB_SSL", "false")
+db_connect_args: dict = {} if db_ssl else {"ssl_disabled": True}
 
 # 构建数据库连接URL
 database_url = f"mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}?charset={db_charset}"

@@ -762,6 +762,7 @@ def migrate_schema(engine):
 def init_database(database_url: str):
     """初始化数据库"""
     from urllib.parse import urlparse
+    from config.config import db_connect_args
     
     # 解析数据库URL
     parsed = urlparse(database_url)
@@ -772,7 +773,7 @@ def init_database(database_url: str):
     
     try:
         # 尝试连接到MySQL服务器（不指定数据库）
-        temp_engine = create_engine(base_url, echo=False)
+        temp_engine = create_engine(base_url, echo=False, connect_args=db_connect_args)
         with temp_engine.connect() as conn:
             # 检查数据库是否存在
             result = conn.execute(
@@ -791,7 +792,7 @@ def init_database(database_url: str):
         raise
     
     # 现在使用完整的数据库URL创建引擎并创建表
-    engine = create_engine(database_url, echo=False, pool_pre_ping=True)
+    engine = create_engine(database_url, echo=False, pool_pre_ping=True, connect_args=db_connect_args)
     Base.metadata.create_all(engine)
     migrate_schema(engine)
     print("[OK] 数据库表结构创建成功")

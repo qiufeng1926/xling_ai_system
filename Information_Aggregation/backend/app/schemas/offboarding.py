@@ -8,8 +8,21 @@ class OffboardingApplyRequest(BaseModel):
     last_work_day: date | None = None
 
 
-class OffboardingCompleteRequest(BaseModel):
+class OffboardingAssignHandoverRequest(BaseModel):
     handover_user_id: int = Field(..., ge=1)
+
+
+class OffboardingConfirmHandoverRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
+
+
+class OffboardingDocumentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    filename: str
+    file_size: int
+    uploaded_at: datetime
 
 
 class OffboardingRecordOut(BaseModel):
@@ -24,6 +37,12 @@ class OffboardingRecordOut(BaseModel):
     last_work_day: date | None
     content_snapshot: dict | None
     error_message: str | None
+    applicant_note: str | None = None
+    handover_confirm_note: str | None = None
+    handover_assigned_at: datetime | None = None
+    documents_submitted_at: datetime | None = None
+    handover_confirmed_at: datetime | None = None
+    documents: list[OffboardingDocumentOut] = Field(default_factory=list)
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None

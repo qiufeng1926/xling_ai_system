@@ -9,9 +9,13 @@ from sqlalchemy.orm import Session
 from app.constants.account_status import (
     ACTIVE,
     ACTIVE_RECORD_STATUSES,
+    FINAL_APPROVAL_RETRY_STATUSES,
     OFFBOARDED,
     OFFBOARDING,
     OFFBOARD_RETENTION_DAYS,
+    RECORD_AWAITING_DOCUMENTS,
+    RECORD_AWAITING_FINAL_APPROVAL,
+    RECORD_AWAITING_HANDOVER_CONFIRM,
     RECORD_CANCELLED,
     RECORD_COMPLETED,
     RECORD_FAILED,
@@ -29,11 +33,18 @@ from app.models.feishu_document import (
     FeishuDocumentViewRequest,
 )
 from app.models.match import MatchRequest
-from app.models.offboarding import UserOffboardingRecord
+from app.models.offboarding import UserOffboardingDocument, UserOffboardingRecord
 from app.models.permission import ViewAccessRequest
 from app.services.flybook_client import FlybookClientError, mirror_all_documents_for_user
 from app.services.meeting_ai_client import MeetingAiClientError, offboard_user, revert_offboard
-from app.services.notification_emit import notify_offboarding_completed, notify_offboarding_pending
+from app.services.notification_emit import (
+    notify_offboarding_completed,
+    notify_offboarding_documents_submitted,
+    notify_offboarding_handover_assigned,
+    notify_offboarding_handover_confirmed,
+    notify_offboarding_pending,
+)
+from app.services.offboarding_document_service import OffboardingDocumentService
 from app.utils.access_control import is_hidden_super_user, normalize_role, should_hide_user_from
 
 
@@ -65,6 +76,12 @@ class OffboardingService:
             "last_work_day": record.last_work_day,
             "content_snapshot": record.content_snapshot,
             "error_message": record.error_message,
+            "applicant_note": record.applicant_note,
+            "handover_confirm_note": record.handover_confirm_note,
+            "handover_assigned_at": record.handover_assigned_at,
+            "documents_submitted_at": record.documents_submitted_at,
+            "handover_confirmed_at": record.handover_confirmed_at,
+            "documents": OffboardingDocumentService.list_documents(db, record.id),
             "created_at": record.created_at,
             "started_at": record.started_at,
             "completed_at": record.completed_at,
@@ -138,6 +155,41 @@ class OffboardingService:
         return db.query(UserOffboardingRecord).filter(UserOffboardingRecord.id == record_id).first()
 
     @staticmethod
+    def list_handover_tasks(db: Session, handover_user: User) -> list[dict]:
+        rows = (
+            db.query(UserOffboardingRecord)
+            .filter(
+                UserOffboardingRecord.handover_user_id == handover_user.id,
+                UserOffboardingRecord.status == RECORD_AWAITING_HANDOVER_CONFIRM,
+            )
+            .order_by(UserOffboardingRecord.documents_submitted_at.desc())
+            .all()
+        )
+        return [OffboardingService._record_out(db, r) for r in rows]
+
+    @staticmethod
+    def list_handover_archive(db: Session, handover_user: User) -> list[dict]:
+        """交接人可查档：已提交文档的交接记录（含已确认、已完成）"""
+        archive_statuses = (
+            RECORD_AWAITING_HANDOVER_CONFIRM,
+            RECORD_AWAITING_FINAL_APPROVAL,
+            RECORD_PROCESSING,
+            RECORD_COMPLETED,
+            RECORD_FAILED,
+        )
+        rows = (
+            db.query(UserOffboardingRecord)
+            .filter(
+                UserOffboardingRecord.handover_user_id == handover_user.id,
+                UserOffboardingRecord.status.in_(archive_statuses),
+                UserOffboardingRecord.documents_submitted_at.isnot(None),
+            )
+            .order_by(UserOffboardingRecord.documents_submitted_at.desc())
+            .all()
+        )
+        return [OffboardingService._record_out(db, r) for r in rows if r.documents_submitted_at]
+
+    @staticmethod
     def cancel(db: Session, record_id: int, operator: User) -> UserOffboardingRecord:
         record = OffboardingService.get_record(db, record_id)
         if not record or record.status not in ACTIVE_RECORD_STATUSES:
@@ -157,10 +209,185 @@ class OffboardingService:
         record.error_message = None
         record.meeting_snapshot = None
         record.started_at = None
+        db.query(UserOffboardingDocument).filter(UserOffboardingDocument.record_id == record.id).delete(
+            synchronize_session=False
+        )
+        OffboardingDocumentService.delete_record_files(record.id)
         user.account_status = ACTIVE
         db.commit()
         db.refresh(record)
         return record
+
+    @staticmethod
+    def assign_handover(
+        db: Session,
+        record_id: int,
+        operator: User,
+        *,
+        handover_user_id: int,
+    ) -> UserOffboardingRecord:
+        if normalize_role(operator.role) != SUPER_ADMIN:
+            raise ValueError("需要超级管理员权限")
+
+        record = OffboardingService.get_record(db, record_id)
+        if not record or record.status != RECORD_PENDING:
+            raise ValueError("仅待处理的申请可指定交接人")
+
+        user = db.query(User).filter(User.id == record.user_id).first()
+        if not user:
+            raise ValueError("离职用户不存在")
+
+        handover = OffboardingService._active_user(db, handover_user_id)
+        if not handover:
+            raise ValueError("对接人员无效或不在职")
+        if handover.id == user.id:
+            raise ValueError("对接人员不能是离职员工本人")
+
+        record.handover_user_id = handover.id
+        record.operator_id = operator.id
+        record.status = RECORD_AWAITING_DOCUMENTS
+        record.handover_assigned_at = datetime.now()
+        record.error_message = None
+        db.commit()
+        db.refresh(record)
+        notify_offboarding_handover_assigned(db, record)
+        return record
+
+    @staticmethod
+    async def submit_documents(
+        db: Session,
+        record_id: int,
+        user: User,
+        *,
+        files,
+        note: str | None = None,
+    ) -> UserOffboardingRecord:
+        record = OffboardingService.get_record(db, record_id)
+        if not record or record.user_id != user.id:
+            raise ValueError("交接记录不存在")
+        if record.status != RECORD_AWAITING_DOCUMENTS:
+            raise ValueError("当前阶段不可提交交接文档")
+
+        await OffboardingDocumentService.save_uploads(db, record, files)
+        record.applicant_note = (note or "").strip() or None
+        record.documents_submitted_at = datetime.now()
+        record.status = RECORD_AWAITING_HANDOVER_CONFIRM
+        record.error_message = None
+        db.commit()
+        db.refresh(record)
+        notify_offboarding_documents_submitted(db, record)
+        return record
+
+    @staticmethod
+    def confirm_handover(
+        db: Session,
+        record_id: int,
+        handover_user: User,
+        *,
+        note: str | None = None,
+    ) -> UserOffboardingRecord:
+        record = OffboardingService.get_record(db, record_id)
+        if not record or record.handover_user_id != handover_user.id:
+            raise ValueError("交接记录不存在")
+        if record.status != RECORD_AWAITING_HANDOVER_CONFIRM:
+            raise ValueError("当前阶段不可确认交接")
+
+        doc_count = (
+            db.query(UserOffboardingDocument)
+            .filter(UserOffboardingDocument.record_id == record.id)
+            .count()
+        )
+        if doc_count == 0:
+            raise ValueError("申请人尚未上传交接文档")
+
+        record.handover_confirm_note = (note or "").strip() or None
+        record.handover_confirmed_at = datetime.now()
+        record.status = RECORD_AWAITING_FINAL_APPROVAL
+        record.error_message = None
+        db.commit()
+        db.refresh(record)
+        notify_offboarding_handover_confirmed(db, record)
+        return record
+
+    @staticmethod
+    def approve(db: Session, record_id: int, operator: User) -> UserOffboardingRecord:
+        if normalize_role(operator.role) != SUPER_ADMIN:
+            raise ValueError("需要超级管理员权限")
+
+        record = OffboardingService.get_record(db, record_id)
+        if not record or record.status not in FINAL_APPROVAL_RETRY_STATUSES:
+            raise ValueError("仅待最终批准的申请可执行离职封存")
+
+        user = db.query(User).filter(User.id == record.user_id).first()
+        if not user:
+            raise ValueError("离职用户不存在")
+        if getattr(user, "account_status", ACTIVE) != OFFBOARDING:
+            raise ValueError("用户不在离职申请状态")
+
+        handover = db.query(User).filter(User.id == record.handover_user_id).first()
+        if not handover:
+            raise ValueError("未指定交接人")
+
+        if record.status in (RECORD_PROCESSING, RECORD_FAILED):
+            OffboardingService._recover_partial_meeting(db, record)
+
+        record.operator_id = operator.id
+        record.status = RECORD_PROCESSING
+        record.error_message = None
+        record.started_at = datetime.now()
+        db.commit()
+
+        meeting_snapshot: dict = {}
+        try:
+            feishu_stats = OffboardingService._mirror_feishu_documents(db, user)
+            meeting_snapshot = offboard_user(
+                departed_username=user.username,
+                handover_username=handover.username,
+                offboarding_id=record.id,
+            )
+            record.meeting_snapshot = meeting_snapshot
+            db.commit()
+
+            snapshot = OffboardingService._transfer_portal_content(db, user, handover, record)
+            snapshot["feishu_mirror"] = feishu_stats
+            record.content_snapshot = snapshot
+            record.error_message = None
+            db.commit()
+            db.refresh(record)
+            notify_offboarding_completed(db, record)
+            return record
+        except Exception as exc:
+            db.rollback()
+            record = OffboardingService.get_record(db, record_id)
+            if record and meeting_snapshot:
+                try:
+                    revert_offboard(meeting_snapshot)
+                except MeetingAiClientError:
+                    pass
+            if record:
+                record.status = RECORD_AWAITING_FINAL_APPROVAL
+                record.error_message = str(exc)[:500]
+                record.meeting_snapshot = None
+                record.started_at = None
+                user = db.query(User).filter(User.id == record.user_id).first()
+                if user:
+                    user.account_status = OFFBOARDING
+                    user.status = 1
+                db.commit()
+            raise ValueError(str(exc)) from exc
+
+    @staticmethod
+    def complete(
+        db: Session,
+        record_id: int,
+        operator: User,
+        *,
+        handover_user_id: int,
+    ) -> UserOffboardingRecord:
+        """兼容旧接口：指定交接人（不再直接完成封存）"""
+        return OffboardingService.assign_handover(
+            db, record_id, operator, handover_user_id=handover_user_id
+        )
 
     @staticmethod
     def _recover_partial_meeting(db: Session, record: UserOffboardingRecord) -> None:
@@ -303,86 +530,6 @@ class OffboardingService:
         record.expires_at = now + timedelta(days=OFFBOARD_RETENTION_DAYS)
         record.content_snapshot = snapshot
         return snapshot
-
-    @staticmethod
-    def complete(
-        db: Session,
-        record_id: int,
-        operator: User,
-        *,
-        handover_user_id: int,
-    ) -> UserOffboardingRecord:
-        if normalize_role(operator.role) != SUPER_ADMIN:
-            raise ValueError("需要超级管理员权限")
-
-        record = OffboardingService.get_record(db, record_id)
-        if not record or record.status not in ACTIVE_RECORD_STATUSES:
-            raise ValueError("离职申请不存在或不可完成")
-
-        user = db.query(User).filter(User.id == record.user_id).first()
-        if not user:
-            raise ValueError("离职用户不存在")
-        if normalize_role(user.role) == SUPER_ADMIN:
-            raise ValueError("不能对超级管理员执行离职交接")
-        if should_hide_user_from(operator, user):
-            raise ValueError("离职用户不存在")
-        if getattr(user, "account_status", ACTIVE) != OFFBOARDING:
-            raise ValueError("用户不在离职申请状态")
-
-        handover = OffboardingService._active_user(db, handover_user_id)
-        if not handover:
-            raise ValueError("对接人员无效或不在职")
-        if handover.id == user.id:
-            raise ValueError("对接人员不能是离职员工本人")
-
-        if record.status in (RECORD_PROCESSING, RECORD_FAILED):
-            OffboardingService._recover_partial_meeting(db, record)
-
-        record.handover_user_id = handover.id
-        record.operator_id = operator.id
-        record.status = RECORD_PROCESSING
-        record.error_message = None
-        record.started_at = datetime.now()
-        db.commit()
-
-        meeting_snapshot: dict = {}
-        try:
-            feishu_stats = OffboardingService._mirror_feishu_documents(db, user)
-            meeting_snapshot = offboard_user(
-                departed_username=user.username,
-                handover_username=handover.username,
-                offboarding_id=record.id,
-            )
-            record.meeting_snapshot = meeting_snapshot
-            db.commit()
-
-            snapshot = OffboardingService._transfer_portal_content(db, user, handover, record)
-            snapshot["feishu_mirror"] = feishu_stats
-            record.content_snapshot = snapshot
-            record.error_message = None
-            db.commit()
-            db.refresh(record)
-            notify_offboarding_completed(db, record)
-            return record
-        except Exception as exc:
-            db.rollback()
-            record = OffboardingService.get_record(db, record_id)
-            if record and meeting_snapshot:
-                try:
-                    revert_offboard(meeting_snapshot)
-                except MeetingAiClientError:
-                    pass
-            if record:
-                record.status = RECORD_PENDING
-                record.error_message = str(exc)[:500]
-                record.meeting_snapshot = None
-                record.started_at = None
-                user = db.query(User).filter(User.id == record.user_id).first()
-                if user:
-                    user.account_status = OFFBOARDING
-                    user.status = 1
-                db.commit()
-            raise ValueError(str(exc)) from exc
 
     @staticmethod
     def rehire(db: Session, user_id: int, operator: User) -> User:

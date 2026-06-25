@@ -87,10 +87,30 @@ def migrate_rbac(db: Session) -> None:
             if "transfer_pending_user_id" not in match_cols:
                 db.execute(text("ALTER TABLE match_requests ADD COLUMN transfer_pending_user_id BIGINT NULL"))
         if "user_offboarding_records" in inspector.get_table_names():
+            off_cols = {c["name"] for c in inspector.get_columns("user_offboarding_records")}
+            for col, col_def in (
+                ("applicant_note", "TEXT NULL"),
+                ("handover_confirm_note", "TEXT NULL"),
+                ("handover_assigned_at", "DATETIME NULL"),
+                ("documents_submitted_at", "DATETIME NULL"),
+                ("handover_confirmed_at", "DATETIME NULL"),
+            ):
+                if col not in off_cols:
+                    db.execute(text(f"ALTER TABLE user_offboarding_records ADD COLUMN {col} {col_def}"))
+            try:
+                db.execute(text("ALTER TABLE user_offboarding_records MODIFY status VARCHAR(40) DEFAULT 'pending'"))
+            except Exception:
+                pass
+            db.execute(
+                text(
+                    "UPDATE user_offboarding_records SET status='awaiting_final_approval', started_at=NULL "
+                    "WHERE status IN ('failed', 'processing') AND handover_confirmed_at IS NOT NULL"
+                )
+            )
             db.execute(
                 text(
                     "UPDATE user_offboarding_records SET status='pending', started_at=NULL "
-                    "WHERE status IN ('failed', 'processing')"
+                    "WHERE status IN ('failed', 'processing') AND handover_confirmed_at IS NULL"
                 )
             )
         if "view_access_requests" in inspector.get_table_names():

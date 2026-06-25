@@ -1,11 +1,13 @@
 <template>
   <div class="page-card">
     <div class="toolbar">
-      <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 140px" @change="load">
-        <el-option label="待处理" value="pending" />
+      <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 160px" @change="load">
+        <el-option label="待指定交接人" value="pending" />
+        <el-option label="待上传文档" value="awaiting_documents" />
+        <el-option label="待交接人确认" value="awaiting_handover_confirm" />
+        <el-option label="待最终批准" value="awaiting_final_approval" />
         <el-option label="已完成" value="completed" />
         <el-option label="已取消" value="cancelled" />
-        <el-option label="失败" value="failed" />
       </el-select>
       <el-button @click="load">刷新</el-button>
     </div>
@@ -24,29 +26,40 @@
           <span v-else class="muted">待指定</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      <el-table-column label="状态" width="130">
         <template #default="{ row }">
           <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="error_message" label="失败原因" min-width="180" show-overflow-tooltip />
-      <el-table-column prop="reason" label="原因" min-width="160" show-overflow-tooltip />
+      <el-table-column prop="error_message" label="失败原因" min-width="160" show-overflow-tooltip />
       <el-table-column label="提交时间" width="170">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="260" fixed="right">
+      <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
-          <template v-if="isActiveRecord(row.status)">
-            <el-button link type="primary" @click="openComplete(row)">
-              {{ row.status === 'pending' && !row.error_message ? '完成交接' : '重试交接' }}
-            </el-button>
-            <el-popconfirm title="确定取消该申请？取消后员工账号将恢复正常。" @confirm="handleCancel(row.id)">
-              <template #reference>
-                <el-button link type="danger">取消</el-button>
-              </template>
-            </el-popconfirm>
-          </template>
-          <el-button v-else link type="primary" @click="showDetail(row)">查看清单</el-button>
+          <el-button v-if="row.status === 'pending'" link type="primary" @click="openAssign(row)">
+            指定交接人
+          </el-button>
+          <el-button
+            v-if="row.status === 'awaiting_final_approval' || row.status === 'failed'"
+            link
+            type="primary"
+            @click="handleApprove(row.id)"
+          >
+            {{ row.error_message ? '重试批准' : '批准离职' }}
+          </el-button>
+          <el-button v-if="isActiveRecord(row.status)" link type="primary" @click="showDetail(row)">
+            详情
+          </el-button>
+          <el-popconfirm
+            v-if="isActiveRecord(row.status)"
+            title="确定取消该申请？"
+            @confirm="handleCancel(row.id)"
+          >
+            <template #reference>
+              <el-button link type="danger">取消</el-button>
+            </template>
+          </el-popconfirm>
         </template>
       </el-table-column>
     </el-table>
@@ -61,8 +74,9 @@
       />
     </div>
 
-    <el-dialog v-model="completeVisible" title="完成离职交接" width="480px">
-      <p>员工：<strong>{{ completing?.user_nickname || completing?.user_username }}</strong></p>
+    <el-dialog v-model="assignVisible" title="指定交接人" width="480px">
+      <p>员工：<strong>{{ assigning?.user_nickname || assigning?.user_username }}</strong></p>
+      <p class="dialog-hint">指定后，员工需上传交接文档，再由交接人确认，最后由您批准离职。</p>
       <el-form label-width="100px">
         <el-form-item label="对接人员" required>
           <el-select
@@ -84,13 +98,28 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="completeVisible = false">取消</el-button>
-        <el-button type="primary" :loading="completingLoading" @click="handleComplete">确认交接</el-button>
+        <el-button @click="assignVisible = false">取消</el-button>
+        <el-button type="primary" :loading="assigningLoading" @click="handleAssign">确认指定</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="detailVisible" title="交接清单" width="560px">
-      <pre v-if="detailSnapshot" class="snapshot">{{ JSON.stringify(detailSnapshot, null, 2) }}</pre>
+    <el-dialog v-model="detailVisible" title="交接详情" width="600px">
+      <template v-if="detailRow">
+        <p>状态：{{ statusLabel(detailRow.status) }}</p>
+        <p v-if="detailRow.applicant_note">员工说明：{{ detailRow.applicant_note }}</p>
+        <p v-if="detailRow.handover_confirm_note">交接人备注：{{ detailRow.handover_confirm_note }}</p>
+        <el-table v-if="detailRow.documents?.length" :data="detailRow.documents" size="small">
+          <el-table-column prop="filename" label="文档">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="downloadDoc(row.id, row.filename)">{{ row.filename }}</el-button>
+            </template>
+          </el-table-column>
+          <el-table-column label="大小" width="90">
+            <template #default="{ row }">{{ formatSize(row.file_size) }}</template>
+          </el-table-column>
+        </el-table>
+        <pre v-if="detailRow.content_snapshot" class="snapshot">{{ JSON.stringify(detailRow.content_snapshot, null, 2) }}</pre>
+      </template>
     </el-dialog>
   </div>
 </template>
@@ -99,9 +128,12 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  approveOffboarding,
+  assignHandover,
   cancelOffboarding,
-  completeOffboarding,
+  downloadOffboardingDocument,
   listOffboarding,
+  OFFBOARDING_STATUS_LABELS,
   type OffboardingRecord,
 } from '@/api/offboarding'
 import { searchUsers, type UserSearchHit } from '@/api/users'
@@ -111,30 +143,47 @@ const list = ref<OffboardingRecord[]>([])
 const statusFilter = ref('pending')
 const pagination = reactive({ page: 1, page_size: 20, total: 0 })
 
-const completeVisible = ref(false)
-const completing = ref<OffboardingRecord | null>(null)
+const assignVisible = ref(false)
+const assigning = ref<OffboardingRecord | null>(null)
 const handoverUserId = ref<number | null>(null)
 const handoverOptions = ref<UserSearchHit[]>([])
 const searchLoading = ref(false)
-const completingLoading = ref(false)
+const assigningLoading = ref(false)
 
 const detailVisible = ref(false)
-const detailSnapshot = ref<Record<string, unknown> | null>(null)
+const detailRow = ref<OffboardingRecord | null>(null)
 
 function formatTime(v: string) {
   return v?.replace('T', ' ').slice(0, 19)
 }
 
+function formatSize(n: number) {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
 function statusLabel(s: string) {
-  return { pending: '待处理', processing: '交接中', completed: '已完成', cancelled: '已取消', failed: '失败' }[s] || s
+  return OFFBOARDING_STATUS_LABELS[s] || s
 }
 
 function statusType(s: string) {
-  return ({ pending: 'warning', processing: '', completed: 'success', cancelled: 'info', failed: 'danger' } as const)[s] || 'info'
+  return (
+    {
+      pending: 'warning',
+      awaiting_documents: 'warning',
+      awaiting_handover_confirm: '',
+      awaiting_final_approval: 'success',
+      processing: '',
+      completed: 'success',
+      cancelled: 'info',
+      failed: 'danger',
+    } as const
+  )[s] || 'info'
 }
 
 function isActiveRecord(status: string) {
-  return status === 'pending' || status === 'processing' || status === 'failed'
+  return !['completed', 'cancelled'].includes(status)
 }
 
 async function load() {
@@ -152,13 +201,11 @@ async function load() {
   }
 }
 
-function openComplete(row: OffboardingRecord) {
-  completing.value = row
-  handoverUserId.value = row.handover_user_id ?? null
-  handoverOptions.value = row.handover_user_id && row.handover_username
-    ? [{ id: row.handover_user_id, username: row.handover_username, nickname: row.handover_nickname || row.handover_username }]
-    : []
-  completeVisible.value = true
+function openAssign(row: OffboardingRecord) {
+  assigning.value = row
+  handoverUserId.value = null
+  handoverOptions.value = []
+  assignVisible.value = true
 }
 
 async function searchHandover(keyword: string) {
@@ -166,27 +213,33 @@ async function searchHandover(keyword: string) {
   searchLoading.value = true
   try {
     const res = await searchUsers(keyword, 15)
-    handoverOptions.value = (res.data || []).filter((u) => u.id !== completing.value?.user_id)
+    handoverOptions.value = (res.data || []).filter((u) => u.id !== assigning.value?.user_id)
   } finally {
     searchLoading.value = false
   }
 }
 
-async function handleComplete() {
-  if (!completing.value || !handoverUserId.value) {
+async function handleAssign() {
+  if (!assigning.value || !handoverUserId.value) {
     ElMessage.warning('请选择对接人员')
     return
   }
-  await ElMessageBox.confirm('将镜像飞书文档、转移全部资源并封存账号，是否继续？', '确认交接')
-  completingLoading.value = true
+  assigningLoading.value = true
   try {
-    await completeOffboarding(completing.value.id, handoverUserId.value)
-    ElMessage.success('交接已完成')
-    completeVisible.value = false
+    await assignHandover(assigning.value.id, handoverUserId.value)
+    ElMessage.success('已指定交接人，等待员工上传文档')
+    assignVisible.value = false
     load()
   } finally {
-    completingLoading.value = false
+    assigningLoading.value = false
   }
+}
+
+async function handleApprove(id: number) {
+  await ElMessageBox.confirm('将执行资源转移与账号封存，是否批准离职？', '最终批准')
+  await approveOffboarding(id)
+  ElMessage.success('离职交接已完成')
+  load()
 }
 
 async function handleCancel(id: number) {
@@ -196,8 +249,16 @@ async function handleCancel(id: number) {
 }
 
 function showDetail(row: OffboardingRecord) {
-  detailSnapshot.value = row.content_snapshot
+  detailRow.value = row
   detailVisible.value = true
+}
+
+async function downloadDoc(docId: number, filename: string) {
+  try {
+    await downloadOffboardingDocument(docId, filename)
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '下载失败')
+  }
 }
 
 onMounted(load)
@@ -221,12 +282,18 @@ onMounted(load)
 .muted {
   color: #c0c4cc;
 }
+.dialog-hint {
+  color: #909399;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
 .snapshot {
-  max-height: 400px;
+  max-height: 300px;
   overflow: auto;
   font-size: 12px;
   background: #f5f7fa;
   padding: 12px;
   border-radius: 4px;
+  margin-top: 12px;
 }
 </style>

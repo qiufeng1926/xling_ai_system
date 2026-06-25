@@ -163,7 +163,7 @@ async function loadDetail() {
         return
       }
       if (res.error?.includes('无权') && isSuperAdminUser.value) {
-        throw new Error('暂无浏览权限（隐身超管等特殊会议）')
+        throw new Error('暂无浏览权限')
       }
       throw new Error(res.error || '加载失败')
     }

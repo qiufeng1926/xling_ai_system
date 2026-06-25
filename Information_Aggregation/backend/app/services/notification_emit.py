@@ -130,3 +130,28 @@ def notify_offboarding_completed(db: Session, record) -> None:
     if record.handover_user_id:
         targets.add(record.handover_user_id)
     notification_hub.publish_many(list(targets), event)
+
+
+def _publish_offboarding(user_ids: list[int], action: str, record) -> None:
+    if not user_ids:
+        return
+    event = {
+        "channel": "user_offboarding",
+        "action": action,
+        "offboarding_id": record.id,
+        "status": record.status,
+    }
+    notification_hub.publish_many(user_ids, event)
+
+
+def notify_offboarding_handover_assigned(db: Session, record) -> None:
+    _publish_offboarding([record.user_id], "handover_assigned", record)
+
+
+def notify_offboarding_documents_submitted(db: Session, record) -> None:
+    if record.handover_user_id:
+        _publish_offboarding([record.handover_user_id], "documents_submitted", record)
+
+
+def notify_offboarding_handover_confirmed(db: Session, record) -> None:
+    _publish_offboarding(_super_admin_ids(db), "handover_confirmed", record)

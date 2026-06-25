@@ -125,6 +125,13 @@
             <el-icon><DocumentRemove /></el-icon>
             <span>离职申请</span>
           </el-menu-item>
+          <el-menu-item v-if="showHandoverMenu" :index="INFLUENCER_ROUTES.offboardingHandover">
+            <el-icon><CircleCheck /></el-icon>
+            <span class="menu-item-with-badge">
+              交接文档
+              <el-badge v-if="handoverTaskCount > 0" :value="handoverTaskCount" class="menu-badge" />
+            </span>
+          </el-menu-item>
           <el-menu-item v-if="showAccessReview" :index="INFLUENCER_ROUTES.accessReview">
             <el-icon><Stamp /></el-icon>
             <span class="menu-item-with-badge">
@@ -192,6 +199,7 @@ import { listMyRooms } from '@/api/meetingRooms'
 import { getAccessRequestStats } from '@/api/permissions'
 import { getMeetingViewRequestStats } from '@/api/meetings'
 import { getFeishuDocumentAccessStats } from '@/api/feishuDocuments'
+import { getHandoverArchive, getMyHandoverTasks } from '@/api/offboarding'
 import { useUserNotifications } from '@/composables/useUserNotifications'
 import {
   ROLE_LABELS,
@@ -220,6 +228,7 @@ const activeMenu = computed(() => {
   if (path.startsWith('/influencer/agencies')) return INFLUENCER_ROUTES.agencies
   if (path.startsWith('/influencer/users')) return INFLUENCER_ROUTES.users
   if (path.startsWith('/influencer/offboarding-manage')) return INFLUENCER_ROUTES.offboardingManage
+  if (path.startsWith('/influencer/offboarding-handover')) return INFLUENCER_ROUTES.offboardingHandover
   if (path.startsWith('/influencer/offboarding-apply')) return INFLUENCER_ROUTES.offboardingApply
   if (path.startsWith('/influencer/access-review')) return INFLUENCER_ROUTES.accessReview
   if (path.startsWith('/meeting/solo')) return MEETING_ROUTES.solo
@@ -278,6 +287,9 @@ const influencerMenuLabel = computed(() => (isUser(userStore.userInfo?.role) ? '
 const pendingInviteCount = ref(0)
 const pendingAccessReviewCount = ref(0)
 const myPendingAccessCount = ref(0)
+const handoverTaskCount = ref(0)
+const handoverArchiveCount = ref(0)
+const showHandoverMenu = computed(() => handoverTaskCount.value > 0 || handoverArchiveCount.value > 0)
 
 const accessBadgeCount = computed(() => {
   if (canReviewAccess(role.value)) return pendingAccessReviewCount.value
@@ -339,14 +351,31 @@ async function refreshAccessRequestStats() {
   }
 }
 
+async function refreshHandoverTasks() {
+  if (!userStore.token || isOffboardingPending.value) {
+    handoverTaskCount.value = 0
+    handoverArchiveCount.value = 0
+    return
+  }
+  try {
+    const [pendingRes, archiveRes] = await Promise.all([getMyHandoverTasks(), getHandoverArchive()])
+    handoverTaskCount.value = pendingRes.data?.length || 0
+    handoverArchiveCount.value = archiveRes.data?.length || 0
+  } catch {
+    handoverTaskCount.value = 0
+    handoverArchiveCount.value = 0
+  }
+}
+
 onMounted(() => {
   userStore.fetchUserInfo()
   refreshPendingInvites()
   refreshAccessRequestStats()
+  refreshHandoverTasks()
 })
 
 useUserNotifications(async () => {
-  await Promise.all([refreshPendingInvites(), refreshAccessRequestStats()])
+  await Promise.all([refreshPendingInvites(), refreshAccessRequestStats(), refreshHandoverTasks()])
 })
 
 function handleLogout() {

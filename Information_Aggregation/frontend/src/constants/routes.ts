@@ -17,6 +17,7 @@ export const INFLUENCER_ROUTES = {
   users: `${INFLUENCER_BASE}/users`,
   offboardingApply: `${INFLUENCER_BASE}/offboarding-apply`,
   offboardingManage: `${INFLUENCER_BASE}/offboarding-manage`,
+  offboardingHandover: `${INFLUENCER_BASE}/offboarding-handover`,
 } as const
 
 export const MEETING_ROUTES = {

@@ -180,7 +180,7 @@ function isDownloadSelectable(item: MeetingListItem) {
 function previewMessage(item: MeetingListItem) {
   if (isSuperAdminUser.value) {
     if (item.can_access === false) {
-      return '暂无浏览权限（隐身超管等特殊会议）'
+      return '暂无浏览权限'
     }
     return previewText(item.preview)
   }
