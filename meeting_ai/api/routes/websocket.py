@@ -32,6 +32,7 @@ from api.auth_utils import get_user_from_token, get_current_user
 from db.models import User
 from db.session import SessionFactory
 from utils.logger import get_logger
+from utils.meeting_name import resolve_meeting_name, safe_filename_prefix
 from asr.tingwu_realtime import (
     TINGWU_KEEPALIVE_INTERVAL_SECONDS,
     TingwuRealtimeEngine,
@@ -185,9 +186,7 @@ async def _persist_realtime_session_emergency(
     if session_info.get("saved"):
         return session_info.get("file_id")
 
-    meeting_name = (session_info.get("meeting_name") or "").strip()
-    if not meeting_name:
-        return None
+    user_meeting_name = (session_info.get("meeting_name") or "").strip()
 
     transcriber = session_info.get("transcriber")
     if transcriber is not None:
@@ -202,10 +201,17 @@ async def _persist_realtime_session_emergency(
     session_info["file_id"] = file_id
     session_info["saved"] = True
 
-    safe_name = "".join(
-        c for c in meeting_name if c.isalnum() or c in (" ", "-", "_")
-    ).strip().replace(" ", "_")
-    transcript_filename = f"{safe_name}_{file_id}_{timestamp}_realtime.txt"
+    meeting_name = resolve_meeting_name(
+        user_meeting_name or None,
+        at=session_info.get("start_time"),
+    )
+
+    safe_name = safe_filename_prefix(user_meeting_name or None).rstrip("_")
+    transcript_filename = (
+        f"{safe_name}_{file_id}_{timestamp}_realtime.txt"
+        if safe_name
+        else f"{file_id}_{timestamp}_realtime.txt"
+    )
     transcript_path = os.path.join(output_dir, "transcripts", transcript_filename)
     await run_io(Path(transcript_path).write_text, total_text, encoding="utf-8")
 
@@ -409,14 +415,16 @@ async def websocket_transcribe(
                 # 处理初始化消息（会议名称）
                 if message.get("type") == "init":
                     meeting_name = (message.get("meeting_name") or "").strip()
-                    if not meeting_name:
-                        await manager.send_json(connection_id, {
-                            "type": "error",
-                            "message": "会议名称为必填项，请填写后重新开始录音",
-                        })
-                        continue
-                    session_info["meeting_name"] = meeting_name
-                    logger.info(f"设置会议名称", extra={'request_id': connection_id, 'input_params': {'meeting_name': meeting_name}})
+                    session_info["meeting_name"] = meeting_name or None
+                    logger.info(
+                        f"设置会议名称",
+                        extra={
+                            'request_id': connection_id,
+                            'input_params': {
+                                'meeting_name': meeting_name or '(未填写，将自动生成)',
+                            },
+                        },
+                    )
                     continue
 
                 if message.get("type") == "ping":
@@ -459,18 +467,15 @@ async def websocket_transcribe(
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     session_info["file_id"] = file_id
                     
-                    # 构建文件名（包含会议名称）
-                    meeting_name = (session_info.get("meeting_name") or "").strip()
-                    if not meeting_name:
-                        await manager.send_json(connection_id, {
-                            "type": "error",
-                            "message": "会议名称为必填项，请填写后重新开始录音",
-                        })
-                        continue
-                    safe_name = "".join(c for c in meeting_name if c.isalnum() or c in (' ', '-', '_')).strip()
-                    safe_name = safe_name.replace(' ', '_')
-                    transcript_filename = f"{safe_name}_{file_id}_{timestamp}_realtime.txt"
-                    summary_filename = f"{safe_name}_{file_id}_{timestamp}_realtime.md"
+                    # 构建文件名（用户填写名称时加入前缀）
+                    user_meeting_name = (session_info.get("meeting_name") or "").strip()
+                    safe_name = safe_filename_prefix(user_meeting_name or None).rstrip("_")
+                    transcript_filename = (
+                        f"{safe_name}_{file_id}_{timestamp}_realtime.txt"
+                        if safe_name
+                        else f"{file_id}_{timestamp}_realtime.txt"
+                    )
+                    summary_filename = transcript_filename.replace(".txt", ".md")
                     
                     # 异步保存转写文本
                     transcript_path = os.path.join(
@@ -509,7 +514,7 @@ async def websocket_transcribe(
                             generate_dual_summaries(
                                 get_llm_client(),
                                 session_info["total_text"],
-                                meeting_name or None,
+                                user_meeting_name or None,
                                 session_info.get("start_time"),
                             ),
                             stage="summary",
@@ -519,6 +524,17 @@ async def websocket_transcribe(
 
                         summary = dual.markdown
                         summary_visual_dict = visual_dict_from_result(dual)
+                        visual_title = (
+                            summary_visual_dict.get("title")
+                            if isinstance(summary_visual_dict, dict)
+                            else None
+                        )
+                        meeting_name = resolve_meeting_name(
+                            user_meeting_name or None,
+                            summary=summary,
+                            visual_title=visual_title,
+                            at=session_info.get("start_time"),
+                        )
 
                         summary_path = os.path.join(
                             output_dir, "summaries", summary_filename
@@ -546,7 +562,7 @@ async def websocket_transcribe(
                             meeting_data = {
                                 'file_id': file_id,
                                 'user_id': session_info["user_id"],
-                                'meeting_name': meeting_name if meeting_name else None,
+                                'meeting_name': meeting_name,
                                 'original_filename': transcript_filename,
                                 'meeting_type': 'realtime',
                                 'audio_file_path': None,
@@ -569,6 +585,7 @@ async def websocket_transcribe(
 
                         end_result = {
                             "type": "session_end",
+                            "meeting_name": meeting_name,
                             "summary": summary,
                             "summary_visual": summary_visual_dict,
                             "summary_visual_status": dual.visual_status,
@@ -603,10 +620,14 @@ async def websocket_transcribe(
                         
                         # 即使AI总结失败，也保存转写文本到数据库
                         try:
+                            fallback_name = resolve_meeting_name(
+                                user_meeting_name or None,
+                                at=session_info.get("start_time"),
+                            )
                             meeting_data = {
                                 'file_id': file_id,
                                 'user_id': session_info["user_id"],
-                                'meeting_name': meeting_name if meeting_name else None,
+                                'meeting_name': fallback_name,
                                 'original_filename': transcript_filename,
                                 'meeting_type': 'realtime',
                                 'audio_file_path': None,
@@ -628,6 +649,7 @@ async def websocket_transcribe(
                         
                         end_result = {
                             "type": "session_end",
+                            "meeting_name": fallback_name,
                             "summary": None,
                             "error": "会议纪要生成失败，请稍后重试",
                             **end_result_base,

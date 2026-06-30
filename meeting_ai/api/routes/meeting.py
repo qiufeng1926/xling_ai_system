@@ -22,6 +22,7 @@ from asr.holder import get_asr_engine
 from llm.client_holder import get_llm_client
 from llm.summary_service import generate_dual_summaries, visual_dict_from_result
 from utils.logger import get_logger
+from utils.meeting_name import resolve_meeting_name, safe_filename_prefix
 from utils.executors import _get_batch_sem, run_io
 from db.session import save_meeting_to_db_async
 
@@ -83,9 +84,7 @@ async def upload_meeting_audio(
 
     logger.info("收到音频文件上传请求", extra={"request_id": request_id, "input_params": input_params})
 
-    if not meeting_name or not meeting_name.strip():
-        raise HTTPException(status_code=400, detail="会议名称为必填项")
-    meeting_name = meeting_name.strip()
+    meeting_name = (meeting_name or "").strip() or None
 
     file_id = str(uuid.uuid4())
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -178,15 +177,14 @@ async def upload_meeting_audio(
 
 @router.post("/meeting/upload/init")
 async def init_chunked_upload(
-    meeting_name: str = Form(...),
+    meeting_name: str = Form(None),
     filename: str = Form(...),
     total_size: int = Form(...),
     total_chunks: int = Form(...),
     current_user: User = Depends(get_current_user),
 ):
     """分片上传初始化（大文件经 cpolar 等代理时避免单次请求超时）。"""
-    if not meeting_name or not meeting_name.strip():
-        raise HTTPException(status_code=400, detail="会议名称为必填项")
+    meeting_name = (meeting_name or "").strip() or None
     if total_size <= 0 or total_chunks <= 0:
         raise HTTPException(status_code=400, detail="无效的文件大小或分片数")
     if total_size > max_upload_bytes:
@@ -202,7 +200,7 @@ async def init_chunked_upload(
     async with _chunk_sessions_lock:
         _chunk_sessions[upload_id] = {
             "user_id": current_user.id,
-            "meeting_name": meeting_name.strip(),
+            "meeting_name": meeting_name,
             "filename": filename or "audio.m4a",
             "total_size": total_size,
             "total_chunks": total_chunks,
@@ -403,7 +401,7 @@ async def _run_upload_job(
     file_id: str,
     save_path: str,
     filename: str,
-    meeting_name: str,
+    meeting_name: str | None,
     request_id: str,
     input_params: dict,
     start_time: float,
@@ -444,7 +442,7 @@ async def _process_meeting_upload(
     *,
     save_path: str,
     filename: str,
-    meeting_name: str,
+    meeting_name: str | None,
     file_id: str,
     request_id: str,
     input_params: dict,
@@ -458,10 +456,7 @@ async def _process_meeting_upload(
             on_stage(name)
 
     try:
-        safe_name = "".join(
-            c for c in meeting_name if c.isalnum() or c in (" ", "-", "_")
-        ).strip().replace(" ", "_")
-        name_prefix = f"{safe_name}_" if safe_name else ""
+        name_prefix = safe_filename_prefix(meeting_name)
 
         _stage("asr")
         logger.info("开始语音识别...", extra={"request_id": request_id})
@@ -504,6 +499,17 @@ async def _process_meeting_upload(
 
         summary = dual.markdown
         summary_visual_dict = visual_dict_from_result(dual)
+        visual_title = (
+            summary_visual_dict.get("title")
+            if isinstance(summary_visual_dict, dict)
+            else None
+        )
+        resolved_name = resolve_meeting_name(
+            meeting_name,
+            summary=summary,
+            visual_title=visual_title,
+            at=datetime.fromtimestamp(start_time),
+        )
         logger.info(
             "会议纪要生成完成",
             extra={
@@ -540,7 +546,7 @@ async def _process_meeting_upload(
             meeting_data = {
                 "file_id": file_id,
                 "user_id": user_id,
-                "meeting_name": meeting_name,
+                "meeting_name": resolved_name,
                 "original_filename": filename,
                 "meeting_type": "batch",
                 "audio_file_path": save_path,
@@ -591,6 +597,7 @@ async def _process_meeting_upload(
         return {
             "filename": filename,
             "file_id": file_id,
+            "meeting_name": resolved_name,
             "transcript": transcript,
             "summary": summary,
             "summary_visual": summary_visual_dict,

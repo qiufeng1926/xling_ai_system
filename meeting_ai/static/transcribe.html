@@ -1307,8 +1307,8 @@
             </div>
 
             <div style="margin-bottom: 20px;" id="meetingNameWrap">
-                <label style="display: block; color: #666; font-size: 14px; margin-bottom: 8px; font-weight: bold;">📝 会议名称：<span style="color:#e74c3c;">*</span></label>
-                <input type="text" id="meetingNameInput" placeholder="请输入会议名称（必填）" required
+                <label style="display: block; color: #666; font-size: 14px; margin-bottom: 8px; font-weight: bold;">📝 会议名称：<span style="color:#999; font-weight:normal;">（选填，不填则根据 AI 总结主题自动命名）</span></label>
+                <input type="text" id="meetingNameInput" placeholder="选填；留空将使用 AI 总结主题 + 时间命名"
                        style="width: 100%; padding: 12px 15px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; transition: all 0.3s;"
                        onfocus="this.style.borderColor='#667eea'" 
                        onblur="this.style.borderColor='#e0e0e0'">
@@ -1384,8 +1384,8 @@
         <!-- 批量处理面板 -->
         <div id="batchPanel" class="content-panel">
             <div style="margin-bottom: 20px;">
-                <label style="display: block; color: #666; font-size: 14px; margin-bottom: 8px; font-weight: bold;">📝 会议名称：<span style="color:#e74c3c;">*</span></label>
-                <input type="text" id="batchMeetingNameInput" placeholder="请输入会议名称（必填）" required
+                <label style="display: block; color: #666; font-size: 14px; margin-bottom: 8px; font-weight: bold;">📝 会议名称：<span style="color:#999; font-weight:normal;">（选填，不填则根据 AI 总结主题自动命名）</span></label>
+                <input type="text" id="batchMeetingNameInput" placeholder="选填；留空将使用 AI 总结主题 + 时间命名"
                        style="width: 100%; padding: 12px 15px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; transition: all 0.3s;"
                        onfocus="this.style.borderColor='#667eea'" 
                        onblur="this.style.borderColor='#e0e0e0'">
@@ -3260,6 +3260,9 @@
             if (data.file_id) {
                 lastRealtimeFileId = data.file_id;
             }
+            if (data.meeting_name) {
+                lastMeetingName = data.meeting_name;
+            }
 
             startBtn.disabled = false;
             stopBtn.disabled = false;
@@ -3832,13 +3835,7 @@
                 realtimeSegmentTimes = [];
                 setRealtimeTranscriptStatus('');
 
-                // 获取会议名称（必填）
                 const meetingName = document.getElementById('meetingNameInput').value.trim();
-                if (!meetingName && !isCollabMode) {
-                    showErrorAlert('请先填写会议名称');
-                    document.getElementById('meetingNameInput').focus();
-                    return;
-                }
 
                 if (isCollabMode) {
                     if (collabRole === 'viewer') {
@@ -4107,13 +4104,7 @@
             const summaryResult = document.getElementById('summaryResult');
             const transcriptText = document.getElementById('transcriptText');
             
-            // 获取会议名称（必填）
             const meetingName = document.getElementById('batchMeetingNameInput').value.trim();
-            if (!meetingName) {
-                showErrorAlert('请先填写会议名称');
-                document.getElementById('batchMeetingNameInput').focus();
-                return;
-            }
             
             uploadBtn.disabled = true;
             uploadBtn.innerHTML = '<span class="loading"></span>处理中...';
@@ -4171,7 +4162,9 @@
                     uploadBtn.innerHTML = '<span class="loading"></span>文件已上传，识别处理中…';
                     const finalResult = await pollBatchUpload(result.file_id);
                     lastBatchFileId = finalResult.file_id || result.file_id;
-                    lastBatchSummaryTitle = document.getElementById('batchMeetingNameInput').value.trim();
+                    lastBatchSummaryTitle = finalResult.meeting_name
+                        || document.getElementById('batchMeetingNameInput').value.trim()
+                        || '会议';
                     transcriptText.textContent = finalResult.transcript;
                     transcriptResult.style.display = 'block';
                     displayDualSummary('batch', {
@@ -4193,8 +4186,9 @@
                 
                 if (result.success) {
                     lastBatchFileId = result.file_id || null;
-                    lastBatchSummaryTitle = document.getElementById('batchMeetingNameInput').value.trim();
-                    // 显示转写文本
+                    lastBatchSummaryTitle = result.meeting_name
+                        || document.getElementById('batchMeetingNameInput').value.trim()
+                        || '会议';
                     transcriptText.textContent = result.transcript;
                     transcriptResult.style.display = 'block';
                     
