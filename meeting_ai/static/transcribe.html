@@ -824,6 +824,22 @@
             line-height: 1.6;
         }
 
+        .meeting-name-optional {
+            border: 1px dashed #d0d0d0;
+            border-radius: 8px;
+            padding: 10px 12px;
+            background: #fafafa;
+        }
+        .meeting-name-optional summary {
+            cursor: pointer;
+            color: #666;
+            font-size: 14px;
+            user-select: none;
+        }
+        .meeting-name-optional[open] summary {
+            margin-bottom: 4px;
+        }
+
         #mainApp { display: none; }
 
         .request-card {
@@ -1307,11 +1323,13 @@
             </div>
 
             <div style="margin-bottom: 20px;" id="meetingNameWrap">
-                <label style="display: block; color: #666; font-size: 14px; margin-bottom: 8px; font-weight: bold;">📝 会议名称：<span style="color:#999; font-weight:normal;">（选填，不填则根据 AI 总结主题自动命名）</span></label>
-                <input type="text" id="meetingNameInput" placeholder="选填；留空将使用 AI 总结主题 + 时间命名"
-                       style="width: 100%; padding: 12px 15px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; transition: all 0.3s;"
+                <details class="meeting-name-optional">
+                    <summary>自定义会议名称（可选，不填则根据 AI 总结主题自动命名）</summary>
+                    <input type="text" id="meetingNameInput" placeholder="留空将自动命名，例如：Token代理立项_20260629_143000"
+                       style="width: 100%; padding: 12px 15px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; transition: all 0.3s; margin-top: 10px;"
                        onfocus="this.style.borderColor='#667eea'" 
                        onblur="this.style.borderColor='#e0e0e0'">
+                </details>
             </div>
             
             <div id="status" class="status disconnected">
@@ -1384,11 +1402,13 @@
         <!-- 批量处理面板 -->
         <div id="batchPanel" class="content-panel">
             <div style="margin-bottom: 20px;">
-                <label style="display: block; color: #666; font-size: 14px; margin-bottom: 8px; font-weight: bold;">📝 会议名称：<span style="color:#999; font-weight:normal;">（选填，不填则根据 AI 总结主题自动命名）</span></label>
-                <input type="text" id="batchMeetingNameInput" placeholder="选填；留空将使用 AI 总结主题 + 时间命名"
-                       style="width: 100%; padding: 12px 15px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; transition: all 0.3s;"
+                <details class="meeting-name-optional">
+                    <summary>自定义会议名称（可选，不填则根据 AI 总结主题自动命名）</summary>
+                    <input type="text" id="batchMeetingNameInput" placeholder="留空将自动命名"
+                       style="width: 100%; padding: 12px 15px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; transition: all 0.3s; margin-top: 10px;"
                        onfocus="this.style.borderColor='#667eea'" 
                        onblur="this.style.borderColor='#e0e0e0'">
+                </details>
             </div>
             
             <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
@@ -1724,6 +1744,11 @@
             if (nameInput && meetingName) {
                 nameInput.value = meetingName;
                 nameInput.readOnly = true;
+                const wrap = nameInput.closest('details');
+                if (wrap) wrap.open = true;
+            } else if (nameInput) {
+                const wrap = document.getElementById('meetingNameWrap');
+                if (wrap) wrap.style.display = 'none';
             }
 
             const endBtn = document.getElementById('endMeetingBtn');
@@ -2950,13 +2975,7 @@
                 if (isCollabMode) {
                     return;
                 }
-                
-                const initMessage = {
-                    type: 'init',
-                    meeting_name: meetingName
-                };
-                ws.send(JSON.stringify(initMessage));
-                console.log('发送会议名称:', meetingName);
+                // 会议名称改为开始录音时随 record_start 提交，此处仅建立连接
             };
             
             ws.onmessage = (event) => {
@@ -3874,7 +3893,10 @@
 
                 setRealtimeTranscriptStatus('正在启动转写通道…');
                 const tingwuReadyWait = waitForTingwuReady();
-                ws.send(JSON.stringify({ type: 'record_start' }));
+                ws.send(JSON.stringify({
+                    type: 'record_start',
+                    meeting_name: document.getElementById('meetingNameInput').value.trim(),
+                }));
                 await tingwuReadyWait;
 
                 // 使用设备实际采样率，由服务端重采样到 16kHz

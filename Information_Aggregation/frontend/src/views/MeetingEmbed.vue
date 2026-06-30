@@ -94,7 +94,7 @@ const meetingAppUrl = computed(() => {
 
   const sep = base.includes('?') ? '&' : '?'
 
-  return `${base}${sep}embedded=1`
+  return `${base}${sep}embedded=1&v=20260630`
 
 })
 

@@ -187,6 +187,7 @@ const embedUrl = computed(() => {
     room_code: room.value.room_code,
     role: myRole.value,
     meeting_name: room.value.meeting_name,
+    v: '20260630',
   })
   return `${base}${sep}${params.toString()}`
 })

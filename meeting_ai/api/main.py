@@ -173,7 +173,14 @@ async def root():
     )
 
     if os.path.exists(html_path):
-        return FileResponse(html_path)
+        return FileResponse(
+            html_path,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
     return {
         "message": "Meeting AI API",

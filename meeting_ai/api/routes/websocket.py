@@ -432,6 +432,9 @@ async def websocket_transcribe(
                     continue
 
                 if message.get("type") == "record_start":
+                    mn = (message.get("meeting_name") or "").strip()
+                    if mn:
+                        session_info["meeting_name"] = mn
                     await ensure_tingwu_started()
                     continue
 
