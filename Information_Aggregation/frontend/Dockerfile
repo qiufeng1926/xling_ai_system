@@ -18,7 +18,8 @@ COPY docker/nginx.conf.template /etc/nginx/templates/default.conf.template
 
 # Docker 网络内的服务名，可在编排文件中覆盖
 ENV INFLUENCER_API_HOST=backend:8000 \
-    MEETING_API_HOST=meeting-ai:8001
+    MEETING_API_HOST=meeting-ai:8001 \
+    FLYBOOK_API_HOST=flybook:8002
 
 EXPOSE 80
 

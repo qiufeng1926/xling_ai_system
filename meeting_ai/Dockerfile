@@ -36,6 +36,6 @@ RUN mkdir -p upload output logs
 EXPOSE 8001
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8001/docs >/dev/null || exit 1
+    CMD curl -fsS http://127.0.0.1:8001/health >/dev/null || exit 1
 
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8001"]

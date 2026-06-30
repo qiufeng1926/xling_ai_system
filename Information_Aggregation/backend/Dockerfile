@@ -1,4 +1,4 @@
-# 达人信息管理后端 — 独立镜像，可单独部署 / 扩缩容
+# 达人信息管理后端 — 独立镜像，默认监听 8000
 FROM mcr.microsoft.com/playwright/python:v1.49.1-noble
 
 WORKDIR /app

@@ -154,6 +154,11 @@ if os.path.exists(static_dir):
     logger.info(f"静态文件目录已挂载: {static_dir}")
 
 
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "meeting_ai"}
+
+
 # 首页
 @app.get("/")
 async def root():

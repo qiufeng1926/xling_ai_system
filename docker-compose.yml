@@ -1,0 +1,174 @@
+# xlink 全栈编排：达人后端 + 会议 AI + 飞书 + 门户前端
+# 用法：
+#   cp docker/.env.example docker/.env   # 按需修改密钥与各 API Key
+#   docker compose --env-file docker/.env up -d --build
+#
+# 仅启动三个后端（不含前端）：
+#   docker compose --env-file docker/.env up -d --build mysql redis influencer-backend meeting-ai flybook
+
+name: xlink
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: xlink_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123}
+      MYSQL_DATABASE: influencer_db
+      MYSQL_USER: ${MYSQL_USER:-app_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-app123}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./Information_Aggregation/scripts/init.sql:/docker-entrypoint-initdb.d/01-influencer.sql:ro
+      - ./docker/mysql/02-meeting-ai.sql:/docker-entrypoint-initdb.d/02-meeting-ai.sql:ro
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    container_name: xlink_redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  influencer-backend:
+    build:
+      context: ./Information_Aggregation/backend
+      dockerfile: Dockerfile
+    image: xlink/influencer-backend:latest
+    container_name: xlink_influencer_backend
+    restart: unless-stopped
+    ports:
+      - "${INFLUENCER_API_PORT:-8000}:8000"
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${MYSQL_USER:-app_user}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-app123}
+      DB_NAME: influencer_db
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${JWT_SECRET:-dev-local-secret-key-at-least-32-characters-long}
+      DEBUG: ${DEBUG:-false}
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://127.0.0.1}
+      FLYBOOK_API_URL: http://flybook:8002
+      MEETING_AI_API_URL: http://meeting-ai:8001
+      PORTAL_INTERNAL_KEY: ${PORTAL_INTERNAL_KEY:-dev-flybook-internal-key-change-me}
+      FLYBOOK_INTERNAL_KEY: ${PORTAL_INTERNAL_KEY:-dev-flybook-internal-key-change-me}
+    volumes:
+      - influencer_logs:/app/logs
+      - influencer_cookies:/app/cookies
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  meeting-ai:
+    build:
+      context: ./meeting_ai
+      dockerfile: Dockerfile
+    image: xlink/meeting-ai:latest
+    container_name: xlink_meeting_ai
+    restart: unless-stopped
+    ports:
+      - "${MEETING_API_PORT:-8001}:8001"
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      JWT_SECRET: ${JWT_SECRET:-dev-local-secret-key-at-least-32-characters-long}
+      PORTAL_API_URL: http://influencer-backend:8000
+      PORTAL_INTERNAL_KEY: ${PORTAL_INTERNAL_KEY:-dev-flybook-internal-key-change-me}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://127.0.0.1}
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${MYSQL_USER:-app_user}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-app123}
+      DB_NAME: meeting_ai
+      LLM_PROVIDER: ${LLM_PROVIDER:-glm}
+      GLM_API_KEY: ${GLM_API_KEY:-}
+      GLM_MODEL: ${GLM_MODEL:-glm-4-flash}
+      ALIBABA_CLOUD_ACCESS_KEY_ID: ${ALIBABA_CLOUD_ACCESS_KEY_ID:-}
+      ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${ALIBABA_CLOUD_ACCESS_KEY_SECRET:-}
+      TINGWU_APP_KEY: ${TINGWU_APP_KEY:-}
+      TINGWU_REGION: ${TINGWU_REGION:-cn-beijing}
+      TINGWU_DOMAIN: ${TINGWU_DOMAIN:-tingwu.cn-beijing.aliyuncs.com}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-524288000}
+    volumes:
+      - meeting_upload:/app/upload
+      - meeting_output:/app/output
+      - meeting_logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      influencer-backend:
+        condition: service_started
+
+  flybook:
+    build:
+      context: ./flybook
+      dockerfile: Dockerfile
+    image: xlink/flybook:latest
+    container_name: xlink_flybook
+    restart: unless-stopped
+    ports:
+      - "${FLYBOOK_API_PORT:-8002}:8002"
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      JWT_SECRET: ${JWT_SECRET:-dev-local-secret-key-at-least-32-characters-long}
+      PORTAL_API_URL: http://influencer-backend:8000
+      PORTAL_FRONTEND_URL: ${PORTAL_FRONTEND_URL:-http://localhost}
+      FLYBOOK_INTERNAL_KEY: ${PORTAL_INTERNAL_KEY:-dev-flybook-internal-key-change-me}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://127.0.0.1}
+      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+      FEISHU_OAUTH_REDIRECT_URI: ${FEISHU_OAUTH_REDIRECT_URI:-http://localhost/api/flybook/auth/callback}
+      FEISHU_VERIFICATION_TOKEN: ${FEISHU_VERIFICATION_TOKEN:-}
+      FEISHU_ENCRYPT_KEY: ${FEISHU_ENCRYPT_KEY:-}
+      FEISHU_MESSENGER_URL: ${FEISHU_MESSENGER_URL:-}
+    volumes:
+      - flybook_logs:/app/logs
+    depends_on:
+      influencer-backend:
+        condition: service_started
+
+  portal-frontend:
+    build:
+      context: ./Information_Aggregation/frontend
+      dockerfile: Dockerfile
+    image: xlink/portal-frontend:latest
+    container_name: xlink_portal_frontend
+    restart: unless-stopped
+    ports:
+      - "${PORTAL_HTTP_PORT:-80}:80"
+    environment:
+      INFLUENCER_API_HOST: influencer-backend:8000
+      MEETING_API_HOST: meeting-ai:8001
+      FLYBOOK_API_HOST: flybook:8002
+    depends_on:
+      - influencer-backend
+      - meeting-ai
+      - flybook
+
+volumes:
+  mysql_data:
+  influencer_logs:
+  influencer_cookies:
+  meeting_upload:
+  meeting_output:
+  meeting_logs:
+  flybook_logs:
