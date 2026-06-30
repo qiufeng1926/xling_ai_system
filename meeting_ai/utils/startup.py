@@ -7,6 +7,7 @@ from config.config import (
     jwt_secret,
     jwt_secret_default,
     llm_provider,
+    max_upload_bytes,
     seed_default_users_on_startup,
     tingwu_access_key_id,
     tingwu_app_key,
@@ -33,6 +34,10 @@ def validate_startup_config() -> None:
             (jwt_secret or "")[:12],
         )
         logger.info("LLM 提供商: %s", llm_provider)
+        logger.info(
+            "批量上传大小上限: %s MB",
+            max_upload_bytes // (1024 * 1024),
+        )
 
     issues: list[str] = []
 

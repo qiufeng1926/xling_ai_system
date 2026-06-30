@@ -12,7 +12,14 @@ from pathlib import Path
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from api.routes.websocket import _run_with_keepalive, manager
+from api.routes.websocket import (
+    WS_CLIENT_HEARTBEAT_INTERVAL_SECONDS,
+    _cancel_ws_heartbeat_task,
+    _run_with_keepalive,
+    _start_ws_heartbeat_task,
+    _tingwu_periodic_keepalive,
+    manager,
+)
 from asr.tingwu_realtime import TingwuRealtimeEngine
 from config.config import collab_max_recorders, output_dir
 from db.models import CollaborativeRoom
@@ -100,9 +107,14 @@ async def handle_collaborative_ws(
             "transcriber": None,
             "tingwu_started": False,
             "tingwu_failed": False,
+            "tingwu_keepalive_task": None,
+            "ws_heartbeat_task": None,
+            "heartbeat_stage": "recording",
+            "saved": False,
             "is_recording": False,
         }
         tingwu_lock = asyncio.Lock()
+        _start_ws_heartbeat_task(session_info, connection_id)
 
         async def on_tingwu_result(display_text, total_text, is_sentence_end, speaker_id=None, speaker_label=None):
             body = _strip_speaker_prefix(display_text)
@@ -163,6 +175,10 @@ async def handle_collaborative_ws(
                 await tingwu_engine.start_session_async(transcriber)
                 await tingwu_engine.send_keepalive_async(transcriber)
                 session_info["tingwu_started"] = True
+                if session_info.get("tingwu_keepalive_task") is None:
+                    session_info["tingwu_keepalive_task"] = asyncio.create_task(
+                        _tingwu_periodic_keepalive(session_info, connection_id)
+                    )
                 await manager.send_json(connection_id, {"type": "tingwu_ready"})
 
         state = await room_manager.room_state_payload(room.room_code)
@@ -181,7 +197,18 @@ async def handle_collaborative_ws(
         await room_manager.broadcast(room.room_code, await room_manager.room_state_payload(room.room_code))
 
         while True:
-            raw = await websocket.receive()
+            try:
+                raw = await asyncio.wait_for(
+                    websocket.receive(),
+                    timeout=WS_CLIENT_HEARTBEAT_INTERVAL_SECONDS + 5.0,
+                )
+            except asyncio.TimeoutError:
+                await manager.send_json(
+                    connection_id,
+                    {"type": "heartbeat", "stage": session_info.get("heartbeat_stage", "recording")},
+                )
+                continue
+
             if raw.get("type") == "websocket.disconnect":
                 raise WebSocketDisconnect()
 
@@ -198,6 +225,10 @@ async def handle_collaborative_ws(
             if "text" not in raw:
                 continue
             message = json.loads(raw["text"])
+
+            if message.get("type") == "ping":
+                await manager.send_json(connection_id, {"type": "pong"})
+                continue
 
             if message.get("type") == "record_start":
                 if session_info["role"] == "viewer":
@@ -256,8 +287,20 @@ async def handle_collaborative_ws(
             })
             await room_manager.broadcast(code, await room_manager.room_state_payload(code))
         if session_info:
+            keepalive_task = session_info.get("tingwu_keepalive_task")
+            if keepalive_task is not None and not keepalive_task.done():
+                keepalive_task.cancel()
+                try:
+                    await keepalive_task
+                except asyncio.CancelledError:
+                    pass
+            await _cancel_ws_heartbeat_task(session_info)
             transcriber = session_info.get("transcriber")
-            if transcriber and session_info.get("tingwu_started"):
+            if (
+                transcriber
+                and session_info.get("tingwu_started")
+                and not session_info.get("tingwu_failed")
+            ):
                 try:
                     await tingwu_engine.finalize_stream_async(transcriber)
                 except Exception:

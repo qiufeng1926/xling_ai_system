@@ -3,7 +3,7 @@ import { ElMessage } from 'element-plus'
 
 const meetingRequest = axios.create({
   baseURL: '/api',
-  timeout: 60000,
+  timeout: 300000,
 })
 
 meetingRequest.interceptors.request.use((config) => {
@@ -77,13 +77,13 @@ export function createRoom(meetingName: string) {
   )
 }
 
-export function listMyRooms() {
+export function listMyRooms(config?: { silent?: boolean }) {
   return meetingRequest.get<{
     success: boolean
     hosted: CollaborativeRoom[]
     joined: CollaborativeRoom[]
     pending_invitations: Array<RoomInvitation & { room: CollaborativeRoom }>
-  }>('/meetings/rooms/mine')
+  }>('/meetings/rooms/mine', { silent: config?.silent } as object)
 }
 
 export function getRoom(roomCode: string) {

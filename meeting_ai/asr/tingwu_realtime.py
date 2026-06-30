@@ -36,6 +36,10 @@ from config.config import (
 
     tingwu_access_key_secret,
 
+    tingwu_api_connect_timeout,
+
+    tingwu_api_read_timeout,
+
     tingwu_app_key,
 
     tingwu_audio_format,
@@ -47,6 +51,12 @@ from config.config import (
     tingwu_sample_rate,
 
     tingwu_source_language,
+
+    tingwu_ws_connect_max_attempts,
+
+    tingwu_ws_connect_retry_delay,
+
+    tingwu_ws_open_timeout,
 
 
     tingwu_diarization_enabled,
@@ -66,6 +76,8 @@ SUCCESS_STATUS = 20000000
 # 听悟 SDK 示例按约 100ms/3200 字节分包推流
 
 AUDIO_CHUNK_BYTES = 3200
+# 听悟网关约 10s 无数据会 IDLE_TIMEOUT，保活间隔需明显小于该阈值
+TINGWU_KEEPALIVE_INTERVAL_SECONDS = 5.0
 
 
 
@@ -92,6 +104,16 @@ class TingwuTaskError(Exception):
 
 
 
+
+
+def _create_tingwu_api_client() -> AcsClient:
+    credentials = AccessKeyCredential(tingwu_access_key_id, tingwu_access_key_secret)
+    return AcsClient(
+        region_id=tingwu_region,
+        credential=credentials,
+        connect_timeout=tingwu_api_connect_timeout,
+        timeout=tingwu_api_read_timeout,
+    )
 
 
 def _create_common_request(method: str, uri: str) -> CommonRequest:
@@ -180,11 +202,7 @@ def _create_realtime_task_sync() -> dict:
 
     task_key = f"task_{int(time.time() * 1000)}"
 
-    credentials = AccessKeyCredential(tingwu_access_key_id, tingwu_access_key_secret)
-
-    client = AcsClient(region_id=tingwu_region, credential=credentials)
-
-
+    client = _create_tingwu_api_client()
 
     request = _create_common_request("PUT", "/openapi/tingwu/v2/tasks")
 
@@ -236,11 +254,7 @@ def _stop_realtime_task_sync(task_id: str) -> None:
 
         return
 
-    credentials = AccessKeyCredential(tingwu_access_key_id, tingwu_access_key_secret)
-
-    client = AcsClient(region_id=tingwu_region, credential=credentials)
-
-
+    client = _create_tingwu_api_client()
 
     request = _create_common_request("PUT", "/openapi/tingwu/v2/tasks")
 
@@ -356,8 +370,7 @@ def _extract_speaker_id(payload: dict) -> Optional[str]:
 def _get_task_info_sync(task_id: str) -> dict:
     if not task_id:
         return {}
-    credentials = AccessKeyCredential(tingwu_access_key_id, tingwu_access_key_secret)
-    client = AcsClient(region_id=tingwu_region, credential=credentials)
+    client = _create_tingwu_api_client()
     request = _create_common_request("GET", f"/openapi/tingwu/v2/tasks/{task_id}")
     raw = client.do_action_with_exception(request)
     body = json.loads(raw)
@@ -585,6 +598,44 @@ class TingwuStreamingSession:
 
 
 
+    async def _connect_tingwu_websocket(self, url: str):
+        last_exc: Optional[Exception] = None
+        max_attempts = max(1, tingwu_ws_connect_max_attempts)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                ws = await websockets.connect(
+                    url,
+                    ping_interval=20,
+                    ping_timeout=20,
+                    max_size=10 * 1024 * 1024,
+                    open_timeout=tingwu_ws_open_timeout,
+                )
+                if attempt > 1:
+                    logger.info(
+                        "听悟 WebSocket 重连成功",
+                        extra={"output_params": {"attempt": attempt, "max_attempts": max_attempts}},
+                    )
+                return ws
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "听悟 WebSocket 连接失败",
+                    extra={
+                        "output_params": {
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "error": str(exc),
+                            "error_type": type(exc).__name__,
+                        }
+                    },
+                )
+                if attempt < max_attempts:
+                    await asyncio.sleep(tingwu_ws_connect_retry_delay * attempt)
+
+        raise TingwuTaskError(
+            f"听悟 WebSocket 连接失败（已重试 {max_attempts} 次）: {last_exc}",
+        ) from last_exc
+
     async def start(self) -> None:
 
         task_info = await run_io(_create_realtime_task_sync)
@@ -611,17 +662,15 @@ class TingwuStreamingSession:
 
 
 
-        self._ws = await websockets.connect(
-
-            self.meeting_join_url,
-
-            ping_interval=20,
-
-            ping_timeout=20,
-
-            max_size=10 * 1024 * 1024,
-
-        )
+        try:
+            self._ws = await self._connect_tingwu_websocket(self.meeting_join_url)
+        except TingwuTaskError:
+            if self.task_id:
+                try:
+                    await run_io(_stop_realtime_task_sync, self.task_id)
+                except Exception as stop_exc:
+                    logger.warning(f"清理听悟任务失败: {stop_exc}")
+            raise
 
         # 先启动接收循环，避免错过 TranscriptionStarted
 
@@ -703,7 +752,7 @@ class TingwuStreamingSession:
 
         logger.error(
 
-            "听悟转写失败",
+            f"听悟转写失败: {message}",
 
             extra={"output_params": {"error": message, "event": data}},
 
@@ -909,9 +958,13 @@ class TingwuStreamingSession:
 
             return ""
 
+        if self._task_failed:
+
+            return self._completed_text
+
         if self._closed and not self._ws:
 
-            return ""
+            return self._completed_text
 
 
 

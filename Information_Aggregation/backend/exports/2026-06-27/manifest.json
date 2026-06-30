@@ -1,0 +1,38 @@
+{
+  "started_at": "2026-06-27T03:00:00.119160",
+  "finished_at": "2026-06-27T03:00:04.580346",
+  "export_date": "2026-06-27",
+  "dest_root": "D:\\AI\\xling_ai_system\\Information_Aggregation\\backend\\exports\\2026-06-27",
+  "categories": {
+    "offboarding": {
+      "files": 2,
+      "bytes": 350724,
+      "source": "D:\\AI\\xling_ai_system\\Information_Aggregation\\backend\\uploads\\offboarding"
+    },
+    "meeting_ai/upload": {
+      "files": 2,
+      "bytes": 72617535,
+      "source": "D:\\AI\\xling_ai_system\\meeting_ai\\upload"
+    },
+    "meeting_ai/transcripts": {
+      "files": 38,
+      "bytes": 433183,
+      "source": "D:\\AI\\xling_ai_system\\meeting_ai\\output\\transcripts"
+    },
+    "meeting_ai/summaries": {
+      "files": 41,
+      "bytes": 102502,
+      "source": "D:\\AI\\xling_ai_system\\meeting_ai\\output\\summaries"
+    },
+    "meeting_ai/output_misc": {
+      "files": 0,
+      "bytes": 0
+    },
+    "feishu_documents": {
+      "files": 6,
+      "bytes": 33929,
+      "documents": 3
+    }
+  },
+  "errors": []
+}

@@ -32,7 +32,11 @@ from api.auth_utils import get_user_from_token, get_current_user
 from db.models import User
 from db.session import SessionFactory
 from utils.logger import get_logger
-from asr.tingwu_realtime import TingwuRealtimeEngine, TingwuTaskError
+from asr.tingwu_realtime import (
+    TINGWU_KEEPALIVE_INTERVAL_SECONDS,
+    TingwuRealtimeEngine,
+    TingwuTaskError,
+)
 from llm.client_holder import get_llm_client
 from llm.summary_service import generate_dual_summaries, visual_dict_from_result
 from config.config import output_dir
@@ -86,6 +90,69 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+WS_CLIENT_HEARTBEAT_INTERVAL_SECONDS = 15.0
+
+
+async def _tingwu_periodic_keepalive(session_info: dict, connection_id: str) -> None:
+    """听悟侧定期发送静音，避免 10s 无数据触发 IDLE_TIMEOUT。"""
+    try:
+        while session_info.get("tingwu_started") and not session_info.get("saved"):
+            if session_info.get("tingwu_failed"):
+                break
+            transcriber_ref = session_info.get("transcriber")
+            if transcriber_ref is None or getattr(transcriber_ref, "_closed", False):
+                break
+            await tingwu_engine.send_keepalive_async(transcriber_ref)
+            await asyncio.sleep(TINGWU_KEEPALIVE_INTERVAL_SECONDS)
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.warning(
+            f"听悟保活失败: {e}",
+            extra={"request_id": connection_id},
+        )
+
+
+async def _websocket_outbound_heartbeat(session_info: dict, connection_id: str) -> None:
+    """定期向客户端推送心跳，避免代理/浏览器在后台长时间无下行数据时断开 WebSocket。"""
+    try:
+        while not session_info.get("saved"):
+            await asyncio.sleep(WS_CLIENT_HEARTBEAT_INTERVAL_SECONDS)
+            if session_info.get("saved"):
+                break
+            await manager.send_json(
+                connection_id,
+                {"type": "heartbeat", "stage": session_info.get("heartbeat_stage", "recording")},
+            )
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.warning(
+            f"WebSocket 下行心跳失败: {e}",
+            extra={"request_id": connection_id},
+        )
+
+
+def _start_ws_heartbeat_task(session_info: dict, connection_id: str) -> None:
+    task = session_info.get("ws_heartbeat_task")
+    if task is not None and not task.done():
+        return
+    session_info["ws_heartbeat_task"] = asyncio.create_task(
+        _websocket_outbound_heartbeat(session_info, connection_id)
+    )
+
+
+async def _cancel_ws_heartbeat_task(session_info: dict) -> None:
+    task = session_info.get("ws_heartbeat_task")
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 async def _run_with_keepalive(
@@ -223,27 +290,11 @@ async def websocket_transcribe(
         "tingwu_finalized": False,
         "saved": False,
         "tingwu_keepalive_task": None,
+        "ws_heartbeat_task": None,
+        "heartbeat_stage": "recording",
     }
     tingwu_start_lock = asyncio.Lock()
-
-    async def _tingwu_periodic_keepalive() -> None:
-        """听悟侧定期发送静音，避免长时间静音或浏览器节流导致 IDLE_TIMEOUT。"""
-        try:
-            while session_info.get("tingwu_started") and not session_info.get("saved"):
-                await asyncio.sleep(12)
-                if session_info.get("tingwu_failed"):
-                    break
-                transcriber_ref = session_info.get("transcriber")
-                if transcriber_ref is None or getattr(transcriber_ref, "_closed", False):
-                    break
-                await tingwu_engine.send_keepalive_async(transcriber_ref)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.warning(
-                f"听悟保活失败: {e}",
-                extra={"request_id": connection_id},
-            )
+    _start_ws_heartbeat_task(session_info, connection_id)
 
     async def on_tingwu_result(
         display_text: str,
@@ -303,7 +354,7 @@ async def websocket_transcribe(
             session_info["tingwu_started"] = True
             if session_info.get("tingwu_keepalive_task") is None:
                 session_info["tingwu_keepalive_task"] = asyncio.create_task(
-                    _tingwu_periodic_keepalive()
+                    _tingwu_periodic_keepalive(session_info, connection_id)
                 )
             logger.info(
                 "听悟推流已启动",
@@ -322,7 +373,9 @@ async def websocket_transcribe(
         while True:
             # 控制消息：JSON 文本帧；音频：二进制 PCM 帧（16kHz int16）
             try:
-                raw_message = await asyncio.wait_for(websocket.receive(), timeout=25.0)
+                raw_message = await asyncio.wait_for(
+                    websocket.receive(), timeout=WS_CLIENT_HEARTBEAT_INTERVAL_SECONDS + 5.0
+                )
             except asyncio.TimeoutError:
                 await manager.send_json(
                     connection_id,
@@ -442,6 +495,7 @@ async def websocket_transcribe(
                         "type": "transcribe_complete",
                         **end_result_base,
                     })
+                    session_info["heartbeat_stage"] = "summary"
                     await manager.send_json(connection_id, {
                         "type": "generating_summary",
                         "message": "正在生成文字与图文速览...",
@@ -625,12 +679,14 @@ async def websocket_transcribe(
                 await keepalive_task
             except asyncio.CancelledError:
                 pass
+        await _cancel_ws_heartbeat_task(session_info)
 
         transcriber = session_info.get("transcriber")
         if (
             transcriber is not None
             and session_info.get("tingwu_started")
             and not session_info.get("tingwu_finalized")
+            and not session_info.get("tingwu_failed")
         ):
             try:
                 await tingwu_engine.finalize_stream_async(transcriber)

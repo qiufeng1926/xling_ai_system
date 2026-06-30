@@ -304,7 +304,7 @@ async function refreshPendingInvites() {
     return
   }
   try {
-    const res = await listMyRooms()
+    const res = await listMyRooms({ silent: true })
     pendingInviteCount.value = res.pending_invitations?.length || 0
   } catch {
     // meeting 服务不可用时静默忽略

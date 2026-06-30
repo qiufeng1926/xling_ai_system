@@ -42,10 +42,16 @@ export default defineConfig(({ mode }) => {
     },
   }
 
+  const meetingProxyOptions = {
+    target: meetingApiTarget,
+    changeOrigin: true,
+    timeout: 7200000,
+    proxyTimeout: 7200000,
+  }
+
   for (const prefix of meetingApiPrefixes) {
     proxy[prefix] = {
-      target: meetingApiTarget,
-      changeOrigin: true,
+      ...meetingProxyOptions,
       ws: prefix === '/api/ws',
     }
   }
@@ -62,12 +68,14 @@ export default defineConfig(({ mode }) => {
       port: Number(env.VITE_DEV_PORT || 5173),
       strictPort: true,
       allowedHosts: true,
+      https: devHttps,
       proxy,
     },
     preview: {
       host: '0.0.0.0',
       port: Number(env.VITE_PREVIEW_PORT || 4173),
       allowedHosts: true,
+      https: devHttps,
       proxy,
     },
     build: {

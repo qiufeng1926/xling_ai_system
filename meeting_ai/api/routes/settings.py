@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from api.auth_utils import get_current_user
 from config.config import (
     get_tingwu_diarization_speaker_count,
+    max_upload_bytes,
     set_tingwu_diarization_speaker_count,
 )
 from db.models import User
@@ -17,6 +18,18 @@ logger = get_logger("settings_route")
 class TingwuSpeakerCountRequest(BaseModel):
     mode: str = Field(..., pattern="^(auto|manual)$")
     speaker_count: int = Field(default=0, ge=0, le=100)
+
+
+@router.get("/settings/upload-limits")
+def get_upload_limits_setting(
+    current_user: User = Depends(get_current_user),
+):
+    """获取批量上传单文件大小上限（字节）。"""
+    return {
+        "success": True,
+        "max_upload_bytes": max_upload_bytes,
+        "max_upload_mb": max_upload_bytes // (1024 * 1024),
+    }
 
 
 @router.get("/settings/tingwu-speaker-count")

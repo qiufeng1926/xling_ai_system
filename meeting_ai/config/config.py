@@ -101,8 +101,8 @@ portal_internal_key = _env("PORTAL_INTERNAL_KEY", "") or _env("FLYBOOK_INTERNAL_
 # CORS（逗号分隔；生产环境勿使用 *）
 cors_origins = _env("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000") or ""
 
-# 上传限制（字节，默认 100MB）
-max_upload_bytes = int(_env("MAX_UPLOAD_BYTES", "104857600") or "104857600")
+# 上传限制（字节，默认 500MB）
+max_upload_bytes = int(_env("MAX_UPLOAD_BYTES", "524288000") or "524288000")
 
 # 启动时是否自动 seed 默认用户（生产环境应 false）
 seed_default_users_on_startup = _env_bool("SEED_DEFAULT_USERS", "false")
@@ -120,6 +120,13 @@ tingwu_domain = _env("TINGWU_DOMAIN", "tingwu.cn-beijing.aliyuncs.com")
 tingwu_source_language = _env("TINGWU_SOURCE_LANGUAGE", "cn")
 tingwu_audio_format = _env("TINGWU_AUDIO_FORMAT", "pcm")
 tingwu_sample_rate = int(_env("TINGWU_SAMPLE_RATE", "16000") or "16000")
+# 听悟 OpenAPI 超时（秒；SDK 默认 read timeout 仅 5s，弱网易失败）
+tingwu_api_connect_timeout = int(_env("TINGWU_API_CONNECT_TIMEOUT", "30") or "30")
+tingwu_api_read_timeout = int(_env("TINGWU_API_READ_TIMEOUT", "60") or "60")
+# 听悟推流 WebSocket：握手超时与连接重试
+tingwu_ws_open_timeout = float(_env("TINGWU_WS_OPEN_TIMEOUT", "30") or "30")
+tingwu_ws_connect_max_attempts = int(_env("TINGWU_WS_CONNECT_MAX_ATTEMPTS", "3") or "3")
+tingwu_ws_connect_retry_delay = float(_env("TINGWU_WS_CONNECT_RETRY_DELAY", "2") or "2")
 # 说话人分离（CreateTask Parameters.Transcription.DiarizationEnabled）
 tingwu_diarization_enabled = _env_bool("TINGWU_DIARIZATION_ENABLED", "true")
 TINGWU_SPEAKER_COUNT_ENV_KEY = "TINGWU_DIARIZATION_SPEAKER_COUNT"

@@ -1682,6 +1682,7 @@
             updateUserBar();
             updateAccountPanel();
             loadSpeakerCountSetting();
+            loadUploadLimits();
             const logoutBtn = document.querySelector('.btn-logout');
             if (logoutBtn) {
                 logoutBtn.style.display = isPortalEmbedded() ? 'none' : '';
@@ -2686,6 +2687,145 @@
         let isRecording = false;
         let sessionEnding = false;
         let wsPingTimer = null;
+        let wakeLockSentinel = null;
+        let audioResumeTimer = null;
+        let silenceKeepAlive = null;
+        const WS_PING_INTERVAL_MS = 15000;
+        let maxUploadBytes = 524288000; // 默认 500MB，启动后从 /api/settings/upload-limits 同步
+
+        async function loadUploadLimits() {
+            if (!authToken) return;
+            try {
+                const resp = await authFetch('/api/settings/upload-limits');
+                const data = await resp.json();
+                if (resp.ok && data.max_upload_bytes) {
+                    maxUploadBytes = data.max_upload_bytes;
+                }
+            } catch (e) {
+                console.warn('加载上传大小限制失败', e);
+            }
+        }
+
+        async function pollBatchUpload(fileId, maxAttempts = 3600) {
+            const uploadBtn = document.getElementById('uploadBtn');
+            const progressFill = document.getElementById('progressFill');
+            for (let i = 0; i < maxAttempts; i++) {
+                const resp = await authFetch(`/api/meeting/upload/${encodeURIComponent(fileId)}/status`);
+                const data = await resp.json();
+                if (!resp.ok) {
+                    throw new Error(data.detail || '查询处理进度失败');
+                }
+                if (data.status === 'completed') {
+                    progressFill.style.width = '100%';
+                    return data;
+                }
+                if (data.status === 'failed' || data.success === false) {
+                    throw new Error(data.error || '处理失败，请稍后重试');
+                }
+                if (data.message) {
+                    uploadBtn.innerHTML = `<span class="loading"></span>${data.message}`;
+                }
+                const pct = 70 + Math.min(28, Math.floor((i / 120) * 28));
+                progressFill.style.width = `${pct}%`;
+                await new Promise((r) => setTimeout(r, 2000));
+            }
+            throw new Error('处理时间较长，请稍后在「会议记录」中查看是否已完成');
+        }
+
+        function uploadMeetingFile(url, formData, onProgress) {
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', url);
+                xhr.timeout = 600000;
+                if (authToken) {
+                    xhr.setRequestHeader('Authorization', 'Bearer ' + authToken);
+                }
+                xhr.upload.onprogress = (event) => {
+                    if (event.lengthComputable && onProgress) {
+                        onProgress(event.loaded, event.total);
+                    }
+                };
+                xhr.onload = () => {
+                    if (xhr.status === 401) {
+                        showAuthOverlay();
+                        reject(new Error('登录已过期，请重新登录'));
+                        return;
+                    }
+                    resolve({
+                        ok: xhr.status >= 200 && xhr.status < 300,
+                        status: xhr.status,
+                        json: async () => JSON.parse(xhr.responseText || '{}'),
+                        text: async () => xhr.responseText,
+                    });
+                };
+                xhr.onerror = () => reject(new Error(
+                    '网络连接中断。大文件上传需较长时间，请确认网络稳定；若仍失败，可能是服务器/Nginx 上传大小或超时限制未更新'
+                ));
+                xhr.ontimeout = () => reject(new Error(
+                    '上传超时。请检查网络；大文件会自动分片上传，若仍失败请联系管理员'
+                ));
+                xhr.onabort = () => reject(new Error('上传已取消'));
+                xhr.send(formData);
+            });
+        }
+
+        const CHUNK_UPLOAD_THRESHOLD = 32 * 1024 * 1024;
+        const CHUNK_UPLOAD_SIZE = 8 * 1024 * 1024;
+
+        async function uploadFileInChunks(file, meetingName, onProgress) {
+            const totalChunks = Math.ceil(file.size / CHUNK_UPLOAD_SIZE);
+            const initFd = new FormData();
+            initFd.append('meeting_name', meetingName);
+            initFd.append('filename', file.name);
+            initFd.append('total_size', String(file.size));
+            initFd.append('total_chunks', String(totalChunks));
+
+            const initResp = await uploadMeetingFile('/api/meeting/upload/init', initFd);
+            if (!initResp.ok) {
+                let detail = '分片上传初始化失败';
+                try {
+                    const err = await initResp.json();
+                    detail = err.detail || detail;
+                } catch (e) { /* ignore */ }
+                throw new Error(detail);
+            }
+            const initData = await initResp.json();
+            const uploadId = initData.upload_id;
+            if (!uploadId) {
+                throw new Error('分片上传初始化失败');
+            }
+
+            for (let i = 0; i < totalChunks; i++) {
+                const start = i * CHUNK_UPLOAD_SIZE;
+                const chunk = file.slice(start, Math.min(start + CHUNK_UPLOAD_SIZE, file.size));
+                const chunkFd = new FormData();
+                chunkFd.append('upload_id', uploadId);
+                chunkFd.append('chunk_index', String(i));
+                chunkFd.append('file', chunk, `chunk_${i}`);
+
+                const chunkResp = await uploadMeetingFile(
+                    '/api/meeting/upload/chunk',
+                    chunkFd,
+                    (loaded, total) => {
+                        const chunkBase = (i / totalChunks) * 55;
+                        const chunkPart = (loaded / total) * (55 / totalChunks);
+                        if (onProgress) onProgress(chunkBase + chunkPart, 55);
+                    }
+                );
+                if (!chunkResp.ok) {
+                    let detail = `分片 ${i + 1}/${totalChunks} 上传失败`;
+                    try {
+                        const err = await chunkResp.json();
+                        detail = err.detail || detail;
+                    } catch (e) { /* ignore */ }
+                    throw new Error(detail);
+                }
+            }
+
+            const completeFd = new FormData();
+            completeFd.append('upload_id', uploadId);
+            return uploadMeetingFile('/api/meeting/upload/complete', completeFd, onProgress);
+        }
         let lastMeetingName = '';
         let pendingFileId = null;
         let pollAbort = false;
@@ -3171,17 +3311,95 @@
             }
         }
 
+        function sendWsPing() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'ping' }));
+            }
+        }
+
         function startWsPing() {
             stopWsPing();
-            wsPingTimer = setInterval(() => {
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ type: 'ping' }));
+            wsPingTimer = setInterval(sendWsPing, WS_PING_INTERVAL_MS);
+        }
+
+        async function acquireWakeLock() {
+            if (!('wakeLock' in navigator)) return;
+            try {
+                wakeLockSentinel = await navigator.wakeLock.request('screen');
+                wakeLockSentinel.addEventListener('release', () => {
+                    wakeLockSentinel = null;
+                });
+            } catch (e) {
+                console.warn('Wake Lock 不可用:', e);
+            }
+        }
+
+        async function releaseWakeLock() {
+            if (!wakeLockSentinel) return;
+            try {
+                await wakeLockSentinel.release();
+            } catch (e) { /* ignore */ }
+            wakeLockSentinel = null;
+        }
+
+        function startSilentAudioKeepAlive() {
+            if (!audioContext || silenceKeepAlive) return;
+            try {
+                const oscillator = audioContext.createOscillator();
+                const gain = audioContext.createGain();
+                gain.gain.value = 0;
+                oscillator.connect(gain);
+                gain.connect(audioContext.destination);
+                oscillator.start();
+                silenceKeepAlive = { oscillator, gain };
+            } catch (e) {
+                console.warn('静音保活节点创建失败:', e);
+            }
+        }
+
+        function stopSilentAudioKeepAlive() {
+            if (!silenceKeepAlive) return;
+            try {
+                silenceKeepAlive.oscillator.stop();
+                silenceKeepAlive.oscillator.disconnect();
+                silenceKeepAlive.gain.disconnect();
+            } catch (e) { /* ignore */ }
+            silenceKeepAlive = null;
+        }
+
+        async function ensureAudioContextRunning() {
+            if (!audioContext || !isRecording) return;
+            if (audioContext.state === 'suspended') {
+                try {
+                    await audioContext.resume();
+                } catch (e) {
+                    console.warn('AudioContext resume 失败:', e);
                 }
-            }, 25000);
+            }
+        }
+
+        function startBackgroundRecordingKeepalive() {
+            stopBackgroundRecordingKeepalive();
+            acquireWakeLock();
+            startSilentAudioKeepAlive();
+            audioResumeTimer = setInterval(() => {
+                ensureAudioContextRunning();
+                sendWsPing();
+            }, 5000);
+        }
+
+        function stopBackgroundRecordingKeepalive() {
+            if (audioResumeTimer) {
+                clearInterval(audioResumeTimer);
+                audioResumeTimer = null;
+            }
+            stopSilentAudioKeepAlive();
+            releaseWakeLock();
         }
 
         function cleanupMediaOnly() {
             stopWsPing();
+            stopBackgroundRecordingKeepalive();
             if (!mediaRecorder) return;
             if (mediaRecorder.flushTimer) {
                 clearInterval(mediaRecorder.flushTimer);
@@ -3484,6 +3702,9 @@
                 }
             } else if (data.type === 'heartbeat') {
                 console.log('服务端处理中:', data.stage);
+                sendWsPing();
+            } else if (data.type === 'pong') {
+                // 服务端响应客户端 ping，连接正常
             } else if (data.type === 'session_end') {
                 applySessionResult(data);
                 if (ws && ws.readyState === WebSocket.OPEN) {
@@ -3705,11 +3926,12 @@
                 const flushTimer = setInterval(() => {
                     if (!isRecording) return;
                     flushPcmSendBuffer(true);
-                }, 500);
+                }, 300);
 
                 mediaRecorder = { stream, processor, source, pcmSendBuffer, flushTimer };
                 lastMeetingName = meetingName;
                 startWsPing();
+                startBackgroundRecordingKeepalive();
                 
                 startBtn.disabled = true;
                 stopBtn.disabled = false;
@@ -3795,8 +4017,17 @@
         }
         
         document.addEventListener('visibilitychange', () => {
-            if (!isRecording || document.visibilityState === 'visible') return;
-            setRealtimeTranscriptStatus('页面在后台时浏览器可能暂停录音，请保持此标签页在前台');
+            if (!isRecording) return;
+            if (document.visibilityState === 'hidden') {
+                ensureAudioContextRunning();
+                setRealtimeTranscriptStatus('后台录音中，转写持续进行…');
+                return;
+            }
+            ensureAudioContextRunning();
+            if (wakeLockSentinel === null) {
+                acquireWakeLock();
+            }
+            setRealtimeTranscriptStatus('正在录音，实时转写中…');
         });
 
         // 拖拽上传功能
@@ -3841,7 +4072,12 @@
             fileSize.textContent = formatFileSize(file.size);
             
             fileInfo.classList.add('show');
-            uploadBtn.disabled = false;
+            uploadBtn.disabled = file.size <= maxUploadBytes;
+            if (file.size > maxUploadBytes) {
+                showErrorAlert(
+                    `文件过大（${formatFileSize(file.size)}），最大允许 ${formatFileSize(maxUploadBytes)}`
+                );
+            }
         }
         
         function formatFileSize(bytes) {
@@ -3856,6 +4092,12 @@
         async function uploadFile() {
             if (!selectedFile) {
                 showErrorAlert('请先选择文件');
+                return;
+            }
+            if (selectedFile.size > maxUploadBytes) {
+                showErrorAlert(
+                    `文件过大（${formatFileSize(selectedFile.size)}），最大允许 ${formatFileSize(maxUploadBytes)}`
+                );
                 return;
             }
             
@@ -3882,14 +4124,70 @@
             formData.append('meeting_name', meetingName);
             
             try {
-                const response = await authFetch('/api/meeting/upload', {
-                    method: 'POST',
-                    body: formData
-                });
+                const useChunks = selectedFile.size >= CHUNK_UPLOAD_THRESHOLD;
+                const response = useChunks
+                    ? await uploadFileInChunks(
+                        selectedFile,
+                        meetingName,
+                        (loaded, total) => {
+                            const uploadPct = Math.min(60, Math.round((loaded / total) * 60));
+                            progressFill.style.width = `${uploadPct}%`;
+                        }
+                    )
+                    : await uploadMeetingFile(
+                        '/api/meeting/upload',
+                        formData,
+                        (loaded, total) => {
+                            const uploadPct = Math.min(60, Math.round((loaded / total) * 60));
+                            progressFill.style.width = `${uploadPct}%`;
+                        }
+                    );
                 
                 progressFill.style.width = '70%';
                 
+                if (!response.ok) {
+                    let detail = '上传失败，请稍后重试';
+                    try {
+                        const errBody = await response.json();
+                        detail = errBody.detail || errBody.error || detail;
+                    } catch (e) {
+                        if (response.status === 413) {
+                            detail = `文件过大，最大允许 ${formatFileSize(maxUploadBytes)}`;
+                        } else {
+                            const raw = await response.text().catch(() => '');
+                            if (raw) detail = raw.slice(0, 200);
+                        }
+                    }
+                    showErrorAlert(detail);
+                    uploadBtn.disabled = false;
+                    uploadBtn.innerHTML = '开始处理';
+                    return;
+                }
+
                 const result = await response.json();
+
+                if (result.accepted && result.file_id) {
+                    progressFill.style.width = '65%';
+                    uploadBtn.innerHTML = '<span class="loading"></span>文件已上传，识别处理中…';
+                    const finalResult = await pollBatchUpload(result.file_id);
+                    lastBatchFileId = finalResult.file_id || result.file_id;
+                    lastBatchSummaryTitle = document.getElementById('batchMeetingNameInput').value.trim();
+                    transcriptText.textContent = finalResult.transcript;
+                    transcriptResult.style.display = 'block';
+                    displayDualSummary('batch', {
+                        summary: finalResult.summary,
+                        summary_visual: finalResult.summary_visual,
+                        summary_visual_status: finalResult.summary_visual_status,
+                    });
+                    uploadBtn.innerHTML = '✓ 处理完成';
+                    uploadBtn.style.background = '#4caf50';
+                    setTimeout(() => {
+                        uploadBtn.disabled = false;
+                        uploadBtn.innerHTML = '开始处理';
+                        uploadBtn.style.background = '';
+                    }, 2000);
+                    return;
+                }
                 
                 progressFill.style.width = '100%';
                 
@@ -3923,7 +4221,7 @@
                 
             } catch (error) {
                 console.error('上传失败:', error);
-                showErrorAlert('上传失败，请稍后重试');
+                showErrorAlert(error.message || '上传失败，请稍后重试');
                 uploadBtn.disabled = false;
                 uploadBtn.innerHTML = '开始处理';
             } finally {
