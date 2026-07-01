@@ -3,7 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DOCKER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# lib/ -> scripts/ -> docker/
+DOCKER_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ROOT_DIR="$(cd "$DOCKER_DIR/.." && pwd)"
 
 ENV_FILE="${ENV_FILE:-$DOCKER_DIR/env/distributed.env}"

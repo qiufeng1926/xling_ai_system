@@ -5,10 +5,11 @@ $ErrorActionPreference = "Stop"
 $script:XlinkWinDir = $PSScriptRoot
 
 function Get-XlinkPaths {
-    $ScriptDir = $script:XlinkWinDir
-    $DockerDir = (Resolve-Path (Join-Path $ScriptDir "..")).Path
-    $RootDir = (Resolve-Path (Join-Path $DockerDir "..")).Path
-    return @{ ScriptDir = $ScriptDir; DockerDir = $DockerDir; RootDir = $RootDir }
+  # win/ -> scripts/ -> docker/ -> repo root
+  $ScriptDir = $script:XlinkWinDir
+  $DockerDir = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
+  $RootDir = (Resolve-Path (Join-Path $DockerDir "..")).Path
+  return @{ ScriptDir = $ScriptDir; DockerDir = $DockerDir; RootDir = $RootDir }
 }
 
 function Import-XlinkEnv {
