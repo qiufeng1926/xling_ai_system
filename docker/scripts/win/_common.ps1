@@ -1,25 +1,39 @@
-# xlink Docker 启动脚本（Windows PowerShell）
-# 用法见各脚本顶部注释；环境文件默认 docker\env\distributed.env
+# xlink Docker scripts (Windows PowerShell)
+# Env file default: docker\env\distributed.env
 
 $ErrorActionPreference = "Stop"
+$script:XlinkWinDir = $PSScriptRoot
 
 function Get-XlinkPaths {
-    $ScriptDir = Split-Path -Parent $MyInvocation.ScriptName
-    if (-not $ScriptDir) { $ScriptDir = $PSScriptRoot }
-    $DockerDir = Resolve-Path (Join-Path $ScriptDir "..")
-    $RootDir = Resolve-Path (Join-Path $DockerDir "..")
+    $ScriptDir = $script:XlinkWinDir
+    $DockerDir = (Resolve-Path (Join-Path $ScriptDir "..")).Path
+    $RootDir = (Resolve-Path (Join-Path $DockerDir "..")).Path
     return @{ ScriptDir = $ScriptDir; DockerDir = $DockerDir; RootDir = $RootDir }
 }
 
 function Import-XlinkEnv {
-    param([string]$EnvFile)
+    param(
+        [string]$EnvFile,
+        [switch]$Optional
+    )
     $paths = Get-XlinkPaths
     if (-not $EnvFile) {
         $EnvFile = Join-Path $paths.DockerDir "env\distributed.env"
     }
     if (-not (Test-Path $EnvFile)) {
         $example = Join-Path $paths.DockerDir "env\distributed.env.example"
-        Write-Error "未找到 $EnvFile ，请先复制: copy $example $EnvFile"
+        if ((-not $Optional) -and (Test-Path $example)) {
+            Copy-Item $example $EnvFile
+            Write-Host "Created env from template: $EnvFile"
+        }
+        elseif (-not $Optional) {
+            throw "Missing $EnvFile. Run: copy `"$example`" `"$EnvFile`""
+        }
+        else {
+            if (-not $env:IMAGE_PREFIX) { $env:IMAGE_PREFIX = "xlink" }
+            if (-not $env:IMAGE_TAG) { $env:IMAGE_TAG = "latest" }
+            return
+        }
     }
     Get-Content $EnvFile | ForEach-Object {
         $line = $_.Trim()
@@ -39,12 +53,23 @@ function Get-XlinkImage {
     return "$($env:IMAGE_PREFIX)/${Name}:$($env:IMAGE_TAG)"
 }
 
+function Assert-DockerAvailable {
+    $docker = Get-Command docker -ErrorAction SilentlyContinue
+    if (-not $docker) {
+        throw "docker not found in PATH. Install Docker Desktop and restart the terminal."
+    }
+    docker info *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Docker daemon is not running. Start Docker Desktop first."
+    }
+}
+
 function Ensure-XlinkNetwork {
     $net = if ($env:XLINK_NETWORK) { $env:XLINK_NETWORK } else { "xlink_net" }
     $exists = docker network ls --format "{{.Name}}" | Select-String -Pattern "^$([regex]::Escape($net))$" -Quiet
     if (-not $exists) {
         docker network create $net | Out-Null
-        Write-Host "已创建 Docker 网络: $net"
+        Write-Host "Created docker network: $net"
     }
     return $net
 }
@@ -62,7 +87,9 @@ function Get-VolumeArgs {
     if ($env:DATA_ROOT) {
         $hostPath = Join-Path $env:DATA_ROOT $VolName
         New-Item -ItemType Directory -Force -Path $hostPath | Out-Null
-        return @("-v", "${hostPath}:${ContainerPath}")
+        $mount = "${hostPath}:${ContainerPath}"
+        return @("-v", $mount)
     }
-    return @("-v", "${VolName}:${ContainerPath}")
+    $mount = "${VolName}:${ContainerPath}"
+    return @("-v", $mount)
 }
