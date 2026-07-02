@@ -64,6 +64,9 @@ function Set-XlinkBuildDefaults {
         $env:PIP_INDEX_URL = "https://mirrors.aliyun.com/pypi/simple/"
         $env:PIP_TRUSTED_HOST = "mirrors.aliyun.com"
     }
+    if (-not $env:NPM_REGISTRY) {
+        $env:NPM_REGISTRY = "https://registry.npmmirror.com"
+    }
 }
 
 function Get-DockerBuildArgs {

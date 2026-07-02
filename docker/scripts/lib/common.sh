@@ -61,6 +61,7 @@ apply_build_defaults() {
   export NGINX_BASE_IMAGE="${NGINX_BASE_IMAGE:-docker.m.daocloud.io/library/nginx:1.27-alpine}"
   export PIP_INDEX_URL="${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}"
   export PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-mirrors.aliyun.com}"
+  export NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
 }
 
 docker_build_args() {
