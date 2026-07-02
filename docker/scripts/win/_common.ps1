@@ -141,3 +141,29 @@ function Get-VolumeArgs {
     $mount = "${VolName}:${ContainerPath}"
     return @("-v", $mount)
 }
+
+# 各服务使用自己的 .env；distributed.env 仅放 Docker 网络/基础设施地址
+function Get-ServiceEnvFileArgs {
+    param([string]$RelativeEnvPath)
+    $paths = Get-XlinkPaths
+    $envPath = Join-Path $paths.RootDir $RelativeEnvPath
+    if (-not (Test-Path $envPath)) {
+        throw "Missing service env file: $envPath"
+    }
+    return @("--env-file", $envPath)
+}
+
+function Get-DbInfraOverrides {
+    param([string]$DatabaseName)
+    $dbHost = if ($env:DB_HOST) { $env:DB_HOST } else { "xlink_mysql" }
+    $dbPort = if ($env:DB_PORT) { $env:DB_PORT } else { "3306" }
+    $dbUser = if ($env:MYSQL_USER) { $env:MYSQL_USER } else { "app_user" }
+    $dbPass = if ($env:MYSQL_PASSWORD) { $env:MYSQL_PASSWORD } else { "app123" }
+    return @(
+        "-e", "DB_HOST=$dbHost",
+        "-e", "DB_PORT=$dbPort",
+        "-e", "DB_USER=$dbUser",
+        "-e", "DB_PASSWORD=$dbPass",
+        "-e", "DB_NAME=$DatabaseName"
+    )
+}

@@ -1,4 +1,4 @@
-# 启动达人后端 :8000
+# 启动达人后端 :8000（读取 backend/.env，基础设施地址来自 distributed.env）
 # 用法: .\docker\scripts\win\run-influencer-backend.ps1
 
 . "$PSScriptRoot\_common.ps1"
@@ -11,8 +11,14 @@ Stop-XlinkContainerIfExists $name
 $logsVol = Get-VolumeArgs "influencer_logs" "/app/logs"
 $cookiesVol = Get-VolumeArgs "influencer_cookies" "/app/cookies"
 $port = if ($env:INFLUENCER_API_PORT) { $env:INFLUENCER_API_PORT } else { "8000" }
-$adminUser = if ($env:ADMIN_USERNAME) { $env:ADMIN_USERNAME } else { "admin" }
-$adminPass = if ($env:ADMIN_PASSWORD) { $env:ADMIN_PASSWORD } else { "admin123" }
+
+$serviceEnv = Get-ServiceEnvFileArgs "Information_Aggregation\backend\.env"
+$dbOverrides = Get-DbInfraOverrides "influencer_db"
+$redisUrl = if ($env:REDIS_URL) { $env:REDIS_URL } else { "redis://xlink_redis:6379/0" }
+$flybookUrl = if ($env:FLYBOOK_API_URL) { $env:FLYBOOK_API_URL } else { "http://xlink_flybook:8002" }
+$meetingUrl = if ($env:MEETING_AI_API_URL) { $env:MEETING_AI_API_URL } else { "http://xlink_meeting_ai:8001" }
+$internalKey = if ($env:PORTAL_INTERNAL_KEY) { $env:PORTAL_INTERNAL_KEY } else { "dev-flybook-internal-key-change-me" }
+$cors = if ($env:CORS_ORIGINS) { $env:CORS_ORIGINS } else { "http://127.0.0.1,http://localhost" }
 
 docker run -d `
   --name $name `
@@ -20,24 +26,19 @@ docker run -d `
   --network $net `
   -p "${port}:8000" `
   @logsVol @cookiesVol `
-  -e "DB_HOST=$($env:DB_HOST)" `
-  -e "DB_PORT=$($env:DB_PORT)" `
-  -e "DB_USER=$($env:MYSQL_USER)" `
-  -e "DB_PASSWORD=$($env:MYSQL_PASSWORD)" `
-  -e "DB_NAME=influencer_db" `
-  -e "REDIS_URL=$($env:REDIS_URL)" `
+  @serviceEnv `
+  @dbOverrides `
+  -e "REDIS_URL=$redisUrl" `
   -e "SECRET_KEY=$($env:JWT_SECRET)" `
-  -e "DEBUG=$($env:DEBUG)" `
   -e "API_HOST=0.0.0.0" `
   -e "API_PORT=8000" `
-  -e "CORS_ORIGINS=$($env:CORS_ORIGINS)" `
-  -e "FLYBOOK_API_URL=$($env:FLYBOOK_API_URL)" `
-  -e "MEETING_AI_API_URL=$($env:MEETING_AI_API_URL)" `
-  -e "PORTAL_INTERNAL_KEY=$($env:PORTAL_INTERNAL_KEY)" `
-  -e "FLYBOOK_INTERNAL_KEY=$($env:PORTAL_INTERNAL_KEY)" `
-  -e "ADMIN_USERNAME=$adminUser" `
-  -e "ADMIN_PASSWORD=$adminPass" `
+  -e "CORS_ORIGINS=$cors" `
+  -e "FLYBOOK_API_URL=$flybookUrl" `
+  -e "MEETING_AI_API_URL=$meetingUrl" `
+  -e "PORTAL_INTERNAL_KEY=$internalKey" `
+  -e "FLYBOOK_INTERNAL_KEY=$internalKey" `
   (Get-XlinkImage "influencer-backend")
 Assert-DockerOk "start influencer backend ($name)"
 
 Write-Host "Influencer backend started: $name (port $port)"
+Write-Host "Config: Information_Aggregation\backend\.env + distributed.env (DB/Redis)"
