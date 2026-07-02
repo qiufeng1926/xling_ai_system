@@ -60,6 +60,10 @@ function Set-XlinkBuildDefaults {
     if (-not $env:NGINX_BASE_IMAGE) {
         $env:NGINX_BASE_IMAGE = "docker.m.daocloud.io/library/nginx:1.27-alpine"
     }
+    if (-not $env:PIP_INDEX_URL) {
+        $env:PIP_INDEX_URL = "https://mirrors.aliyun.com/pypi/simple/"
+        $env:PIP_TRUSTED_HOST = "mirrors.aliyun.com"
+    }
 }
 
 function Get-DockerBuildArgs {

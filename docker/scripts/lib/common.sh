@@ -59,6 +59,8 @@ apply_build_defaults() {
   export PYTHON_BASE_IMAGE="${PYTHON_BASE_IMAGE:-docker.m.daocloud.io/library/python:3.11-slim}"
   export NODE_BASE_IMAGE="${NODE_BASE_IMAGE:-docker.m.daocloud.io/library/node:20-alpine}"
   export NGINX_BASE_IMAGE="${NGINX_BASE_IMAGE:-docker.m.daocloud.io/library/nginx:1.27-alpine}"
+  export PIP_INDEX_URL="${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}"
+  export PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-mirrors.aliyun.com}"
 }
 
 docker_build_args() {
