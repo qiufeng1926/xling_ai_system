@@ -6,26 +6,17 @@
 try {
     Assert-DockerAvailable
     Import-XlinkEnv -Optional
+    Set-XlinkBuildDefaults
 
     $paths = Get-XlinkPaths
     $root = $paths.RootDir
     Write-Host "Root: $root"
     Write-Host "Images: $($env:IMAGE_PREFIX)/*:$($env:IMAGE_TAG)"
+    Write-Host "Python base: $($env:PYTHON_BASE_IMAGE)"
+    Write-Host "Node base:   $($env:NODE_BASE_IMAGE)"
+    Write-Host "Nginx base:  $($env:NGINX_BASE_IMAGE)"
+    if ($env:PIP_INDEX_URL) { Write-Host "Pip index:   $($env:PIP_INDEX_URL)" }
     Write-Host ""
-
-    function Get-DockerBuildArgs {
-        $args = @()
-        if ($env:PIP_INDEX_URL) {
-            $args += "--build-arg", "PIP_INDEX_URL=$($env:PIP_INDEX_URL)"
-        }
-        if ($env:PIP_TRUSTED_HOST) {
-            $args += "--build-arg", "PIP_TRUSTED_HOST=$($env:PIP_TRUSTED_HOST)"
-        }
-        if ($env:NPM_REGISTRY) {
-            $args += "--build-arg", "NPM_REGISTRY=$($env:NPM_REGISTRY)"
-        }
-        return $args
-    }
 
     function Build-XlinkImage {
         param(
@@ -58,5 +49,7 @@ try {
 catch {
     Write-Host ""
     Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Tip: if base image pull still fails, set registry mirror in Docker Desktop:" -ForegroundColor Yellow
+    Write-Host '  Settings -> Docker Engine -> "registry-mirrors": ["https://docker.m.daocloud.io"]' -ForegroundColor Yellow
     exit 1
 }

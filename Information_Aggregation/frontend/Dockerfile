@@ -1,6 +1,7 @@
 # xlink 统一门户前端 — 独立镜像，通过环境变量连接各后端服务
 # 构建阶段
-FROM node:20-alpine AS builder
+ARG NODE_BASE_IMAGE=node:20-alpine
+FROM ${NODE_BASE_IMAGE} AS builder
 
 WORKDIR /app
 
@@ -16,7 +17,8 @@ COPY . .
 RUN npm run build
 
 # 运行阶段
-FROM nginx:1.27-alpine
+ARG NGINX_BASE_IMAGE=nginx:1.27-alpine
+FROM ${NGINX_BASE_IMAGE}
 
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY docker/nginx.conf.template /etc/nginx/templates/default.conf.template

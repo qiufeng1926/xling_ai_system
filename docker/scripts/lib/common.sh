@@ -54,3 +54,22 @@ stop_rm_if_exists() {
     docker rm -f "$name" >/dev/null
   fi
 }
+
+apply_build_defaults() {
+  export PYTHON_BASE_IMAGE="${PYTHON_BASE_IMAGE:-docker.m.daocloud.io/library/python:3.11-slim}"
+  export NODE_BASE_IMAGE="${NODE_BASE_IMAGE:-docker.m.daocloud.io/library/node:20-alpine}"
+  export NGINX_BASE_IMAGE="${NGINX_BASE_IMAGE:-docker.m.daocloud.io/library/nginx:1.27-alpine}"
+}
+
+docker_build_args() {
+  local args=()
+  local key val
+  for key in PYTHON_BASE_IMAGE NODE_BASE_IMAGE NGINX_BASE_IMAGE PLAYWRIGHT_BASE_IMAGE \
+    PIP_INDEX_URL PIP_TRUSTED_HOST NPM_REGISTRY; do
+    val="${!key:-}"
+    if [[ -n "$val" ]]; then
+      args+=(--build-arg "${key}=${val}")
+    fi
+  done
+  echo "${args[@]}"
+}

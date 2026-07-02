@@ -6,19 +6,12 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
-docker_build_args() {
-  local args=()
-  if [[ -n "${PIP_INDEX_URL:-}" ]]; then
-    args+=(--build-arg "PIP_INDEX_URL=$PIP_INDEX_URL")
-  fi
-  if [[ -n "${PIP_TRUSTED_HOST:-}" ]]; then
-    args+=(--build-arg "PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST")
-  fi
-  if [[ -n "${NPM_REGISTRY:-}" ]]; then
-    args+=(--build-arg "NPM_REGISTRY=$NPM_REGISTRY")
-  fi
-  echo "${args[@]}"
-}
+apply_build_defaults
+
+echo "Python base: $PYTHON_BASE_IMAGE"
+echo "Node base:   $NODE_BASE_IMAGE"
+echo "Nginx base:  $NGINX_BASE_IMAGE"
+echo ""
 
 echo "==> 构建达人后端..."
 docker build $(docker_build_args) -t "$(img influencer-backend)" "$ROOT_DIR/Information_Aggregation/backend"

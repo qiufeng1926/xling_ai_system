@@ -1,5 +1,6 @@
 # 达人信息管理后端 — 独立镜像，默认监听 8000
-FROM mcr.microsoft.com/playwright/python:v1.49.1-noble
+ARG PLAYWRIGHT_BASE_IMAGE=mcr.microsoft.com/playwright/python:v1.49.1-noble
+FROM ${PLAYWRIGHT_BASE_IMAGE}
 
 WORKDIR /app
 

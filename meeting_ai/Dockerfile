@@ -1,5 +1,6 @@
 # 会议 AI 后端 — 独立镜像，默认监听 8001（与 xlink 门户集成）
-FROM python:3.11-slim
+ARG PYTHON_BASE_IMAGE=python:3.11-slim
+FROM ${PYTHON_BASE_IMAGE}
 
 WORKDIR /app
 

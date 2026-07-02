@@ -49,6 +49,39 @@ function Import-XlinkEnv {
     if (-not $env:IMAGE_TAG) { $env:IMAGE_TAG = "latest" }
 }
 
+function Set-XlinkBuildDefaults {
+    # Docker Hub 在国内常超时，构建脚本默认走 DaoCloud 镜像加速
+    if (-not $env:PYTHON_BASE_IMAGE) {
+        $env:PYTHON_BASE_IMAGE = "docker.m.daocloud.io/library/python:3.11-slim"
+    }
+    if (-not $env:NODE_BASE_IMAGE) {
+        $env:NODE_BASE_IMAGE = "docker.m.daocloud.io/library/node:20-alpine"
+    }
+    if (-not $env:NGINX_BASE_IMAGE) {
+        $env:NGINX_BASE_IMAGE = "docker.m.daocloud.io/library/nginx:1.27-alpine"
+    }
+}
+
+function Get-DockerBuildArgs {
+    $args = @()
+    $keys = @(
+        "PYTHON_BASE_IMAGE",
+        "NODE_BASE_IMAGE",
+        "NGINX_BASE_IMAGE",
+        "PLAYWRIGHT_BASE_IMAGE",
+        "PIP_INDEX_URL",
+        "PIP_TRUSTED_HOST",
+        "NPM_REGISTRY"
+    )
+    foreach ($key in $keys) {
+        $val = (Get-Item -Path "env:$key" -ErrorAction SilentlyContinue).Value
+        if ($val) {
+            $args += "--build-arg", "${key}=$val"
+        }
+    }
+    return $args
+}
+
 function Get-XlinkImage {
     param([string]$Name)
     return "$($env:IMAGE_PREFIX)/${Name}:$($env:IMAGE_TAG)"
