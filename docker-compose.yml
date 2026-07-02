@@ -70,6 +70,8 @@ services:
       MEETING_AI_API_URL: http://meeting-ai:8001
       PORTAL_INTERNAL_KEY: ${PORTAL_INTERNAL_KEY:-dev-flybook-internal-key-change-me}
       FLYBOOK_INTERNAL_KEY: ${PORTAL_INTERNAL_KEY:-dev-flybook-internal-key-change-me}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
     volumes:
       - influencer_logs:/app/logs
       - influencer_cookies:/app/cookies

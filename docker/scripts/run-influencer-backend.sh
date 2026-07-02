@@ -35,6 +35,8 @@ docker run -d \
   -e MEETING_AI_API_URL="${MEETING_AI_API_URL}" \
   -e PORTAL_INTERNAL_KEY="${PORTAL_INTERNAL_KEY}" \
   -e FLYBOOK_INTERNAL_KEY="${PORTAL_INTERNAL_KEY}" \
+  -e ADMIN_USERNAME="${ADMIN_USERNAME:-admin}" \
+  -e ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin123}" \
   "$(img influencer-backend)"
 
 echo "达人后端已启动: $NAME -> http://${INFLUENCER_API_HOST:-127.0.0.1}:${INFLUENCER_API_PORT:-8000}"

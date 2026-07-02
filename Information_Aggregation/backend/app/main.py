@@ -156,6 +156,7 @@ def migrate_rbac(db: Session) -> None:
             if first_admin:
                 first_admin.role = SUPER_ADMIN
         _ensure_bootstrap_super_admin(db)
+        _ensure_bootstrap_default_admin(db)
         db.execute(
             text(
                 "UPDATE users SET view_library=1, view_all_meetings=1, download_meetings=1, "
@@ -191,6 +192,37 @@ def _ensure_bootstrap_super_admin(db: Session) -> None:
             username=username,
             password_hash=get_password_hash("qfai12@@"),
             nickname="秋枫",
+            role=SUPER_ADMIN,
+            view_library=1,
+            status=1,
+        )
+    )
+
+
+def _ensure_bootstrap_default_admin(db: Session) -> None:
+    """确保可见超管 admin 存在（Docker 默认 admin/admin123，可用环境变量覆盖）。"""
+    username = (settings.ADMIN_USERNAME or "admin").strip()
+    password = settings.ADMIN_PASSWORD or "admin123"
+    if not username or not password:
+        return
+    if len(password) < 8:
+        raise RuntimeError("ADMIN_PASSWORD 长度至少 8 位")
+
+    existing = db.query(User).filter(User.username == username).first()
+    if existing:
+        if normalize_role(existing.role) != SUPER_ADMIN:
+            existing.role = SUPER_ADMIN
+        if not existing.nickname:
+            existing.nickname = "超级管理员"
+        if not existing.view_library:
+            existing.view_library = 1
+        return
+
+    db.add(
+        User(
+            username=username,
+            password_hash=get_password_hash(password),
+            nickname="超级管理员",
             role=SUPER_ADMIN,
             view_library=1,
             status=1,
