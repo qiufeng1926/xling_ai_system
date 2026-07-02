@@ -39,5 +39,6 @@ docker run -d `
   -e "TINGWU_DOMAIN=$($env:TINGWU_DOMAIN)" `
   -e "MAX_UPLOAD_BYTES=$($env:MAX_UPLOAD_BYTES)" `
   (Get-XlinkImage "meeting-ai")
+Assert-DockerOk "start meeting-ai ($name)"
 
-Write-Host "会议 AI 已启动: $name (端口 $port)"
+Write-Host "Meeting AI started: $name (port $port)"

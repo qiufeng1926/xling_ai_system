@@ -30,5 +30,6 @@ docker run -d `
   -e "FEISHU_ENCRYPT_KEY=$($env:FEISHU_ENCRYPT_KEY)" `
   -e "FEISHU_MESSENGER_URL=$($env:FEISHU_MESSENGER_URL)" `
   (Get-XlinkImage "flybook")
+Assert-DockerOk "start flybook ($name)"
 
-Write-Host "飞书后端已启动: $name (端口 $port)"
+Write-Host "Flybook started: $name (port $port)"

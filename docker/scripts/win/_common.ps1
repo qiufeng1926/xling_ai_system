@@ -89,6 +89,13 @@ function Get-DockerBuildArgs {
     return $args
 }
 
+function Assert-DockerOk {
+    param([string]$Action = "docker command")
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Action failed (exit code $LASTEXITCODE)"
+    }
+}
+
 function Get-XlinkImage {
     param([string]$Name)
     return "$($env:IMAGE_PREFIX)/${Name}:$($env:IMAGE_TAG)"

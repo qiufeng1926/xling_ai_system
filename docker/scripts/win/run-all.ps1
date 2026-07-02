@@ -1,14 +1,54 @@
-# 按顺序启动全部服务（已构建镜像）
-# 用法: .\docker\scripts\win\run-all.ps1
+# Start all xlink services (docker run)
+# Usage: docker\scripts\win\run-all.cmd
 
-$dir = Split-Path -Parent $MyInvocation.MyCommand.Path
-& "$dir\run-mysql.ps1"
-Write-Host "等待 MySQL 就绪..."
-Start-Sleep -Seconds 15
-& "$dir\run-redis.ps1"
-& "$dir\run-influencer-backend.ps1"
-Start-Sleep -Seconds 3
-& "$dir\run-meeting-ai.ps1"
-& "$dir\run-flybook.ps1"
-& "$dir\run-portal-frontend.ps1"
-Write-Host "`n全部服务已启动"
+$ErrorActionPreference = "Stop"
+. "$PSScriptRoot\_common.ps1"
+
+function Invoke-XlinkStep {
+    param(
+        [string]$ScriptName,
+        [string]$Label
+    )
+    $scriptPath = Join-Path $PSScriptRoot $ScriptName
+    if (-not (Test-Path $scriptPath)) {
+        throw "Script not found: $scriptPath"
+    }
+    Write-Host ""
+    Write-Host "==> $Label"
+    & $scriptPath
+}
+
+try {
+    Assert-DockerAvailable
+    Import-XlinkEnv
+
+    $paths = Get-XlinkPaths
+    Write-Host "Root: $($paths.RootDir)"
+    Write-Host "Env:  $(Join-Path $paths.DockerDir 'env\distributed.env')"
+    Write-Host "Images: $($env:IMAGE_PREFIX)/*:$($env:IMAGE_TAG)"
+
+    Invoke-XlinkStep "run-mysql.ps1" "MySQL"
+    Write-Host "Waiting for MySQL (15s)..."
+    Start-Sleep -Seconds 15
+
+    Invoke-XlinkStep "run-redis.ps1" "Redis"
+    Invoke-XlinkStep "run-influencer-backend.ps1" "Influencer backend :8000"
+    Write-Host "Waiting for influencer backend (3s)..."
+    Start-Sleep -Seconds 3
+
+    Invoke-XlinkStep "run-meeting-ai.ps1" "Meeting AI :8001"
+    Invoke-XlinkStep "run-flybook.ps1" "Flybook :8002"
+    Invoke-XlinkStep "run-portal-frontend.ps1" "Portal frontend :80"
+
+    Write-Host ""
+    Write-Host "All services started:"
+    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | Select-String "xlink"
+    Write-Host ""
+    Write-Host "Portal: http://127.0.0.1:$($env:PORTAL_HTTP_PORT)"
+}
+catch {
+    Write-Host ""
+    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Tip: use docker\scripts\win\run-all.cmd from CMD" -ForegroundColor Yellow
+    exit 1
+}

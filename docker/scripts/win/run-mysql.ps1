@@ -29,5 +29,6 @@ docker run -d `
   mysql:8.0 `
   --character-set-server=utf8mb4 `
   --collation-server=utf8mb4_unicode_ci
+Assert-DockerOk "start MySQL ($name)"
 
-Write-Host "MySQL 已启动: $name (端口 $port)"
+Write-Host "MySQL started: $name (port $port)"

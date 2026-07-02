@@ -25,5 +25,6 @@ docker run -d `
   -e "MEETING_API_HOST=${meetHost}:${meetPort}" `
   -e "FLYBOOK_API_HOST=${flyHost}:${flyPort}" `
   (Get-XlinkImage "portal-frontend")
+Assert-DockerOk "start portal frontend ($name)"
 
-Write-Host "门户前端已启动: $name (端口 $port)"
+Write-Host "Portal frontend started: $name (port $port)"

@@ -34,5 +34,6 @@ docker run -d `
   -e "PORTAL_INTERNAL_KEY=$($env:PORTAL_INTERNAL_KEY)" `
   -e "FLYBOOK_INTERNAL_KEY=$($env:PORTAL_INTERNAL_KEY)" `
   (Get-XlinkImage "influencer-backend")
+Assert-DockerOk "start influencer backend ($name)"
 
-Write-Host "达人后端已启动: $name (端口 $port)"
+Write-Host "Influencer backend started: $name (port $port)"

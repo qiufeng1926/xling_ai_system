@@ -15,5 +15,6 @@ docker run -d `
   --network $net `
   -p "${port}:6379" `
   redis:7-alpine
+Assert-DockerOk "start Redis ($name)"
 
-Write-Host "Redis 已启动: $name (端口 $port)"
+Write-Host "Redis started: $name (port $port)"
