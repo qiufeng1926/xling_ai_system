@@ -25,9 +25,16 @@ RUN pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cpu
 
 COPY requirements.txt .
+ARG PIP_INDEX_URL=
+ARG PIP_TRUSTED_HOST=
 RUN sed -e '/^torch/d' -e '/^torchaudio/d' requirements.txt > /tmp/requirements.txt \
-    && pip install --no-cache-dir -r /tmp/requirements.txt \
-    -i https://pypi.tuna.tsinghua.edu.cn/simple
+    && if [ -n "$PIP_INDEX_URL" ]; then \
+         pip install --no-cache-dir -r /tmp/requirements.txt \
+           --index-url "$PIP_INDEX_URL" \
+           ${PIP_TRUSTED_HOST:+--trusted-host "$PIP_TRUSTED_HOST"}; \
+       else \
+         pip install --no-cache-dir -r /tmp/requirements.txt; \
+       fi
 
 COPY . .
 

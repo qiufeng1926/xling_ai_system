@@ -5,7 +5,12 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci --registry=https://registry.npmmirror.com
+ARG NPM_REGISTRY=
+RUN if [ -n "$NPM_REGISTRY" ]; then \
+      npm ci --registry="$NPM_REGISTRY"; \
+    else \
+      npm ci; \
+    fi
 
 COPY . .
 RUN npm run build

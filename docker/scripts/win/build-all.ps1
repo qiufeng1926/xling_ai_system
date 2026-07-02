@@ -13,6 +13,20 @@ try {
     Write-Host "Images: $($env:IMAGE_PREFIX)/*:$($env:IMAGE_TAG)"
     Write-Host ""
 
+    function Get-DockerBuildArgs {
+        $args = @()
+        if ($env:PIP_INDEX_URL) {
+            $args += "--build-arg", "PIP_INDEX_URL=$($env:PIP_INDEX_URL)"
+        }
+        if ($env:PIP_TRUSTED_HOST) {
+            $args += "--build-arg", "PIP_TRUSTED_HOST=$($env:PIP_TRUSTED_HOST)"
+        }
+        if ($env:NPM_REGISTRY) {
+            $args += "--build-arg", "NPM_REGISTRY=$($env:NPM_REGISTRY)"
+        }
+        return $args
+    }
+
     function Build-XlinkImage {
         param(
             [string]$Label,
@@ -25,7 +39,8 @@ try {
             throw "Build context not found: $ctx"
         }
         Write-Host "==> Building $Label ($tag) ..."
-        docker build -t $tag $ctx
+        $buildArgs = Get-DockerBuildArgs
+        docker build @buildArgs -t $tag $ctx
         if ($LASTEXITCODE -ne 0) {
             throw "docker build failed: $tag"
         }

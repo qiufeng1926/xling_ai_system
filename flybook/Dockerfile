@@ -14,8 +14,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
-    -i https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_INDEX_URL=
+ARG PIP_TRUSTED_HOST=
+RUN if [ -n "$PIP_INDEX_URL" ]; then \
+      pip install --no-cache-dir -r requirements.txt \
+        --index-url "$PIP_INDEX_URL" \
+        ${PIP_TRUSTED_HOST:+--trusted-host "$PIP_TRUSTED_HOST"}; \
+    else \
+      pip install --no-cache-dir -r requirements.txt; \
+    fi
 
 COPY . .
 
