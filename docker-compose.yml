@@ -73,7 +73,7 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
     volumes:
-      - influencer_logs:/app/logs
+      - ./Information_Aggregation/backend/logs:/app/logs
       - influencer_cookies:/app/cookies
     depends_on:
       mysql:
@@ -113,7 +113,7 @@ services:
     volumes:
       - meeting_upload:/app/upload
       - meeting_output:/app/output
-      - meeting_logs:/app/logs
+      - ./meeting_ai/logs:/app/logs
     depends_on:
       mysql:
         condition: service_healthy
@@ -143,7 +143,7 @@ services:
       FEISHU_ENCRYPT_KEY: ${FEISHU_ENCRYPT_KEY:-}
       FEISHU_MESSENGER_URL: ${FEISHU_MESSENGER_URL:-}
     volumes:
-      - flybook_logs:/app/logs
+      - ./flybook/logs:/app/logs
     depends_on:
       influencer-backend:
         condition: service_started
@@ -168,9 +168,6 @@ services:
 
 volumes:
   mysql_data:
-  influencer_logs:
   influencer_cookies:
   meeting_upload:
   meeting_output:
-  meeting_logs:
-  flybook_logs:

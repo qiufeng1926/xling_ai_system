@@ -4,11 +4,12 @@
 . "$PSScriptRoot\_common.ps1"
 Import-XlinkEnv
 
+$paths = Get-XlinkPaths
 $net = Ensure-XlinkNetwork
 $name = if ($env:INFLUENCER_CONTAINER_NAME) { $env:INFLUENCER_CONTAINER_NAME } else { "xlink_influencer_backend" }
 Stop-XlinkContainerIfExists $name
 
-$logsVol = Get-VolumeArgs "influencer_logs" "/app/logs"
+$logsVol = Get-LogsVolumeArgs "influencer_backend"
 $cookiesVol = Get-VolumeArgs "influencer_cookies" "/app/cookies"
 $port = if ($env:INFLUENCER_API_PORT) { $env:INFLUENCER_API_PORT } else { "8000" }
 
@@ -42,3 +43,5 @@ Assert-DockerOk "start influencer backend ($name)"
 
 Write-Host "Influencer backend started: $name (port $port)"
 Write-Host "Config: Information_Aggregation\backend\.env + distributed.env (DB/Redis)"
+$logPath = if ($env:LOGS_ROOT) { Join-Path $env:LOGS_ROOT "influencer_backend" } else { Join-Path $paths.RootDir "Information_Aggregation\backend\logs" }
+Write-Host "Logs: $logPath"

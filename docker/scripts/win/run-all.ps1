@@ -50,6 +50,18 @@ try {
     docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | Select-String "xlink"
     Write-Host ""
     Write-Host "Portal: http://127.0.0.1:$($env:PORTAL_HTTP_PORT)"
+    Write-Host ""
+    Write-Host "Logs (host bind mounts):"
+    if ($env:LOGS_ROOT) {
+        Write-Host "  meeting_ai:           $(Join-Path $env:LOGS_ROOT 'meeting_ai')"
+        Write-Host "  influencer_backend:   $(Join-Path $env:LOGS_ROOT 'influencer_backend')"
+        Write-Host "  flybook:              $(Join-Path $env:LOGS_ROOT 'flybook')"
+    }
+    else {
+        Write-Host "  meeting_ai:           $(Join-Path $paths.RootDir 'meeting_ai\logs')"
+        Write-Host "  influencer_backend:   $(Join-Path $paths.RootDir 'Information_Aggregation\backend\logs')"
+        Write-Host "  flybook:              $(Join-Path $paths.RootDir 'flybook\logs')"
+    }
 }
 catch {
     Write-Host ""

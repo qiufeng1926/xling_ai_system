@@ -142,6 +142,29 @@ function Get-VolumeArgs {
     return @("-v", $mount)
 }
 
+# 日志卷默认绑定到仓库内各服务 logs/，便于宿主机直接查看
+function Get-LogsVolumeArgs {
+    param(
+        [ValidateSet("meeting_ai", "influencer_backend", "flybook")]
+        [string]$ServiceKey,
+        [string]$ContainerPath = "/app/logs"
+    )
+    $paths = Get-XlinkPaths
+    $relativeByService = @{
+        meeting_ai           = "meeting_ai\logs"
+        influencer_backend   = "Information_Aggregation\backend\logs"
+        flybook              = "flybook\logs"
+    }
+    if ($env:LOGS_ROOT) {
+        $hostPath = Join-Path $env:LOGS_ROOT $ServiceKey
+    }
+    else {
+        $hostPath = Join-Path $paths.RootDir $relativeByService[$ServiceKey]
+    }
+    New-Item -ItemType Directory -Force -Path $hostPath | Out-Null
+    return @("-v", "${hostPath}:${ContainerPath}")
+}
+
 # 各服务使用自己的 .env；distributed.env 仅放 Docker 网络/基础设施地址
 function Get-ServiceEnvFileArgs {
     param([string]$RelativeEnvPath)

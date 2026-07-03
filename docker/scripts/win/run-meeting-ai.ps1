@@ -11,7 +11,7 @@ Stop-XlinkContainerIfExists $name
 
 $uploadVol = Get-VolumeArgs "meeting_upload" "/app/upload"
 $outputVol = Get-VolumeArgs "meeting_output" "/app/output"
-$logsVol = Get-VolumeArgs "meeting_logs" "/app/logs"
+$logsVol = Get-LogsVolumeArgs "meeting_ai"
 $port = if ($env:MEETING_API_PORT) { $env:MEETING_API_PORT } else { "8001" }
 
 $serviceEnv = Get-ServiceEnvFileArgs "meeting_ai\.env"
@@ -36,3 +36,5 @@ Assert-DockerOk "start meeting-ai ($name)"
 
 Write-Host "Meeting AI started: $name (port $port)"
 Write-Host "Config: meeting_ai\.env + docker\env\distributed.env (DB_HOST only)"
+$logPath = if ($env:LOGS_ROOT) { Join-Path $env:LOGS_ROOT "meeting_ai" } else { Join-Path $paths.RootDir "meeting_ai\logs" }
+Write-Host "Logs: $logPath"

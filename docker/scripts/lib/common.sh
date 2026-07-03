@@ -39,6 +39,27 @@ volume_mount() {
   fi
 }
 
+# 日志卷：默认绑定仓库内各服务 logs/（可用 LOGS_ROOT 覆盖）
+logs_volume_mount() {
+  local service_key="$1"
+  local container_path="${2:-/app/logs}"
+  local host_path
+  case "$service_key" in
+    meeting_ai) host_path="${ROOT_DIR}/meeting_ai/logs" ;;
+    influencer_backend) host_path="${ROOT_DIR}/Information_Aggregation/backend/logs" ;;
+    flybook) host_path="${ROOT_DIR}/flybook/logs" ;;
+    *)
+      echo "未知日志服务: $service_key" >&2
+      exit 1
+      ;;
+  esac
+  if [[ -n "${LOGS_ROOT:-}" ]]; then
+    host_path="${LOGS_ROOT}/${service_key}"
+  fi
+  mkdir -p "$host_path"
+  echo "-v" "$host_path:$container_path"
+}
+
 ensure_network() {
   local net="${XLINK_NETWORK:-xlink_net}"
   if ! docker network inspect "$net" >/dev/null 2>&1; then

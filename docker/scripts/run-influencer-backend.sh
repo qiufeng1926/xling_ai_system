@@ -9,7 +9,7 @@ NET="$(ensure_network)"
 NAME="${INFLUENCER_CONTAINER_NAME:-xlink_influencer_backend}"
 stop_rm_if_exists "$NAME"
 
-LOGS_VOL="$(volume_mount influencer_logs /app/logs)"
+LOGS_VOL="$(logs_volume_mount influencer_backend /app/logs)"
 COOKIES_VOL="$(volume_mount influencer_cookies /app/cookies)"
 
 # shellcheck disable=SC2086

@@ -11,7 +11,7 @@ stop_rm_if_exists "$NAME"
 
 UPLOAD_VOL="$(volume_mount meeting_upload /app/upload)"
 OUTPUT_VOL="$(volume_mount meeting_output /app/output)"
-LOGS_VOL="$(volume_mount meeting_logs /app/logs)"
+LOGS_VOL="$(logs_volume_mount meeting_ai /app/logs)"
 
 # shellcheck disable=SC2086
 docker run -d \

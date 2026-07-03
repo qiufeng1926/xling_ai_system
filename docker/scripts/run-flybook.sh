@@ -9,7 +9,7 @@ NET="$(ensure_network)"
 NAME="${FLYBOOK_CONTAINER_NAME:-xlink_flybook}"
 stop_rm_if_exists "$NAME"
 
-LOGS_VOL="$(volume_mount flybook_logs /app/logs)"
+LOGS_VOL="$(logs_volume_mount flybook /app/logs)"
 
 # shellcheck disable=SC2086
 docker run -d \

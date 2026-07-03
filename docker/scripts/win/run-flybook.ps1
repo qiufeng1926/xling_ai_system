@@ -4,11 +4,12 @@
 . "$PSScriptRoot\_common.ps1"
 Import-XlinkEnv
 
+$paths = Get-XlinkPaths
 $net = Ensure-XlinkNetwork
 $name = if ($env:FLYBOOK_CONTAINER_NAME) { $env:FLYBOOK_CONTAINER_NAME } else { "xlink_flybook" }
 Stop-XlinkContainerIfExists $name
 
-$logsVol = Get-VolumeArgs "flybook_logs" "/app/logs"
+$logsVol = Get-LogsVolumeArgs "flybook"
 $port = if ($env:FLYBOOK_API_PORT) { $env:FLYBOOK_API_PORT } else { "8002" }
 
 $serviceEnv = Get-ServiceEnvFileArgs "flybook\.env"
@@ -34,3 +35,5 @@ Assert-DockerOk "start flybook ($name)"
 
 Write-Host "Flybook started: $name (port $port)"
 Write-Host "Config: flybook\.env + distributed.env (service URLs)"
+$logPath = if ($env:LOGS_ROOT) { Join-Path $env:LOGS_ROOT "flybook" } else { Join-Path $paths.RootDir "flybook\logs" }
+Write-Host "Logs: $logPath"
