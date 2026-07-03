@@ -181,19 +181,46 @@
         </div>
       </el-header>
       <el-main class="layout-main">
-        <router-view v-slot="{ Component }">
+        <div v-if="onSoloPage" class="meeting-solo-page">
+          <el-empty v-if="!userStore.token" description="请先在 xlink 平台登录后再使用会议 AI">
+            <el-button type="primary" @click="router.push(AUTH_ROUTES.login)">去登录</el-button>
+          </el-empty>
+          <template v-else>
+            <div
+              v-if="!frameReady && !frameLoadError"
+              class="meeting-solo-page__loading"
+            >
+              <el-icon class="is-loading" :size="28"><Loading /></el-icon>
+              <span>正在加载会议 AI…</span>
+            </div>
+            <el-alert
+              v-else-if="frameLoadError"
+              type="error"
+              :closable="false"
+              title="会议 AI 加载失败"
+              description="请确认 meeting-ai 服务已启动，然后刷新页面重试。"
+              show-icon
+              class="meeting-solo-page__error"
+            />
+          </template>
+        </div>
+        <router-view v-else v-slot="{ Component }">
           <keep-alive :include="['Dashboard', 'CollectionTasks', 'ReviewQueue', 'InfluencerList']">
             <component :is="Component" />
           </keep-alive>
         </router-view>
       </el-main>
     </el-container>
+    <MeetingSoloRecorderHost v-if="userStore.token && !isOffboardingPending && soloHostActive" />
   </el-container>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { Loading } from '@element-plus/icons-vue'
+import MeetingSoloRecorderHost from '@/components/MeetingSoloRecorderHost.vue'
+import { useMeetingSoloRecorder } from '@/composables/useMeetingSoloRecorder'
 import { useUserStore } from '@/stores/user'
 import { listMyRooms } from '@/api/meetingRooms'
 import { getAccessRequestStats } from '@/api/permissions'
@@ -217,6 +244,51 @@ import { AUTH_ROUTES, FLYBOOK_ROUTES, INFLUENCER_ROUTES, MEETING_ROUTES, QYWECHA
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
+const { frameReady, barVisible, frameLoadError, iframePinned } = useMeetingSoloRecorder()
+
+const onSoloPage = computed(() => route.path.startsWith(MEETING_ROUTES.solo))
+const soloHostActive = computed(
+  () => onSoloPage.value || barVisible.value || iframePinned.value
+)
+
+let frameLoadTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearFrameLoadTimer() {
+  if (frameLoadTimer) {
+    clearTimeout(frameLoadTimer)
+    frameLoadTimer = null
+  }
+}
+
+function scheduleFrameLoadTimeout() {
+  clearFrameLoadTimer()
+  if (!onSoloPage.value) return
+  frameLoadTimer = setTimeout(() => {
+    if (!frameReady.value) {
+      frameLoadError.value = true
+    }
+  }, 20000)
+}
+
+watch(onSoloPage, (solo) => {
+  frameLoadError.value = false
+  if (solo) {
+    scheduleFrameLoadTimeout()
+  } else {
+    clearFrameLoadTimer()
+  }
+}, { immediate: true })
+
+watch(frameReady, (ready) => {
+  if (ready) {
+    frameLoadError.value = false
+    clearFrameLoadTimer()
+  }
+})
+
+onUnmounted(() => {
+  clearFrameLoadTimer()
+})
 
 const activeMenu = computed(() => {
   const path = route.path
@@ -441,6 +513,40 @@ function handleLogout() {
 
 .layout-main {
   background: #f5f7fa;
+}
+
+.meeting-solo-page {
+  position: relative;
+  height: calc(100vh - 120px);
+  min-height: 480px;
+  background: transparent;
+  border-radius: 8px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.meeting-solo-page__loading {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: #909399;
+  background: #fff;
+  pointer-events: auto;
+  border-radius: 8px;
+}
+
+.meeting-solo-page__error {
+  position: absolute;
+  top: 24px;
+  left: 24px;
+  right: 24px;
+  z-index: 2;
+  pointer-events: auto;
 }
 
 :deep(.el-sub-menu__title),

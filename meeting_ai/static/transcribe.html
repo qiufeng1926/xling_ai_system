@@ -1627,6 +1627,33 @@
                 || new URLSearchParams(window.location.search).get('embedded') === '1';
         }
 
+        let recordingStartedAt = null;
+        let recordingDisconnected = false;
+
+        function notifyPortalRecordingState(overrides) {
+            if (!isPortalEmbedded() || isCollabMode) return;
+            const payload = Object.assign({
+                type: 'xlink:recording-state',
+                recording: isRecording,
+                meetingName: (document.getElementById('meetingNameInput')?.value || '').trim() || lastMeetingName || '',
+                statusText: '',
+                startedAt: recordingStartedAt,
+                generating: sessionEnding,
+                disconnected: recordingDisconnected,
+            }, overrides || {});
+            try {
+                window.parent.postMessage(payload, window.location.origin);
+            } catch (e) {
+                console.warn('通知门户录音状态失败', e);
+            }
+        }
+
+        window.addEventListener('message', (event) => {
+            if (event.origin !== window.location.origin) return;
+            if (!event.data || event.data.type !== 'xlink:recording-state-request') return;
+            notifyPortalRecordingState({});
+        });
+
         function getPortalToken() {
             return localStorage.getItem('token') || localStorage.getItem('authToken') || '';
         }
@@ -3004,25 +3031,50 @@
                 } else if (sessionEnding) {
                     resetRealtimeSessionUI('连接已断开，请查看历史记录');
                 } else if (wasRecording && !isCollabMode) {
-                    resetRealtimeSessionUI(
+                    sessionEnding = false;
+                    pollAbort = true;
+                    recordingDisconnected = true;
+                    startBtn.disabled = false;
+                    stopBtn.disabled = false;
+                    stopBtn.innerHTML = '停止录音';
+                    setRealtimeTranscriptStatus(
                         '连接意外断开，转写可能已在服务端自动保存，请稍后在「会议记录」中查看'
                     );
-                    showErrorAlert(
-                        '录音连接已断开（可能因网络或长时间穿透超时）。' +
-                        '若已录制较久，请等待约 1 分钟后到「会议记录」查看是否已自动保存转写。'
-                    );
+                    notifyPortalRecordingState({
+                        recording: false,
+                        generating: false,
+                        disconnected: true,
+                        statusText: '连接意外断开，请到会议记录查看是否已保存',
+                        startedAt: recordingStartedAt,
+                    });
+                    if (!isPortalEmbedded()) {
+                        showErrorAlert(
+                            '录音连接已断开（可能因网络或长时间穿透超时）。' +
+                            '若已录制较久，请等待约 1 分钟后到「会议记录」查看是否已自动保存转写。'
+                        );
+                    }
                 }
             };
         }
 
         function resetRealtimeSessionUI(statusText) {
             sessionEnding = false;
+            recordingDisconnected = false;
             pollAbort = true;
             startBtn.disabled = false;
             stopBtn.disabled = false;
             stopBtn.innerHTML = '停止录音';
             if (statusText) {
                 setRealtimeTranscriptStatus(statusText);
+            }
+            if (isPortalEmbedded() && !isCollabMode) {
+                notifyPortalRecordingState({
+                    recording: false,
+                    generating: false,
+                    disconnected: false,
+                    statusText: statusText || '',
+                    startedAt: null,
+                });
             }
         }
 
@@ -3286,6 +3338,16 @@
             startBtn.disabled = false;
             stopBtn.disabled = false;
             stopBtn.innerHTML = '停止录音';
+
+            recordingStartedAt = null;
+            recordingDisconnected = false;
+            notifyPortalRecordingState({
+                recording: false,
+                generating: false,
+                disconnected: false,
+                statusText: '',
+                startedAt: null,
+            });
 
             if (data.error) {
                 showErrorAlert(data.error || '部分功能未完成，请稍后重试');
@@ -3606,6 +3668,9 @@
         function setRealtimeTranscriptStatus(text) {
             realtimeTranscriptEl.textContent = text || '';
             realtimeTranscriptEl.className = 'total-text transcript-by-speaker';
+            if (isRecording || sessionEnding) {
+                notifyPortalRecordingState({ statusText: text || '' });
+            }
         }
 
         function scrollRealtimeTranscriptToBottom() {
@@ -3924,6 +3989,8 @@
                 }
 
                 isRecording = true;
+                recordingStartedAt = Date.now();
+                recordingDisconnected = false;
 
                 processor.onaudioprocess = (e) => {
                     if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
@@ -3955,12 +4022,26 @@
                 startBtn.disabled = true;
                 stopBtn.disabled = false;
                 setRealtimeTranscriptStatus('正在录音，实时转写中…');
+                notifyPortalRecordingState({
+                    recording: true,
+                    meetingName,
+                    startedAt: recordingStartedAt,
+                    statusText: '正在录音，实时转写中…',
+                    disconnected: false,
+                });
                 
                 console.log('开始录音');
                 
             } catch (error) {
                 console.error('录音启动失败:', error);
                 isRecording = false;
+                recordingStartedAt = null;
+                notifyPortalRecordingState({
+                    recording: false,
+                    generating: false,
+                    disconnected: false,
+                    startedAt: null,
+                });
                 resetTingwuReadyWaiter();
                 stopMediaStream(stream);
                 if (!isCollabMode) {
@@ -4024,6 +4105,12 @@
                     stopBtn.disabled = true;
                     stopBtn.innerHTML = '<span class="loading"></span>生成中...';
                     setRealtimeTranscriptStatus('正在生成会议纪要，请稍候...');
+                    notifyPortalRecordingState({
+                        recording: false,
+                        generating: true,
+                        statusText: '正在生成会议纪要，请稍候...',
+                        startedAt: recordingStartedAt,
+                    });
                 }
                 // 保持连接直到收到 session_end，不在此处关闭 WebSocket
             } else {
