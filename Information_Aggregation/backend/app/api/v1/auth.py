@@ -125,6 +125,7 @@ def feishu_token_bundle_update(
             access_token=data.access_token,
             refresh_token=data.refresh_token,
             token_expires_at=data.token_expires_at,
+            oauth_scope=data.oauth_scope,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

@@ -43,5 +43,6 @@ def ensure_user_access_token(*, user_id: int) -> tuple[str, str]:
         access_token=tokens.access_token,
         refresh_token=tokens.refresh_token or refresh_token,
         token_expires_at=new_expires,
+        oauth_scope=tokens.scope,
     )
     return tokens.access_token, open_id

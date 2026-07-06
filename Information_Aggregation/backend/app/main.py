@@ -69,7 +69,12 @@ def migrate_rbac(db: Session) -> None:
             if "feishu_token_expires_at" not in cols:
                 db.execute(text("ALTER TABLE users ADD COLUMN feishu_token_expires_at DATETIME NULL"))
             if "feishu_oauth_scope" not in cols:
-                db.execute(text("ALTER TABLE users ADD COLUMN feishu_oauth_scope VARCHAR(512) NULL"))
+                db.execute(text("ALTER TABLE users ADD COLUMN feishu_oauth_scope VARCHAR(2048) NULL"))
+            else:
+                try:
+                    db.execute(text("ALTER TABLE users MODIFY COLUMN feishu_oauth_scope VARCHAR(2048) NULL"))
+                except Exception:
+                    pass
             if "account_status" not in cols:
                 db.execute(text("ALTER TABLE users ADD COLUMN account_status VARCHAR(20) DEFAULT 'active'"))
             if "offboarded_at" not in cols:

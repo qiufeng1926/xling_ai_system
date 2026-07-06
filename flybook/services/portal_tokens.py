@@ -44,6 +44,7 @@ def save_feishu_token_bundle(
     access_token: str,
     refresh_token: str | None,
     token_expires_at: datetime | None,
+    oauth_scope: str | None = None,
 ) -> None:
     base = (portal_api_url or "").strip().rstrip("/")
     key = (flybook_internal_key or "").strip()
@@ -52,6 +53,7 @@ def save_feishu_token_bundle(
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_expires_at": token_expires_at.isoformat() if token_expires_at else None,
+        "oauth_scope": oauth_scope,
     }
     with httpx.Client(timeout=15.0) as client:
         resp = client.post(

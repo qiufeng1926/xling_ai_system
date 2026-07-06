@@ -207,8 +207,8 @@ class UserService:
         user.feishu_token_expires_at = token_expires_at
         if oauth_scope is not None:
             user.feishu_oauth_scope = (oauth_scope.strip() or None)
-            if user.feishu_oauth_scope and len(user.feishu_oauth_scope) > 512:
-                user.feishu_oauth_scope = user.feishu_oauth_scope[:512]
+            if user.feishu_oauth_scope and len(user.feishu_oauth_scope) > 2048:
+                user.feishu_oauth_scope = user.feishu_oauth_scope[:2048]
         db.commit()
         db.refresh(user)
         return user
@@ -242,6 +242,7 @@ class UserService:
             "access_token": user.feishu_access_token,
             "refresh_token": user.feishu_refresh_token,
             "token_expires_at": user.feishu_token_expires_at,
+            "oauth_scope": user.feishu_oauth_scope,
         }
 
     @staticmethod
@@ -252,6 +253,7 @@ class UserService:
         access_token: str,
         refresh_token: str | None = None,
         token_expires_at=None,
+        oauth_scope: str | None = None,
     ) -> User:
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
@@ -262,6 +264,10 @@ class UserService:
         if refresh_token:
             user.feishu_refresh_token = refresh_token.strip()
         user.feishu_token_expires_at = token_expires_at
+        if oauth_scope is not None:
+            user.feishu_oauth_scope = (oauth_scope.strip() or None)
+            if user.feishu_oauth_scope and len(user.feishu_oauth_scope) > 2048:
+                user.feishu_oauth_scope = user.feishu_oauth_scope[:2048]
         db.commit()
         db.refresh(user)
         return user
