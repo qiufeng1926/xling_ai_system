@@ -37,7 +37,7 @@ try {
     Start-Sleep -Seconds 3
 
     Invoke-XlinkStep "run-meeting-ai.ps1" "Meeting AI :8001"
-    Start-Sleep -Seconds 5
+    Start-Sleep -Seconds 20
     $meetOk = docker exec xlink_meeting_ai curl -fsS http://127.0.0.1:8001/health 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "WARNING: meeting-ai health check failed. Run: docker logs xlink_meeting_ai" -ForegroundColor Yellow

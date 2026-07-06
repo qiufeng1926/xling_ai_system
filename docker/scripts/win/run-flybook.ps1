@@ -17,6 +17,8 @@ $portalUrl = if ($env:INFLUENCER_API_URL) { $env:INFLUENCER_API_URL } else { "ht
 $portalFront = if ($env:PORTAL_FRONTEND_URL) { $env:PORTAL_FRONTEND_URL } else { "http://127.0.0.1" }
 $internalKey = if ($env:PORTAL_INTERNAL_KEY) { $env:PORTAL_INTERNAL_KEY } else { "dev-flybook-internal-key-change-me" }
 $cors = if ($env:CORS_ORIGINS) { $env:CORS_ORIGINS } else { "http://127.0.0.1,http://localhost" }
+# 镜像曾默认 production 会强制校验飞书密钥；本地/内网 Docker 部署用 development
+$appEnv = if ($env:APP_ENV) { $env:APP_ENV } else { "development" }
 
 docker run -d `
   --name $name `
@@ -25,6 +27,7 @@ docker run -d `
   -p "${port}:8002" `
   @logsVol `
   @serviceEnv `
+  -e "APP_ENV=$appEnv" `
   -e "JWT_SECRET=$($env:JWT_SECRET)" `
   -e "PORTAL_API_URL=$portalUrl" `
   -e "PORTAL_FRONTEND_URL=$portalFront" `
