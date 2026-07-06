@@ -90,6 +90,14 @@ async def minutes_finish_session(
 ):
     """录音结束后上传至飞书云空间并生成妙记，可选等待 AI 产物"""
     user_id = _require_user_id(user)
+    status_info = _minutes_bind_status(user_id)
+    if not status_info["bound"]:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请先绑定飞书账号")
+    if not status_info["minutes_authorized"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="缺少妙记权限（含 minutes:minutes.upload:write），请重新授权飞书",
+        )
     raw_name = (file.filename or "session.webm").strip()
     content = await file.read()
     if not content:

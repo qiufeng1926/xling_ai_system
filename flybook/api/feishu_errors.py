@@ -2,9 +2,43 @@
 
 from __future__ import annotations
 
+import re
+
 from fastapi import HTTPException, status
 
 from integrations.feishu.errors import FeishuError
+
+_PRIVILEGE_RE = re.compile(r"privileges(?: under the user identity)?:\s*\[([^\]]+)\]", re.IGNORECASE)
+
+
+def _extract_required_privileges(msg: str) -> list[str]:
+    match = _PRIVILEGE_RE.search(msg or "")
+    if not match:
+        return []
+    return [part.strip() for part in match.group(1).split(",") if part.strip()]
+
+
+def _scope_missing_message(msg: str) -> str:
+    required = _extract_required_privileges(msg)
+    if required:
+        scope_hint = "、".join(required[:4])
+    else:
+        scope_hint = "相关用户身份权限"
+
+    if any("minutes" in item for item in required):
+        return (
+            f"当前飞书授权缺少妙记权限（{scope_hint}）。"
+            "请在飞书开发者后台开通对应用户身份权限，并在妙记 AI 页点击「重新授权」。"
+        )
+    if any(item.startswith("drive:") or item.startswith("docx:") or item.startswith("docs:") for item in required):
+        return (
+            f"当前飞书授权缺少云文档权限（{scope_hint}）。"
+            "请在云文档页点击「重新授权」；并确认飞书开放平台已为应用开通对应用户身份权限。"
+        )
+    return (
+        f"当前飞书授权缺少权限（{scope_hint}）。"
+        "请在飞书开发者后台开通对应用户身份权限后重新授权。"
+    )
 
 
 def feishu_error_to_http(exc: FeishuError) -> HTTPException:
@@ -13,13 +47,10 @@ def feishu_error_to_http(exc: FeishuError) -> HTTPException:
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
                 "code": "feishu_scope_missing",
-                "message": (
-                    "当前飞书授权缺少云文档权限（如 drive:drive、docx:document）。"
-                    "请在云文档页点击「重新授权」完成绑定；"
-                    "并确认飞书开放平台已为应用开通对应用户身份权限。"
-                ),
+                "message": _scope_missing_message(exc.msg),
                 "feishu_code": exc.code,
                 "feishu_message": exc.msg,
+                "required_privileges": _extract_required_privileges(exc.msg),
             },
         )
     if exc.code in (99991663, 99991668, 99991677):

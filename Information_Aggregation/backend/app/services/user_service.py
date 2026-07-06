@@ -137,7 +137,8 @@ class UserService:
             }
         )
         artifacts_ok = "minutes:minutes.artifacts:read" in granted
-        return search_ok and read_ok and artifacts_ok
+        upload_ok = "minutes:minutes.upload:write" in granted
+        return search_ok and read_ok and artifacts_ok and upload_ok
 
     @staticmethod
     def get_feishu_bind_status(user: User) -> dict:

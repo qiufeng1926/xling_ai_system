@@ -32,6 +32,7 @@ MINUTES_READ_SCOPES = frozenset(
 )
 MINUTES_ARTIFACTS_SCOPES = frozenset({"minutes:minutes.artifacts:read"})
 MINUTES_CREATE_SCOPES = frozenset({"minutes:minutes"})
+MINUTES_UPLOAD_SCOPES = frozenset({"minutes:minutes.upload:write"})
 
 
 def scope_tokens(scope: str | None) -> set[str]:
@@ -45,7 +46,8 @@ def has_minutes_scope(scope: str | None) -> bool:
     search_ok = bool(granted & MINUTES_SEARCH_SCOPES)
     read_ok = bool(granted & MINUTES_READ_SCOPES)
     artifacts_ok = bool(granted & MINUTES_ARTIFACTS_SCOPES)
-    return search_ok and read_ok and artifacts_ok
+    upload_ok = bool(granted & MINUTES_UPLOAD_SCOPES)
+    return search_ok and read_ok and artifacts_ok and upload_ok
 
 
 def has_docs_drive_scope(scope: str | None) -> bool:

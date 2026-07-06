@@ -34,7 +34,8 @@
         class="flybook-minutes__alert"
       >
         <template #default>
-          缺少妙记相关权限（minutes:minutes.search:read、minutes:minutes.artifacts:read 等）。
+          缺少妙记相关权限（minutes:minutes.upload:write、minutes:minutes.search:read 等）。
+          请先在飞书开放平台开通「上传音视频并创建妙记」用户身份权限，再点击重新授权。
           <el-button type="primary" size="small" :loading="binding" @click="handleBind">
             重新授权
           </el-button>

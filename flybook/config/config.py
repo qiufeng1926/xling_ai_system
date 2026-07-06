@@ -91,7 +91,7 @@ feishu_oauth_scope = (
         "wiki:wiki wiki:node:create "
         "docs:document:import drive:file:upload "
         "minutes:minutes.search:read minutes:minutes:readonly "
-        "minutes:minutes.artifacts:read minutes:minutes",
+        "minutes:minutes.artifacts:read minutes:minutes minutes:minutes.upload:write",
     )
     or (
         "offline_access drive:drive docx:document docx:document:create "
@@ -100,7 +100,7 @@ feishu_oauth_scope = (
         "wiki:wiki wiki:node:create "
         "docs:document:import drive:file:upload "
         "minutes:minutes.search:read minutes:minutes:readonly "
-        "minutes:minutes.artifacts:read minutes:minutes"
+        "minutes:minutes.artifacts:read minutes:minutes minutes:minutes.upload:write"
     )
 )
 
