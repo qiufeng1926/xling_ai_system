@@ -49,9 +49,12 @@ def bind_feishu_to_portal_user(
             headers={"X-Flybook-Service-Key": key},
         )
     if resp.status_code != 200:
-        detail = resp.text[:300]
+        detail = resp.text[:500]
         try:
-            detail = resp.json().get("detail", detail)
+            body = resp.json()
+            detail = body.get("detail", detail)
+            if isinstance(detail, list):
+                detail = str(detail)
         except Exception:
             pass
         raise PortalBindError(f"绑定失败 ({resp.status_code}): {detail}")

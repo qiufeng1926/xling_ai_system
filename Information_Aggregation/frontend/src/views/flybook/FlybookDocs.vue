@@ -153,6 +153,7 @@ import {
   listDocsFiles,
   loadFeishuDocsSdk,
   mirrorFeishuFileToLibrary,
+  isFeishuRebindRequiredError,
   startFeishuBind,
   suggestImportTarget,
   type FeishuBindStatus,
@@ -341,8 +342,11 @@ async function loadFiles() {
     needsDocsReauth.value = false
   } catch (err) {
     files.value = []
-    if (isFeishuScopeMissingError(err)) {
+    if (isFeishuScopeMissingError(err) || isFeishuRebindRequiredError(err)) {
       needsDocsReauth.value = true
+      ElMessage.warning(getFlybookErrorMessage(err, '飞书授权异常，请重新绑定'))
+    } else {
+      ElMessage.error(getFlybookErrorMessage(err, '加载云文档列表失败'))
     }
   } finally {
     loadingList.value = false

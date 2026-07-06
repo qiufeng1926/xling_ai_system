@@ -159,8 +159,15 @@ def feishu_bind_callback(
         )
     except PortalBindError as exc:
         logger.warning("飞书绑定失败: %s", exc)
+        msg = str(exc)
+        if "该飞书账号已绑定其他系统用户" in msg:
+            err = "already_bound"
+        elif "无效的服务密钥" in msg:
+            err = "invalid_service_key"
+        else:
+            err = "bind_failed"
         return RedirectResponse(
-            _frontend_return_url(path=return_path, error="bind_failed"),
+            _frontend_return_url(path=return_path, error=err),
             status_code=status.HTTP_302_FOUND,
         )
 

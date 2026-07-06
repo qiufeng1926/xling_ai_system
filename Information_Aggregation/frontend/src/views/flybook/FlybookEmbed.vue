@@ -233,7 +233,9 @@ function handleBindQuery() {
       invalid_state: '绑定状态无效或已过期，请重试',
       missing_code: '飞书未返回授权码',
       feishu_api_error: '飞书接口调用失败',
-      bind_failed: '绑定失败，该飞书账号可能已绑定其他用户',
+      bind_failed: '绑定失败，请查看 flybook/portal 日志或重启门户后端',
+      already_bound: '绑定失败，该飞书账号已绑定其他 xlink 用户',
+      invalid_service_key: '服务密钥不一致，请检查 FLYBOOK_INTERNAL_KEY',
       missing_user: '无法识别绑定用户，请重新登录后再试',
     }
     ElMessage.error(messages[bindError] || '飞书绑定失败')

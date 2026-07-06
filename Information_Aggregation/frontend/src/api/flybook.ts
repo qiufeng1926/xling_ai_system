@@ -26,6 +26,18 @@ export function isFeishuScopeMissingError(error: unknown): boolean {
   return typeof detail === 'object' && detail?.code === 'feishu_scope_missing'
 }
 
+export function isFeishuRebindRequiredError(error: unknown): boolean {
+  const detail = (error as { response?: { data?: { detail?: FlybookApiErrorDetail | string } } })
+    ?.response?.data?.detail
+  if (typeof detail !== 'object' || !detail?.code) return false
+  return [
+    'feishu_not_bound',
+    'feishu_token_invalid',
+    'feishu_scope_missing',
+    'feishu_token_error',
+  ].includes(detail.code)
+}
+
 export function getFlybookErrorMessage(error: unknown, fallback = '飞书服务请求失败'): string {
   const detail = (error as { response?: { data?: { detail?: FlybookApiErrorDetail | string } } })
     ?.response?.data?.detail

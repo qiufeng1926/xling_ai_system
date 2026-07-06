@@ -35,3 +35,44 @@ def feishu_error_to_http(exc: FeishuError) -> HTTPException:
         status_code=status.HTTP_502_BAD_GATEWAY,
         detail={"code": "feishu_api_error", "message": exc.msg, "feishu_code": exc.code},
     )
+
+
+def portal_token_to_http(exc: Exception) -> HTTPException:
+    """PortalTokenError → 结构化 HTTP 响应（便于前端提示重新绑定）"""
+    from services.portal_tokens import PortalTokenError
+
+    if not isinstance(exc, PortalTokenError):
+        raise exc
+    msg = str(exc)
+    if "PORTAL_API_URL" in msg or "FLYBOOK_INTERNAL_KEY 未配置" in msg:
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "flybook_config_error", "message": msg},
+        )
+    if "无效的服务密钥" in msg:
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "portal_internal_key_mismatch",
+                "message": "flybook 与门户 FLYBOOK_INTERNAL_KEY 不一致，请联系管理员",
+            },
+        )
+    if "用户尚未绑定" in msg or "凭证缺失" in msg:
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "feishu_not_bound", "message": msg},
+        )
+    if "已过期" in msg:
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "feishu_token_invalid", "message": "飞书授权已过期，请重新绑定"},
+        )
+    if "获取飞书凭证失败" in msg:
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "portal_unreachable", "message": msg},
+        )
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={"code": "feishu_token_error", "message": msg},
+    )

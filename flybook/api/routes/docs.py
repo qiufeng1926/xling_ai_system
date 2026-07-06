@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from pydantic import BaseModel, Field
 
 from api.auth_utils import get_current_user
-from api.feishu_errors import feishu_error_to_http
+from api.feishu_errors import feishu_error_to_http, portal_token_to_http
 from api.portal_auth import PortalUser
 from integrations.feishu.docs import (
     CREATE_TYPES,
@@ -109,7 +109,11 @@ def docs_component_auth(body: ComponentAuthRequest, user: PortalUser = Depends(g
             page_url=body.page_url,
         )
     except PortalTokenError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        logger.warning(
+            "云文档列表 token 失败",
+            extra={"output_params": {"user_id": user_id, "error": str(exc)[:300]}},
+        )
+        raise portal_token_to_http(exc) from exc
     except FeishuError as exc:
         raise feishu_error_to_http(exc) from exc
     return auth
@@ -122,7 +126,11 @@ def docs_root_folder(user: PortalUser = Depends(get_current_user)):
         access_token, _ = ensure_user_access_token(user_id=user_id)
         meta = get_root_folder_meta(access_token)
     except PortalTokenError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        logger.warning(
+            "云文档列表 token 失败",
+            extra={"output_params": {"user_id": user_id, "error": str(exc)[:300]}},
+        )
+        raise portal_token_to_http(exc) from exc
     except FeishuError as exc:
         raise feishu_error_to_http(exc) from exc
     return meta
@@ -145,7 +153,11 @@ def docs_list_files(
             page_token=page_token,
         )
     except PortalTokenError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        logger.warning(
+            "云文档列表 token 失败",
+            extra={"output_params": {"user_id": user_id, "error": str(exc)[:300]}},
+        )
+        raise portal_token_to_http(exc) from exc
     except FeishuError as exc:
         raise feishu_error_to_http(exc) from exc
 
@@ -184,7 +196,11 @@ def docs_create_file(body: CreateDocRequest, user: PortalUser = Depends(get_curr
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except PortalTokenError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        logger.warning(
+            "云文档列表 token 失败",
+            extra={"output_params": {"user_id": user_id, "error": str(exc)[:300]}},
+        )
+        raise portal_token_to_http(exc) from exc
     except FeishuError as exc:
         raise feishu_error_to_http(exc) from exc
 
@@ -258,7 +274,11 @@ async def docs_import_file(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except PortalTokenError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        logger.warning(
+            "云文档列表 token 失败",
+            extra={"output_params": {"user_id": user_id, "error": str(exc)[:300]}},
+        )
+        raise portal_token_to_http(exc) from exc
     except FeishuError as exc:
         raise feishu_error_to_http(exc) from exc
 

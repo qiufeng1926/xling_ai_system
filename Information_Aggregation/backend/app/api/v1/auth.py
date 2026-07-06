@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 
 from app.api.deps import DbSession, get_current_user
+from app.config import settings
 from app.constants.account_status import ACTIVE, OFFBOARDED
 from app.models import User
 from app.schemas import (
@@ -78,6 +79,14 @@ def feishu_bind(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("api.auth").exception("飞书绑定写入失败 user_id=%s", data.user_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"飞书绑定失败: {exc}",
+        ) from exc
 
     return ResponseBase(data={"bound": True}, message="飞书绑定成功")
 

@@ -59,7 +59,7 @@ class FeishuBindRequest(BaseModel):
     access_token: str = Field(..., min_length=8)
     refresh_token: str | None = None
     token_expires_at: datetime | None = None
-    oauth_scope: str | None = Field(default=None, max_length=512)
+    oauth_scope: str | None = Field(default=None, max_length=2048)
 
 
 class FeishuBindStatus(BaseModel):

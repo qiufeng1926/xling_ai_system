@@ -145,13 +145,14 @@ class UserService:
 
         bound = bool(user.feishu_open_id)
         token_valid = False
-        if bound and user.feishu_token_expires_at:
-            expires = user.feishu_token_expires_at
-            if expires.tzinfo is None:
-                expires = expires.replace(tzinfo=timezone.utc)
-            token_valid = expires > datetime.now(timezone.utc)
-        elif bound and user.feishu_access_token:
-            token_valid = True
+        if bound and user.feishu_access_token:
+            if user.feishu_token_expires_at:
+                expires = user.feishu_token_expires_at
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=timezone.utc)
+                token_valid = expires > datetime.now(timezone.utc) or bool(user.feishu_refresh_token)
+            else:
+                token_valid = True
         docs_authorized = UserService._feishu_docs_authorized(user.feishu_oauth_scope) if bound else False
         minutes_authorized = UserService._feishu_minutes_authorized(user.feishu_oauth_scope) if bound else False
         return {
@@ -205,7 +206,9 @@ class UserService:
         user.feishu_refresh_token = refresh_token
         user.feishu_token_expires_at = token_expires_at
         if oauth_scope is not None:
-            user.feishu_oauth_scope = oauth_scope.strip() or None
+            user.feishu_oauth_scope = (oauth_scope.strip() or None)
+            if user.feishu_oauth_scope and len(user.feishu_oauth_scope) > 512:
+                user.feishu_oauth_scope = user.feishu_oauth_scope[:512]
         db.commit()
         db.refresh(user)
         return user
