@@ -1654,6 +1654,22 @@
             notifyPortalRecordingState({});
         });
 
+        window.addEventListener('message', (event) => {
+            if (event.origin !== window.location.origin) return;
+            if (!event.data || event.data.type !== 'xlink:portal-visibility') return;
+            if (!isRecording) return;
+            if (event.data.hidden) {
+                ensureAudioContextRunning();
+                setRealtimeTranscriptStatus('后台录音中，转写持续进行…');
+                return;
+            }
+            ensureAudioContextRunning();
+            if (wakeLockSentinel === null) {
+                acquireWakeLock();
+            }
+            setRealtimeTranscriptStatus('正在录音，实时转写中…');
+        });
+
         function getPortalToken() {
             return localStorage.getItem('token') || localStorage.getItem('authToken') || '';
         }

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>xlink 录音中</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: linear-gradient(135deg, #1a3a5c 0%, #0d2137 100%);
+      color: #fff;
+      padding: 14px 16px;
+      min-height: 100vh;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #f56c6c;
+      display: inline-block;
+      margin-right: 8px;
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    .dot.warn { background: #e6a23c; animation: none; }
+    .title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+    .name { font-size: 12px; opacity: 0.9; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .time { font-size: 13px; font-variant-numeric: tabular-nums; opacity: 0.92; margin-bottom: 10px; }
+    button {
+      width: 100%;
+      padding: 8px 12px;
+      border: none;
+      border-radius: 6px;
+      background: rgba(255,255,255,0.15);
+      color: #fff;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    button:hover { background: rgba(255,255,255,0.25); }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.85); }
+    }
+  </style>
+</head>
+<body>
+  <div class="title"><span id="dot" class="dot"></span><span id="title">录音进行中</span></div>
+  <div id="name" class="name"></div>
+  <div id="time" class="time"></div>
+  <button type="button" id="focusBtn">返回 xlink</button>
+  <script>
+    const dot = document.getElementById('dot');
+    const titleEl = document.getElementById('title');
+    const nameEl = document.getElementById('name');
+    const timeEl = document.getElementById('time');
+    document.getElementById('focusBtn').onclick = () => {
+      if (window.opener && !window.opener.closed) window.opener.focus();
+    };
+    function apply(data) {
+      titleEl.textContent = data.title || '录音进行中';
+      nameEl.textContent = data.meetingName || '';
+      nameEl.style.display = data.meetingName ? 'block' : 'none';
+      timeEl.textContent = data.elapsedLabel || '';
+      timeEl.style.display = data.elapsedLabel ? 'block' : 'none';
+      dot.className = data.disconnected ? 'dot warn' : 'dot';
+    }
+    window.addEventListener('message', (e) => {
+      if (!e.data || e.data.type !== 'xlink:pip-update') return;
+      apply(e.data);
+    });
+  </script>
+</body>
+</html>

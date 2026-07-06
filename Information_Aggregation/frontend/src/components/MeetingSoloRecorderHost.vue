@@ -1,7 +1,7 @@
 <template>
   <div
     class="meeting-solo-host"
-    :class="onSoloPage ? 'meeting-solo-host--solo' : 'meeting-solo-host--background'"
+    :class="iframeModeClass"
   >
     <iframe
       ref="frameRef"
@@ -12,45 +12,48 @@
       @load="onFrameLoad"
       @error="onFrameError"
     />
+    <button
+      v-if="overlayExpanded"
+      type="button"
+      class="meeting-solo-host__overlay-close"
+      aria-label="收起录制窗口"
+      @click="collapseOverlay"
+    >
+      收起
+    </button>
   </div>
 
-  <transition name="recording-bar-fade">
-    <div
-      v-if="barVisible && !onSoloPage"
-      class="global-recording-bar"
-      role="status"
-      aria-live="polite"
-    >
-      <div class="global-recording-bar__main">
-        <span
-          class="global-recording-bar__dot"
-          :class="{ 'global-recording-bar__dot--warn': disconnected }"
-        />
-        <div class="global-recording-bar__text">
-          <strong>{{ barTitle }}</strong>
-          <span v-if="meetingName" class="global-recording-bar__name">{{ meetingName }}</span>
-          <span v-if="statusText" class="global-recording-bar__status">
-            {{ statusText }}
-          </span>
-        </div>
-        <span v-if="recording || generating" class="global-recording-bar__time">
-          {{ elapsedLabel }}
-        </span>
-      </div>
-      <el-button v-if="disconnected" type="default" size="small" @click="dismissBar">
-        关闭
-      </el-button>
-      <el-button type="primary" size="small" @click="goToSolo">
-        {{ disconnected ? '查看录制' : '返回录制' }}
-      </el-button>
-    </div>
+  <button
+    v-if="showPipHint"
+    type="button"
+    class="recording-pip-hint"
+    @click="openPipPanel"
+  >
+    📌 屏幕置顶（切到其他网页时保持可见）
+  </button>
+
+  <transition name="recording-ball-fade">
+    <RecordingFloatBall
+      v-if="showFloatBall"
+      :title="barTitle"
+      :meeting-name="meetingName"
+      :elapsed-label="elapsedLabel"
+      :disconnected="disconnected"
+      :recording="recording"
+      :generating="generating"
+      @expand="expandOverlay"
+      @dismiss="dismissBar"
+      @pip="openPipPanel"
+    />
   </transition>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { MEETING_ROUTES } from '@/constants/routes'
+import RecordingFloatBall from '@/components/RecordingFloatBall.vue'
 import {
   applyPortalRecordingState,
   dismissRecordingBar,
@@ -58,17 +61,24 @@ import {
   resetPortalRecordingState,
   useMeetingSoloRecorder,
 } from '@/composables/useMeetingSoloRecorder'
+import {
+  isRecordingPipOpen,
+  notifyBackgroundRecording,
+  openRecordingPip,
+  resetRecordingPipSession,
+  updateRecordingPip,
+} from '@/composables/useRecordingPip'
 import { useUserStore } from '@/stores/user'
 
 const route = useRoute()
-const router = useRouter()
 const userStore = useUserStore()
 const frameRef = ref<HTMLIFrameElement | null>(null)
+const overlayExpanded = ref(false)
+const pipTipShown = ref(false)
 
 const {
   recording,
   meetingName,
-  statusText,
   disconnected,
   generating,
   barVisible,
@@ -80,11 +90,32 @@ const {
 
 const onSoloPage = computed(() => route.path.startsWith(MEETING_ROUTES.solo))
 
+const showFloatBall = computed(
+  () => barVisible.value && !onSoloPage.value && !overlayExpanded.value
+)
+
+const showPipHint = computed(
+  () => barVisible.value && !isRecordingPipOpen()
+)
+
+const iframeModeClass = computed(() => {
+  if (overlayExpanded.value) return 'meeting-solo-host--overlay'
+  if (onSoloPage.value) return 'meeting-solo-host--solo'
+  return 'meeting-solo-host--backstage'
+})
+
 const meetingAppUrl = computed(() => {
   const base = import.meta.env.VITE_MEETING_APP_PATH || '/meeting-app/'
   const sep = base.includes('?') ? '&' : '?'
-  return `${base}${sep}embedded=1&portal_host=1&v=20260703f`
+  return `${base}${sep}embedded=1&portal_host=1&v=20260706c`
 })
+
+const pipState = computed(() => ({
+  title: barTitle.value,
+  meetingName: meetingName.value,
+  elapsedLabel: elapsedLabel.value,
+  disconnected: disconnected.value,
+}))
 
 function onFrameLoad() {
   frameReady.value = true
@@ -103,15 +134,42 @@ function requestIframeStateSync() {
   }
 }
 
+function relayPortalVisibility() {
+  const win = frameRef.value?.contentWindow
+  if (!win) return
+  const hidden = document.visibilityState === 'hidden'
+  win.postMessage({ type: 'xlink:portal-visibility', hidden }, window.location.origin)
+  if (hidden && barVisible.value && (recording.value || generating.value)) {
+    void notifyBackgroundRecording(barTitle.value)
+  }
+}
+
+async function openPipPanel() {
+  const ok = await openRecordingPip(pipState.value)
+  if (ok) {
+    ElMessage.success('已开启屏幕置顶，切换其他网页时仍可看到录音状态')
+    return
+  }
+  ElMessage.warning('无法打开置顶窗口，请允许弹窗后重试')
+}
+
 function dismissBar() {
   dismissRecordingBar()
+  overlayExpanded.value = false
+  resetRecordingPipSession()
   requestIframeStateSync()
 }
 
-function goToSolo() {
-  if (!onSoloPage.value) {
-    router.push(MEETING_ROUTES.solo)
-  }
+function expandOverlay() {
+  overlayExpanded.value = true
+  void nextTick(() => {
+    requestIframeStateSync()
+    relayPortalVisibility()
+  })
+}
+
+function collapseOverlay() {
+  overlayExpanded.value = false
 }
 
 function handlePortalMessage(event: MessageEvent) {
@@ -128,19 +186,51 @@ function handlePortalMessage(event: MessageEvent) {
   })
 }
 
+watch(pipState, (state) => {
+  if (isRecordingPipOpen()) {
+    updateRecordingPip(state)
+  }
+}, { deep: true })
+
+watch(recording, (active) => {
+  if (active && !pipTipShown.value) {
+    pipTipShown.value = true
+    ElMessage.info({
+      message: '如需浏览其他网页，请点击「屏幕置顶」，录音将在后台继续',
+      duration: 5000,
+      showClose: true,
+    })
+  }
+  if (!active && !generating.value && !disconnected.value) {
+    pipTipShown.value = false
+    resetRecordingPipSession()
+  }
+})
+
 watch(onSoloPage, (solo) => {
   if (solo) {
+    overlayExpanded.value = false
     pinMeetingIframe()
     void nextTick(() => {
       requestIframeStateSync()
+      relayPortalVisibility()
     })
   }
 }, { immediate: true })
+
+watch(barVisible, (visible) => {
+  if (!visible) {
+    overlayExpanded.value = false
+    resetRecordingPipSession()
+  }
+})
 
 watch(
   () => userStore.token,
   (token) => {
     if (!token) {
+      overlayExpanded.value = false
+      resetRecordingPipSession()
       resetPortalRecordingState()
     }
   }
@@ -148,10 +238,13 @@ watch(
 
 onMounted(() => {
   window.addEventListener('message', handlePortalMessage)
+  document.addEventListener('visibilitychange', relayPortalVisibility)
+  relayPortalVisibility()
 })
 
 onUnmounted(() => {
   window.removeEventListener('message', handlePortalMessage)
+  document.removeEventListener('visibilitychange', relayPortalVisibility)
 })
 </script>
 
@@ -173,10 +266,17 @@ onUnmounted(() => {
   pointer-events: auto;
 }
 
-.meeting-solo-host--background {
-  z-index: -1;
-  opacity: 0;
+.meeting-solo-host--backstage {
+  z-index: 1;
+  opacity: 0.01;
   pointer-events: none;
+}
+
+.meeting-solo-host--overlay {
+  z-index: 2100;
+  opacity: 1;
+  pointer-events: auto;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.2);
 }
 
 .meeting-solo-host__frame {
@@ -187,92 +287,51 @@ onUnmounted(() => {
   background: #fff;
 }
 
-.global-recording-bar {
-  position: fixed;
-  left: 240px;
-  right: 0;
-  bottom: 0;
-  z-index: 2100;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 20px;
-  background: linear-gradient(90deg, #1a3a5c 0%, #0d2137 100%);
+.meeting-solo-host__overlay-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.15);
+  font-size: 13px;
+  cursor: pointer;
 }
 
-.global-recording-bar__main {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-  flex: 1;
+.meeting-solo-host__overlay-close:hover {
+  background: rgba(0, 0, 0, 0.72);
 }
 
-.global-recording-bar__dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: #f56c6c;
-  flex-shrink: 0;
-  animation: recording-pulse 1.2s ease-in-out infinite;
-}
-
-.global-recording-bar__dot--warn {
-  background: #e6a23c;
-  animation: none;
-}
-
-.global-recording-bar__text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.global-recording-bar__text strong {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.global-recording-bar__name,
-.global-recording-bar__status {
+.recording-pip-hint {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 2190;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #1a3a5c 0%, #0d2137 100%);
+  color: #fff;
   font-size: 12px;
-  opacity: 0.88;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
 }
 
-.global-recording-bar__time {
-  font-variant-numeric: tabular-nums;
-  font-size: 15px;
-  font-weight: 600;
-  flex-shrink: 0;
+.recording-pip-hint:hover {
+  filter: brightness(1.08);
 }
 
-.recording-bar-fade-enter-active,
-.recording-bar-fade-leave-active {
+.recording-ball-fade-enter-active,
+.recording-ball-fade-leave-active {
   transition: transform 0.2s ease, opacity 0.2s ease;
 }
 
-.recording-bar-fade-enter-from,
-.recording-bar-fade-leave-to {
-  transform: translateY(100%);
+.recording-ball-fade-enter-from,
+.recording-ball-fade-leave-to {
+  transform: translateY(12px) scale(0.92);
   opacity: 0;
-}
-
-@keyframes recording-pulse {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.5;
-    transform: scale(0.85);
-  }
 }
 </style>
