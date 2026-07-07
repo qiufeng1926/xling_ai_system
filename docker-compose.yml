@@ -24,6 +24,7 @@ services:
       - mysql_data:/var/lib/mysql
       - ./Information_Aggregation/scripts/init.sql:/docker-entrypoint-initdb.d/01-influencer.sql:ro
       - ./docker/mysql/02-meeting-ai.sql:/docker-entrypoint-initdb.d/02-meeting-ai.sql:ro
+      - ./docker/mysql/03-grants.sql:/docker-entrypoint-initdb.d/03-grants.sql:ro
     command: >
       --character-set-server=utf8mb4
       --collation-server=utf8mb4_unicode_ci
@@ -52,6 +53,8 @@ services:
     image: xlink/influencer-backend:latest
     container_name: xlink_influencer_backend
     restart: unless-stopped
+    env_file:
+      - ./Information_Aggregation/backend/.env
     ports:
       - "${INFLUENCER_API_PORT:-8000}:8000"
     environment:
@@ -63,9 +66,9 @@ services:
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY: ${JWT_SECRET:-dev-local-secret-key-at-least-32-characters-long}
       DEBUG: ${DEBUG:-false}
+      PLAYWRIGHT_HEADLESS: "true"
       API_HOST: 0.0.0.0
       API_PORT: 8000
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://127.0.0.1}
       FLYBOOK_API_URL: http://flybook:8002
       MEETING_AI_API_URL: http://meeting-ai:8001
       PORTAL_INTERNAL_KEY: ${PORTAL_INTERNAL_KEY:-dev-flybook-internal-key-change-me}
@@ -88,28 +91,21 @@ services:
     image: xlink/meeting-ai:latest
     container_name: xlink_meeting_ai
     restart: unless-stopped
+    env_file:
+      - ./meeting_ai/.env
     ports:
       - "${MEETING_API_PORT:-8001}:8001"
     environment:
-      APP_ENV: ${APP_ENV:-production}
+      APP_ENV: ${APP_ENV:-development}
       JWT_SECRET: ${JWT_SECRET:-dev-local-secret-key-at-least-32-characters-long}
       PORTAL_API_URL: http://influencer-backend:8000
       PORTAL_INTERNAL_KEY: ${PORTAL_INTERNAL_KEY:-dev-flybook-internal-key-change-me}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://127.0.0.1}
       DB_HOST: mysql
       DB_PORT: 3306
       DB_USER: ${MYSQL_USER:-app_user}
       DB_PASSWORD: ${MYSQL_PASSWORD:-app123}
       DB_NAME: meeting_ai
-      LLM_PROVIDER: ${LLM_PROVIDER:-glm}
-      GLM_API_KEY: ${GLM_API_KEY:-}
-      GLM_MODEL: ${GLM_MODEL:-glm-4-flash}
-      ALIBABA_CLOUD_ACCESS_KEY_ID: ${ALIBABA_CLOUD_ACCESS_KEY_ID:-}
-      ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${ALIBABA_CLOUD_ACCESS_KEY_SECRET:-}
-      TINGWU_APP_KEY: ${TINGWU_APP_KEY:-}
-      TINGWU_REGION: ${TINGWU_REGION:-cn-beijing}
-      TINGWU_DOMAIN: ${TINGWU_DOMAIN:-tingwu.cn-beijing.aliyuncs.com}
-      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-524288000}
+      FFMPEG_PATH: /usr/bin
     volumes:
       - meeting_upload:/app/upload
       - meeting_output:/app/output
@@ -127,21 +123,15 @@ services:
     image: xlink/flybook:latest
     container_name: xlink_flybook
     restart: unless-stopped
+    env_file:
+      - ./flybook/.env
     ports:
       - "${FLYBOOK_API_PORT:-8002}:8002"
     environment:
-      APP_ENV: ${APP_ENV:-production}
+      APP_ENV: ${APP_ENV:-development}
       JWT_SECRET: ${JWT_SECRET:-dev-local-secret-key-at-least-32-characters-long}
       PORTAL_API_URL: http://influencer-backend:8000
-      PORTAL_FRONTEND_URL: ${PORTAL_FRONTEND_URL:-http://localhost}
       FLYBOOK_INTERNAL_KEY: ${PORTAL_INTERNAL_KEY:-dev-flybook-internal-key-change-me}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://127.0.0.1}
-      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
-      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
-      FEISHU_OAUTH_REDIRECT_URI: ${FEISHU_OAUTH_REDIRECT_URI:-http://localhost/api/flybook/auth/callback}
-      FEISHU_VERIFICATION_TOKEN: ${FEISHU_VERIFICATION_TOKEN:-}
-      FEISHU_ENCRYPT_KEY: ${FEISHU_ENCRYPT_KEY:-}
-      FEISHU_MESSENGER_URL: ${FEISHU_MESSENGER_URL:-}
     volumes:
       - ./flybook/logs:/app/logs
     depends_on:

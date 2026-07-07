@@ -14,11 +14,9 @@ $port = if ($env:FLYBOOK_API_PORT) { $env:FLYBOOK_API_PORT } else { "8002" }
 
 $serviceEnv = Get-ServiceEnvFileArgs "flybook\.env"
 $portalUrl = if ($env:INFLUENCER_API_URL) { $env:INFLUENCER_API_URL } else { "http://xlink_influencer_backend:8000" }
-$portalFront = if ($env:PORTAL_FRONTEND_URL) { $env:PORTAL_FRONTEND_URL } else { "http://127.0.0.1" }
 $internalKey = if ($env:PORTAL_INTERNAL_KEY) { $env:PORTAL_INTERNAL_KEY } else { "dev-flybook-internal-key-change-me" }
-$cors = if ($env:CORS_ORIGINS) { $env:CORS_ORIGINS } else { "http://127.0.0.1,http://localhost" }
-# 镜像曾默认 production 会强制校验飞书密钥；本地/内网 Docker 部署用 development
 $appEnv = if ($env:APP_ENV) { $env:APP_ENV } else { "development" }
+$jwtSecret = if ($env:JWT_SECRET) { $env:JWT_SECRET } else { "dev-local-secret-key-at-least-32-characters-long" }
 
 docker run -d `
   --name $name `
@@ -27,16 +25,16 @@ docker run -d `
   -p "${port}:8002" `
   @logsVol `
   @serviceEnv `
+  @(Get-OptionalEnvOverride "CORS_ORIGINS") `
+  @(Get-OptionalEnvOverride "PORTAL_FRONTEND_URL") `
   -e "APP_ENV=$appEnv" `
-  -e "JWT_SECRET=$($env:JWT_SECRET)" `
+  -e "JWT_SECRET=$jwtSecret" `
   -e "PORTAL_API_URL=$portalUrl" `
-  -e "PORTAL_FRONTEND_URL=$portalFront" `
   -e "FLYBOOK_INTERNAL_KEY=$internalKey" `
-  -e "CORS_ORIGINS=$cors" `
   (Get-XlinkImage "flybook")
 Assert-DockerOk "start flybook ($name)"
 
 Write-Host "Flybook started: $name (port $port)"
-Write-Host "Config: flybook\.env + distributed.env (service URLs)"
+Write-Host "Config: flybook\.env + distributed.env (infra)"
 $logPath = if ($env:LOGS_ROOT) { Join-Path $env:LOGS_ROOT "flybook" } else { Join-Path $paths.RootDir "flybook\logs" }
 Write-Host "Logs: $logPath"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 启动会议 AI（:8001）
+# 启动会议 AI（:8001）— meeting_ai/.env + distributed.env
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
@@ -12,6 +12,13 @@ stop_rm_if_exists "$NAME"
 UPLOAD_VOL="$(volume_mount meeting_upload /app/upload)"
 OUTPUT_VOL="$(volume_mount meeting_output /app/output)"
 LOGS_VOL="$(logs_volume_mount meeting_ai /app/logs)"
+SERVICE_ENV="$(service_env_path "meeting_ai/.env")"
+
+APP_ENV="${APP_ENV:-development}"
+JWT_SECRET="${JWT_SECRET:-dev-local-secret-key-at-least-32-characters-long}"
+INTERNAL_KEY="${PORTAL_INTERNAL_KEY:-dev-flybook-internal-key-change-me}"
+
+mapfile -d '' CORS_ARGS < <(optional_env_args CORS_ORIGINS)
 
 # shellcheck disable=SC2086
 docker run -d \
@@ -22,25 +29,18 @@ docker run -d \
   $UPLOAD_VOL \
   $OUTPUT_VOL \
   $LOGS_VOL \
-  -e APP_ENV="${APP_ENV:-production}" \
-  -e JWT_SECRET="${JWT_SECRET}" \
-  -e PORTAL_API_URL="${INFLUENCER_API_URL}" \
-  -e PORTAL_INTERNAL_KEY="${PORTAL_INTERNAL_KEY}" \
-  -e CORS_ORIGINS="${CORS_ORIGINS}" \
-  -e DB_HOST="${DB_HOST}" \
+  --env-file "$SERVICE_ENV" \
+  "${CORS_ARGS[@]}" \
+  -e APP_ENV="$APP_ENV" \
+  -e JWT_SECRET="$JWT_SECRET" \
+  -e PORTAL_API_URL="${INFLUENCER_API_URL:-http://xlink_influencer_backend:8000}" \
+  -e PORTAL_INTERNAL_KEY="$INTERNAL_KEY" \
+  -e DB_HOST="${DB_HOST:-xlink_mysql}" \
   -e DB_PORT="${DB_PORT:-3306}" \
-  -e DB_USER="${MYSQL_USER}" \
-  -e DB_PASSWORD="${MYSQL_PASSWORD}" \
+  -e DB_USER="${MYSQL_USER:-app_user}" \
+  -e DB_PASSWORD="${MYSQL_PASSWORD:-app123}" \
   -e DB_NAME=meeting_ai \
-  -e LLM_PROVIDER="${LLM_PROVIDER:-glm}" \
-  -e GLM_API_KEY="${GLM_API_KEY:-}" \
-  -e GLM_MODEL="${GLM_MODEL:-glm-4-flash}" \
-  -e ALIBABA_CLOUD_ACCESS_KEY_ID="${ALIBABA_CLOUD_ACCESS_KEY_ID:-}" \
-  -e ALIBABA_CLOUD_ACCESS_KEY_SECRET="${ALIBABA_CLOUD_ACCESS_KEY_SECRET:-}" \
-  -e TINGWU_APP_KEY="${TINGWU_APP_KEY:-}" \
-  -e TINGWU_REGION="${TINGWU_REGION:-cn-beijing}" \
-  -e TINGWU_DOMAIN="${TINGWU_DOMAIN:-tingwu.cn-beijing.aliyuncs.com}" \
-  -e MAX_UPLOAD_BYTES="${MAX_UPLOAD_BYTES:-524288000}" \
+  -e FFMPEG_PATH=/usr/bin \
   "$(img meeting-ai)"
 
 echo "会议 AI 已启动: $NAME -> http://${MEETING_API_HOST:-127.0.0.1}:${MEETING_API_PORT:-8001}"

@@ -25,7 +25,8 @@ function Import-XlinkEnv {
         $example = Join-Path $paths.DockerDir "env\distributed.env.example"
         if ((-not $Optional) -and (Test-Path $example)) {
             Copy-Item $example $EnvFile
-            Write-Host "Created env from template: $EnvFile"
+            Write-Host "Created env from template: $EnvFile" -ForegroundColor Yellow
+            Write-Host "WARNING: Using example defaults. Edit before production deploy." -ForegroundColor Yellow
         }
         elseif (-not $Optional) {
             throw "Missing $EnvFile. Run: copy `"$example`" `"$EnvFile`""
@@ -189,4 +190,14 @@ function Get-DbInfraOverrides {
         "-e", "DB_PASSWORD=$dbPass",
         "-e", "DB_NAME=$DatabaseName"
     )
+}
+
+# 仅当 distributed.env 显式配置时才 -e 覆盖，避免冲掉各服务 .env 中的 CORS 等
+function Get-OptionalEnvOverride {
+    param([string]$Key)
+    $val = (Get-Item -Path "env:$Key" -ErrorAction SilentlyContinue).Value
+    if ($null -ne $val -and $val.Trim() -ne "") {
+        return @("-e", "${Key}=$val")
+    }
+    return @()
 }

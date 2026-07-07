@@ -4,6 +4,9 @@
 . "$PSScriptRoot\_common.ps1"
 
 try {
+# 启动前可选检查（development 仅警告，production 须 -Strict）
+# docker\scripts\win\validate-deploy.cmd
+
     Assert-DockerAvailable
     Import-XlinkEnv -Optional
     Set-XlinkBuildDefaults

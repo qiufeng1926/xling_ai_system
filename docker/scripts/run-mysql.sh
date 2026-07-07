@@ -19,6 +19,7 @@ docker run -d \
   $MYSQL_VOL \
   -v "$ROOT_DIR/Information_Aggregation/scripts/init.sql:/docker-entrypoint-initdb.d/01-influencer.sql:ro" \
   -v "$ROOT_DIR/docker/mysql/02-meeting-ai.sql:/docker-entrypoint-initdb.d/02-meeting-ai.sql:ro" \
+  -v "$ROOT_DIR/docker/mysql/03-grants.sql:/docker-entrypoint-initdb.d/03-grants.sql:ro" \
   -e MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD}" \
   -e MYSQL_DATABASE=influencer_db \
   -e MYSQL_USER="${MYSQL_USER}" \

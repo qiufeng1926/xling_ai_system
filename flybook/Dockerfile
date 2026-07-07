@@ -4,11 +4,11 @@ FROM ${PYTHON_BASE_IMAGE}
 
 WORKDIR /app
 
+# APP_ENV 由运行时 flybook/.env 或 docker run -e 注入，勿在镜像内写死 production
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
-    # APP_ENV 由运行时 flybook/.env 或 docker run -e 注入；勿在镜像内写死 production
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \

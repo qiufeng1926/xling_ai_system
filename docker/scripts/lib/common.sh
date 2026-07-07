@@ -97,3 +97,24 @@ docker_build_args() {
   done
   echo "${args[@]}"
 }
+
+# 各服务业务配置在各自 .env；distributed.env 仅基础设施
+service_env_path() {
+  local rel="$1"
+  local path="$ROOT_DIR/$rel"
+  if [[ ! -f "$path" ]]; then
+    echo "缺少服务配置: $path" >&2
+    echo "请从对应 .env.example 复制并填写。" >&2
+    exit 1
+  fi
+  echo "$path"
+}
+
+# 仅当 distributed.env 显式配置时才 -e 覆盖
+optional_env_args() {
+  local key="$1"
+  local val="${!key:-}"
+  if [[ -n "$val" ]]; then
+    printf '%s\0' "-e" "${key}=${val}"
+  fi
+}

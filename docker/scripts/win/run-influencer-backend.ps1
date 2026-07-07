@@ -19,7 +19,8 @@ $redisUrl = if ($env:REDIS_URL) { $env:REDIS_URL } else { "redis://xlink_redis:6
 $flybookUrl = if ($env:FLYBOOK_API_URL) { $env:FLYBOOK_API_URL } else { "http://xlink_flybook:8002" }
 $meetingUrl = if ($env:MEETING_AI_API_URL) { $env:MEETING_AI_API_URL } else { "http://xlink_meeting_ai:8001" }
 $internalKey = if ($env:PORTAL_INTERNAL_KEY) { $env:PORTAL_INTERNAL_KEY } else { "dev-flybook-internal-key-change-me" }
-$cors = if ($env:CORS_ORIGINS) { $env:CORS_ORIGINS } else { "http://127.0.0.1,http://localhost" }
+$jwtSecret = if ($env:JWT_SECRET) { $env:JWT_SECRET } else { "dev-local-secret-key-at-least-32-characters-long" }
+$debugFlag = if ($env:DEBUG) { $env:DEBUG } else { "false" }
 
 docker run -d `
   --name $name `
@@ -29,15 +30,17 @@ docker run -d `
   @logsVol @cookiesVol `
   @serviceEnv `
   @dbOverrides `
+  @(Get-OptionalEnvOverride "CORS_ORIGINS") `
   -e "REDIS_URL=$redisUrl" `
-  -e "SECRET_KEY=$($env:JWT_SECRET)" `
+  -e "SECRET_KEY=$jwtSecret" `
+  -e "DEBUG=$debugFlag" `
   -e "API_HOST=0.0.0.0" `
   -e "API_PORT=8000" `
-  -e "CORS_ORIGINS=$cors" `
   -e "FLYBOOK_API_URL=$flybookUrl" `
   -e "MEETING_AI_API_URL=$meetingUrl" `
   -e "PORTAL_INTERNAL_KEY=$internalKey" `
   -e "FLYBOOK_INTERNAL_KEY=$internalKey" `
+  -e "PLAYWRIGHT_HEADLESS=true" `
   (Get-XlinkImage "influencer-backend")
 Assert-DockerOk "start influencer backend ($name)"
 

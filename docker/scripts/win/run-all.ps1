@@ -22,6 +22,12 @@ try {
     Assert-DockerAvailable
     Import-XlinkEnv
 
+    $appEnv = if ($env:APP_ENV) { $env:APP_ENV.Trim().ToLower() } else { "development" }
+    if ($appEnv -eq "production") {
+        $validateScript = Join-Path $PSScriptRoot "validate-deploy.ps1"
+        & $validateScript -Strict
+    }
+
     $paths = Get-XlinkPaths
     Write-Host "Root: $($paths.RootDir)"
     Write-Host "Env:  $(Join-Path $paths.DockerDir 'env\distributed.env')"
@@ -30,6 +36,8 @@ try {
     Invoke-XlinkStep "run-mysql.ps1" "MySQL"
     Write-Host "Waiting for MySQL (15s)..."
     Start-Sleep -Seconds 15
+
+    Invoke-XlinkStep "fix-mysql-grants.ps1" "MySQL grants (app_user + meeting_ai)"
 
     Invoke-XlinkStep "run-redis.ps1" "Redis"
     Invoke-XlinkStep "run-influencer-backend.ps1" "Influencer backend :8000"

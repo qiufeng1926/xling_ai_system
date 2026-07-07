@@ -17,6 +17,8 @@ _INSECURE_JWT_SECRETS = frozenset(
     {
         jwt_secret_default,
         "meeting-ai-jwt-secret-change-in-production",
+        "dev-local-secret-key-at-least-32-characters-long",
+        "change-me-in-production-use-a-long-random-string",
         "changeme",
         "secret",
     }

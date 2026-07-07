@@ -18,7 +18,8 @@ $serviceEnv = Get-ServiceEnvFileArgs "meeting_ai\.env"
 $dbOverrides = Get-DbInfraOverrides "meeting_ai"
 $portalUrl = if ($env:INFLUENCER_API_URL) { $env:INFLUENCER_API_URL } else { "http://xlink_influencer_backend:8000" }
 $internalKey = if ($env:PORTAL_INTERNAL_KEY) { $env:PORTAL_INTERNAL_KEY } else { "dev-flybook-internal-key-change-me" }
-$cors = if ($env:CORS_ORIGINS) { $env:CORS_ORIGINS } else { "http://127.0.0.1,http://localhost" }
+$appEnv = if ($env:APP_ENV) { $env:APP_ENV } else { "development" }
+$jwtSecret = if ($env:JWT_SECRET) { $env:JWT_SECRET } else { "dev-local-secret-key-at-least-32-characters-long" }
 
 docker run -d `
   --name $name `
@@ -28,13 +29,16 @@ docker run -d `
   @uploadVol @outputVol @logsVol `
   @serviceEnv `
   @dbOverrides `
+  @(Get-OptionalEnvOverride "CORS_ORIGINS") `
+  -e "APP_ENV=$appEnv" `
+  -e "JWT_SECRET=$jwtSecret" `
   -e "PORTAL_API_URL=$portalUrl" `
   -e "PORTAL_INTERNAL_KEY=$internalKey" `
-  -e "CORS_ORIGINS=$cors" `
+  -e "FFMPEG_PATH=/usr/bin" `
   (Get-XlinkImage "meeting-ai")
 Assert-DockerOk "start meeting-ai ($name)"
 
 Write-Host "Meeting AI started: $name (port $port)"
-Write-Host "Config: meeting_ai\.env + docker\env\distributed.env (DB_HOST only)"
+Write-Host "Config: meeting_ai\.env + distributed.env (DB/infra)"
 $logPath = if ($env:LOGS_ROOT) { Join-Path $env:LOGS_ROOT "meeting_ai" } else { Join-Path $paths.RootDir "meeting_ai\logs" }
 Write-Host "Logs: $logPath"

@@ -6,6 +6,8 @@
 .env
 .env.*
 !.env.example
+docker/env/distributed.env
+docker/.env
 
 # ----- Python -----
 __pycache__/
