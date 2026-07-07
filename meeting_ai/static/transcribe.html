@@ -2759,7 +2759,91 @@
         let audioResumeTimer = null;
         let silenceKeepAlive = null;
         const WS_PING_INTERVAL_MS = 15000;
+        let wsConnectionId = null;
+        let wsConnectTime = null;
+        let wsUrlHost = null;
+        let wsLastPongAt = null;
+        let wsLastPingSentAt = null;
+        let wsClientPingCount = 0;
+        let wsAudioFlushCount = 0;
+        let wsLastAudioSentAt = null;
+        let wsPageLoadId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : ('pl-' + Date.now() + '-' + Math.random().toString(16).slice(2));
         let maxUploadBytes = 524288000; // 默认 500MB，启动后从 /api/settings/upload-limits 同步
+
+        function classifyWsCloseCode(code) {
+            const labels = {
+                1000: 'normal_closure',
+                1001: 'going_away',
+                1006: 'abnormal_closure_no_close_frame',
+                1011: 'server_error',
+                4001: 'auth_failed',
+            };
+            return labels[code] || ('code_' + code);
+        }
+
+        function buildWsDisconnectDiagnostics(event, disconnectSource) {
+            const now = Date.now();
+            return {
+                connection_id: wsConnectionId,
+                close_code: event && typeof event.code === 'number' ? event.code : null,
+                close_reason: event && event.reason ? event.reason : '',
+                was_clean: event ? !!event.wasClean : null,
+                duration_ms: wsConnectTime ? now - wsConnectTime : null,
+                is_recording: isRecording,
+                visibility_state: document.visibilityState,
+                embedded: isPortalEmbedded(),
+                portal_host: new URLSearchParams(window.location.search).get('portal_host') === '1',
+                last_pong_age_ms: wsLastPongAt ? now - wsLastPongAt : null,
+                last_ping_sent_age_ms: wsLastPingSentAt ? now - wsLastPingSentAt : null,
+                last_audio_sent_age_ms: wsLastAudioSentAt ? now - wsLastAudioSentAt : null,
+                client_ping_count: wsClientPingCount,
+                audio_flush_count: wsAudioFlushCount,
+                ws_url_host: wsUrlHost,
+                user_agent: navigator.userAgent,
+                disconnect_source: disconnectSource || 'client_onclose',
+                page_load_id: wsPageLoadId,
+                extra: {
+                    close_code_label: event && typeof event.code === 'number'
+                        ? classifyWsCloseCode(event.code)
+                        : 'unknown',
+                    online: navigator.onLine,
+                    session_ending: sessionEnding,
+                    recording_disconnected: recordingDisconnected,
+                },
+            };
+        }
+
+        function notifyPortalWsDiagnostic(diagnostics) {
+            if (!isPortalEmbedded() || isCollabMode) return;
+            try {
+                window.parent.postMessage({
+                    type: 'xlink:ws-disconnect-diagnostic',
+                    diagnostics,
+                }, window.location.origin);
+            } catch (e) {
+                console.warn('通知门户 WS 诊断失败', e);
+            }
+        }
+
+        function reportWsDisconnectDiagnostics(event, disconnectSource) {
+            const diagnostics = buildWsDisconnectDiagnostics(event, disconnectSource);
+            console.warn('[WS 断开诊断]', diagnostics);
+            notifyPortalWsDiagnostic(diagnostics);
+            if (!authToken) return;
+            fetch('/api/ws/disconnect-report', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + authToken,
+                },
+                body: JSON.stringify(diagnostics),
+                keepalive: true,
+            }).catch((err) => {
+                console.warn('上报 WS 断开诊断失败', err);
+            });
+        }
 
         async function loadUploadLimits() {
             if (!authToken) return;
@@ -3009,6 +3093,14 @@
                 wsUrl += `&room_code=${encodeURIComponent(collabRoomCode)}`;
             }
             ws = new WebSocket(wsUrl);
+            wsConnectTime = Date.now();
+            wsUrlHost = window.location.host;
+            wsConnectionId = null;
+            wsLastPongAt = null;
+            wsLastPingSentAt = null;
+            wsClientPingCount = 0;
+            wsAudioFlushCount = 0;
+            wsLastAudioSentAt = null;
             
             ws.onopen = () => {
                 console.log('WebSocket 连接成功');
@@ -3035,8 +3127,13 @@
                 updateStatus('连接错误', false);
             };
             
-            ws.onclose = () => {
-                console.log('WebSocket 连接关闭');
+            ws.onclose = (event) => {
+                console.log('WebSocket 连接关闭', {
+                    code: event.code,
+                    reason: event.reason,
+                    wasClean: event.wasClean,
+                });
+                reportWsDisconnectDiagnostics(event, 'client_onclose');
                 updateStatus('已断开', false);
                 stopWsPing();
                 const wasRecording = isRecording;
@@ -3413,6 +3510,8 @@
 
         function sendWsPing() {
             if (ws && ws.readyState === WebSocket.OPEN) {
+                wsLastPingSentAt = Date.now();
+                wsClientPingCount += 1;
                 ws.send(JSON.stringify({ type: 'ping' }));
             }
         }
@@ -3755,6 +3854,14 @@
         // 处理 WebSocket 消息
         function handleWebSocketMessage(data) {
             console.log('收到消息:', data);
+
+            if (data.type === 'session_info') {
+                if (data.connection_id) {
+                    wsConnectionId = data.connection_id;
+                    console.log('[WS 会话已建立]', wsConnectionId);
+                }
+                return;
+            }
             
             if (data.type === 'result') {
                 if (data.is_partial) {
@@ -3807,7 +3914,7 @@
                 console.log('服务端处理中:', data.stage);
                 sendWsPing();
             } else if (data.type === 'pong') {
-                // 服务端响应客户端 ping，连接正常
+                wsLastPongAt = Date.now();
             } else if (data.type === 'session_end') {
                 applySessionResult(data);
                 if (ws && ws.readyState === WebSocket.OPEN) {
@@ -4002,6 +4109,8 @@
                         ? pcmSendBuffer.splice(0, pcmSendBuffer.length)
                         : pcmSendBuffer.splice(0, SEND_BUFFER_SAMPLES);
                     ws.send(floatToPcmArrayBuffer(new Float32Array(take)));
+                    wsAudioFlushCount += 1;
+                    wsLastAudioSentAt = Date.now();
                 }
 
                 isRecording = true;
@@ -4150,6 +4259,14 @@
                 acquireWakeLock();
             }
             setRealtimeTranscriptStatus('正在录音，实时转写中…');
+        });
+
+        window.addEventListener('pagehide', (event) => {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            reportWsDisconnectDiagnostics(
+                { code: 1001, reason: 'pagehide', wasClean: !event.persisted },
+                event.persisted ? 'pagehide_bfcache' : 'pagehide_unload',
+            );
         });
 
         // 拖拽上传功能

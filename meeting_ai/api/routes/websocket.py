@@ -27,7 +27,10 @@ def _find_transcript_by_file_id(transcripts_dir: str, file_id: str) -> tuple[str
         if filename.startswith(file_id) or f"_{file_id}_" in filename:
             return os.path.join(transcripts_dir, filename), filename
     return None, None
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query, HTTPException
+from typing import Any
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query, HTTPException, Body
+from pydantic import BaseModel, Field
 from api.auth_utils import get_user_from_token, get_current_user
 from db.models import User
 from db.session import SessionFactory
@@ -76,15 +79,23 @@ class ConnectionManager:
             return True
         except (WebSocketDisconnect, RuntimeError) as e:
             logger.warning(
-                f"WebSocket 发送失败: {type(e).__name__}",
-                extra={"request_id": connection_id, "msg_type": data.get("type")},
+                f"WebSocket 发送失败: {type(e).__name__}: {e}",
+                extra={
+                    "request_id": connection_id,
+                    "msg_type": data.get("type"),
+                    "output_params": {"error_type": type(e).__name__, "error": str(e)},
+                },
             )
             self.disconnect(connection_id)
             return False
         except Exception as e:
             logger.warning(
                 f"WebSocket 发送异常: {e}",
-                extra={"request_id": connection_id, "msg_type": data.get("type")},
+                extra={
+                    "request_id": connection_id,
+                    "msg_type": data.get("type"),
+                    "output_params": {"error_type": type(e).__name__, "error": str(e)},
+                },
             )
             self.disconnect(connection_id)
             return False
@@ -94,6 +105,129 @@ manager = ConnectionManager()
 
 
 WS_CLIENT_HEARTBEAT_INTERVAL_SECONDS = 15.0
+RECENT_SESSION_TTL_SECONDS = 600.0
+_recent_disconnect_sessions: dict[str, dict[str, Any]] = {}
+
+
+def _classify_ws_close_code(code: int | None) -> str:
+    if code is None:
+        return "unknown"
+    labels = {
+        1000: "normal_closure",
+        1001: "going_away",
+        1002: "protocol_error",
+        1003: "unsupported_data",
+        1005: "no_status_received",
+        1006: "abnormal_closure_no_close_frame",
+        1007: "invalid_frame_payload",
+        1008: "policy_violation",
+        1009: "message_too_big",
+        1011: "server_error",
+        1012: "service_restart",
+        1013: "try_again_later",
+        1014: "bad_gateway",
+        1015: "tls_handshake_failure",
+        4001: "auth_failed",
+    }
+    return labels.get(code, f"code_{code}")
+
+
+def _seconds_since(timestamp: float | None) -> float | None:
+    if timestamp is None:
+        return None
+    return round(time.time() - timestamp, 2)
+
+
+def _build_ws_diagnostics(
+    session_info: dict,
+    connection_id: str,
+    start_time: float,
+    **extra: Any,
+) -> dict[str, Any]:
+    transcriber = session_info.get("transcriber")
+    diagnostics: dict[str, Any] = {
+        "connection_id": connection_id,
+        "user_id": session_info.get("user_id"),
+        "duration_ms": round((time.time() - start_time) * 1000, 2),
+        "heartbeat_stage": session_info.get("heartbeat_stage"),
+        "audio_chunks": session_info.get("audio_chunks", 0),
+        "total_text_length": len(session_info.get("total_text") or ""),
+        "tingwu_started": bool(session_info.get("tingwu_started")),
+        "tingwu_finalized": bool(session_info.get("tingwu_finalized")),
+        "tingwu_failed": bool(session_info.get("tingwu_failed")),
+        "tingwu_closed": getattr(transcriber, "_closed", None) if transcriber else None,
+        "tingwu_task_id": getattr(transcriber, "task_id", None) if transcriber else None,
+        "saved": bool(session_info.get("saved")),
+        "meeting_name": session_info.get("meeting_name"),
+        "client_ping_count": session_info.get("client_ping_count", 0),
+        "outbound_heartbeat_count": session_info.get("outbound_heartbeat_count", 0),
+        "seconds_since_client_ping": _seconds_since(session_info.get("last_client_ping_at")),
+        "seconds_since_client_audio": _seconds_since(session_info.get("last_client_audio_at")),
+        "seconds_since_outbound_heartbeat": _seconds_since(session_info.get("last_outbound_heartbeat_at")),
+        "seconds_since_tingwu_keepalive": _seconds_since(session_info.get("last_tingwu_keepalive_at")),
+        "disconnect_code": session_info.get("disconnect_code"),
+        "disconnect_reason": session_info.get("disconnect_reason") or "",
+        "disconnect_code_label": _classify_ws_close_code(session_info.get("disconnect_code")),
+        "client_report_received": bool(session_info.get("client_report_received")),
+    }
+    diagnostics.update(extra)
+    return diagnostics
+
+
+def _archive_session_diagnostics(
+    connection_id: str,
+    session_info: dict,
+    start_time: float,
+    **extra: Any,
+) -> None:
+    now = time.time()
+    stale_ids = [
+        cid
+        for cid, item in _recent_disconnect_sessions.items()
+        if now - item.get("archived_at", 0) > RECENT_SESSION_TTL_SECONDS
+    ]
+    for cid in stale_ids:
+        _recent_disconnect_sessions.pop(cid, None)
+    _recent_disconnect_sessions[connection_id] = {
+        "archived_at": now,
+        "diagnostics": _build_ws_diagnostics(session_info, connection_id, start_time, **extra),
+    }
+
+
+def _log_ws_disconnect(
+    connection_id: str,
+    session_info: dict,
+    start_time: float,
+    event: str,
+    *,
+    level: str = "info",
+    **extra: Any,
+) -> None:
+    diagnostics = _build_ws_diagnostics(session_info, connection_id, start_time, **extra)
+    log_fn = logger.warning if level == "warning" else logger.info
+    log_fn(event, extra={"request_id": connection_id, "output_params": diagnostics})
+
+
+class WsDisconnectReport(BaseModel):
+    connection_id: str | None = None
+    close_code: int | None = None
+    close_reason: str | None = None
+    was_clean: bool | None = None
+    duration_ms: float | None = None
+    is_recording: bool = False
+    visibility_state: str | None = None
+    embedded: bool = False
+    portal_host: bool = False
+    last_pong_age_ms: float | None = None
+    last_ping_sent_age_ms: float | None = None
+    last_audio_sent_age_ms: float | None = None
+    client_ping_count: int = 0
+    audio_flush_count: int = 0
+    ws_url_host: str | None = None
+    user_agent: str | None = None
+    disconnect_source: str = "client_onclose"
+    page_load_id: str | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
 
 
 async def _tingwu_periodic_keepalive(session_info: dict, connection_id: str) -> None:
@@ -106,6 +240,7 @@ async def _tingwu_periodic_keepalive(session_info: dict, connection_id: str) -> 
             if transcriber_ref is None or getattr(transcriber_ref, "_closed", False):
                 break
             await tingwu_engine.send_keepalive_async(transcriber_ref)
+            session_info["last_tingwu_keepalive_at"] = time.time()
             await asyncio.sleep(TINGWU_KEEPALIVE_INTERVAL_SECONDS)
     except asyncio.CancelledError:
         pass
@@ -123,6 +258,8 @@ async def _websocket_outbound_heartbeat(session_info: dict, connection_id: str) 
             await asyncio.sleep(WS_CLIENT_HEARTBEAT_INTERVAL_SECONDS)
             if session_info.get("saved"):
                 break
+            session_info["last_outbound_heartbeat_at"] = time.time()
+            session_info["outbound_heartbeat_count"] = session_info.get("outbound_heartbeat_count", 0) + 1
             await manager.send_json(
                 connection_id,
                 {"type": "heartbeat", "stage": session_info.get("heartbeat_stage", "recording")},
@@ -298,9 +435,22 @@ async def websocket_transcribe(
         "tingwu_keepalive_task": None,
         "ws_heartbeat_task": None,
         "heartbeat_stage": "recording",
+        "last_client_ping_at": None,
+        "last_client_audio_at": None,
+        "last_outbound_heartbeat_at": None,
+        "last_tingwu_keepalive_at": None,
+        "client_ping_count": 0,
+        "outbound_heartbeat_count": 0,
+        "disconnect_code": None,
+        "disconnect_reason": "",
+        "client_report_received": False,
     }
     tingwu_start_lock = asyncio.Lock()
     _start_ws_heartbeat_task(session_info, connection_id)
+    await manager.send_json(connection_id, {
+        "type": "session_info",
+        "connection_id": connection_id,
+    })
 
     async def on_tingwu_result(
         display_text: str,
@@ -390,7 +540,12 @@ async def websocket_transcribe(
                 continue
 
             if raw_message.get("type") == "websocket.disconnect":
-                raise WebSocketDisconnect()
+                session_info["disconnect_code"] = raw_message.get("code")
+                session_info["disconnect_reason"] = raw_message.get("reason") or ""
+                raise WebSocketDisconnect(
+                    code=raw_message.get("code", 1000),
+                    reason=raw_message.get("reason") or "",
+                )
 
             if "bytes" in raw_message:
                 audio_bytes = raw_message["bytes"]
@@ -400,6 +555,7 @@ async def websocket_transcribe(
                     continue
                 await ensure_tingwu_started()
                 session_info["audio_chunks"] += 1
+                session_info["last_client_audio_at"] = time.time()
                 await tingwu_engine.feed_stream_async(
                     session_info["transcriber"], audio_bytes, 16000
                 )
@@ -428,6 +584,8 @@ async def websocket_transcribe(
                     continue
 
                 if message.get("type") == "ping":
+                    session_info["last_client_ping_at"] = time.time()
+                    session_info["client_ping_count"] = session_info.get("client_ping_count", 0) + 1
                     await manager.send_json(connection_id, {"type": "pong"})
                     continue
 
@@ -446,6 +604,7 @@ async def websocket_transcribe(
                     audio_bytes = bytes(message.get("data", []))
                     sample_rate = message.get("sample_rate", 16000)
                     session_info["audio_chunks"] += 1
+                    session_info["last_client_audio_at"] = time.time()
                     await tingwu_engine.feed_stream_async(
                         session_info["transcriber"], audio_bytes, sample_rate
                     )
@@ -667,12 +826,25 @@ async def websocket_transcribe(
                     extra={"request_id": connection_id},
                 )
     
-    except WebSocketDisconnect:
-        duration_ms = (time.time() - start_time) * 1000
-        logger.info(f"WebSocket 断开连接", extra={'request_id': connection_id, 'output_params': {'duration_ms': round(duration_ms, 2), 'total_text_length': len(session_info["total_text"]), 'audio_chunks': session_info["audio_chunks"]}})
+    except WebSocketDisconnect as exc:
+        session_info["disconnect_code"] = getattr(exc, "code", session_info.get("disconnect_code"))
+        session_info["disconnect_reason"] = getattr(exc, "reason", None) or session_info.get("disconnect_reason") or ""
+        _log_ws_disconnect(
+            connection_id,
+            session_info,
+            start_time,
+            "WebSocket 断开连接",
+            disconnect_source="server_websocket_disconnect",
+        )
     except RuntimeError as e:
         if "close message" in str(e).lower():
-            logger.info(f"WebSocket 已关闭", extra={'request_id': connection_id})
+            _log_ws_disconnect(
+                connection_id,
+                session_info,
+                start_time,
+                "WebSocket 已关闭",
+                disconnect_source="server_runtime_close",
+            )
         else:
             raise
     except TingwuTaskError as e:
@@ -690,7 +862,21 @@ async def websocket_transcribe(
         })
     except Exception as e:
         duration_ms = (time.time() - start_time) * 1000
-        logger.error(f"WebSocket 错误", exc_info=True, extra={'request_id': connection_id, 'output_params': {'error': str(e), 'error_type': type(e).__name__, 'duration_ms': round(duration_ms, 2)}})
+        logger.error(
+            f"WebSocket 错误",
+            exc_info=True,
+            extra={
+                'request_id': connection_id,
+                'output_params': _build_ws_diagnostics(
+                    session_info,
+                    connection_id,
+                    start_time,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    duration_ms=round(duration_ms, 2),
+                ),
+            },
+        )
         if not getattr(session_info.get("transcriber"), "task_id", None):
             await manager.send_json(connection_id, {
                 "type": "error",
@@ -736,7 +922,52 @@ async def websocket_transcribe(
                 )
 
         manager.disconnect(connection_id)
-        logger.info(f"会话清理完成", extra={'request_id': connection_id})
+        _archive_session_diagnostics(
+            connection_id,
+            session_info,
+            start_time,
+            cleanup_completed_at=datetime.now().isoformat(),
+        )
+        logger.info(
+            f"会话清理完成",
+            extra={
+                'request_id': connection_id,
+                'output_params': _build_ws_diagnostics(session_info, connection_id, start_time),
+            },
+        )
+
+
+@router.post("/ws/disconnect-report")
+async def ws_disconnect_report(
+    report: WsDisconnectReport,
+    current_user: User = Depends(get_current_user),
+):
+    """客户端 WebSocket 断开后上报诊断信息，便于定位 cpolar/网络/iframe 等原因。"""
+    connection_id = (report.connection_id or "").strip() or "unknown"
+    archived = _recent_disconnect_sessions.get(connection_id, {})
+    server_diag = archived.get("diagnostics") if archived else None
+    if archived and server_diag:
+        server_diag["client_report_received"] = True
+    close_label = _classify_ws_close_code(report.close_code)
+
+    logger.warning(
+        "WebSocket 客户端断开诊断上报",
+        extra={
+            "request_id": connection_id,
+            "output_params": {
+                "user_id": current_user.id,
+                "username": current_user.username,
+                "client_report": report.model_dump(),
+                "close_code_label": close_label,
+                "server_diagnostics": server_diag,
+                "server_report_lag_seconds": (
+                    round(time.time() - archived.get("archived_at", time.time()), 2)
+                    if archived else None
+                ),
+            },
+        },
+    )
+    return {"success": True, "connection_id": connection_id}
 
 
 @router.get("/ws/status")

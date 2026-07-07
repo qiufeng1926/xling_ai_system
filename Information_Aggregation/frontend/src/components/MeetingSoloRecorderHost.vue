@@ -75,6 +75,12 @@ const userStore = useUserStore()
 const frameRef = ref<HTMLIFrameElement | null>(null)
 const overlayExpanded = ref(false)
 const pipTipShown = ref(false)
+const iframeLoadCount = ref(0)
+const lastIframeLoadAt = ref<number | null>(null)
+
+function logPortalDiagnostic(event: string, detail: Record<string, unknown>) {
+  console.warn(`[xlink][portal-diagnostic] ${event}`, detail)
+}
 
 const {
   recording,
@@ -118,9 +124,30 @@ const pipState = computed(() => ({
 }))
 
 function onFrameLoad() {
+  iframeLoadCount.value += 1
+  lastIframeLoadAt.value = Date.now()
   frameReady.value = true
   frameLoadError.value = false
   pinMeetingIframe()
+  logPortalDiagnostic('iframe_load', {
+    load_count: iframeLoadCount.value,
+    route: route.path,
+    recording: recording.value,
+    generating: generating.value,
+    disconnected: disconnected.value,
+    bar_visible: barVisible.value,
+    iframe_mode: iframeModeClass.value,
+    meeting_app_url: meetingAppUrl.value,
+  })
+  if (iframeLoadCount.value > 1 && (recording.value || generating.value || disconnected.value)) {
+    logPortalDiagnostic('iframe_reload_during_session', {
+      load_count: iframeLoadCount.value,
+      route: route.path,
+      recording: recording.value,
+      generating: generating.value,
+      disconnected: disconnected.value,
+    })
+  }
 }
 
 function onFrameError() {
@@ -175,7 +202,26 @@ function collapseOverlay() {
 function handlePortalMessage(event: MessageEvent) {
   if (event.origin !== window.location.origin) return
   const data = event.data
-  if (!data || data.type !== 'xlink:recording-state') return
+  if (!data) return
+
+  if (data.type === 'xlink:ws-disconnect-diagnostic') {
+    logPortalDiagnostic('ws_disconnect', {
+      ...(data.diagnostics || {}),
+      portal_route: route.path,
+      portal_visibility: document.visibilityState,
+      iframe_load_count: iframeLoadCount.value,
+      last_iframe_load_at: lastIframeLoadAt.value,
+      ms_since_iframe_load: lastIframeLoadAt.value
+        ? Date.now() - lastIframeLoadAt.value
+        : null,
+      recording: recording.value,
+      generating: generating.value,
+      disconnected: disconnected.value,
+    })
+    return
+  }
+
+  if (data.type !== 'xlink:recording-state') return
   applyPortalRecordingState({
     recording: data.recording,
     meetingName: data.meetingName,
