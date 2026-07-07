@@ -2770,6 +2770,10 @@
         let wsPageLoadId = (typeof crypto !== 'undefined' && crypto.randomUUID)
             ? crypto.randomUUID()
             : ('pl-' + Date.now() + '-' + Math.random().toString(16).slice(2));
+        let wsUserStopRequested = false;
+        let wsSessionCompleted = false;
+        let wsClosingIntentionally = false;
+        let wsDisconnectReported = false;
         let maxUploadBytes = 524288000; // 默认 500MB，启动后从 /api/settings/upload-limits 同步
 
         function classifyWsCloseCode(code) {
@@ -2785,9 +2789,30 @@
 
         function buildWsDisconnectDiagnostics(event, disconnectSource) {
             const now = Date.now();
+            const rawCode = event && typeof event.code === 'number' ? event.code : null;
+            let sessionOutcome = 'unknown';
+            let effectiveDisconnectSource = disconnectSource || 'client_onclose';
+
+            if (wsSessionCompleted || wsClosingIntentionally) {
+                sessionOutcome = 'normal_end';
+                effectiveDisconnectSource = 'normal_session_end';
+            } else if (wsUserStopRequested && sessionEnding) {
+                sessionOutcome = 'user_stop_summary';
+                effectiveDisconnectSource = 'user_stop_summary_phase';
+            } else if (wsUserStopRequested) {
+                sessionOutcome = 'normal_end';
+                effectiveDisconnectSource = 'normal_session_end_after_stop';
+            } else if (isRecording && !isCollabMode) {
+                sessionOutcome = 'unexpected';
+            }
+
+            const closeCodeLabel = sessionOutcome === 'normal_end'
+                ? 'normal_session_end'
+                : (rawCode !== null ? classifyWsCloseCode(rawCode) : 'unknown');
+
             return {
                 connection_id: wsConnectionId,
-                close_code: event && typeof event.code === 'number' ? event.code : null,
+                close_code: rawCode,
                 close_reason: event && event.reason ? event.reason : '',
                 was_clean: event ? !!event.wasClean : null,
                 duration_ms: wsConnectTime ? now - wsConnectTime : null,
@@ -2802,15 +2827,18 @@
                 audio_flush_count: wsAudioFlushCount,
                 ws_url_host: wsUrlHost,
                 user_agent: navigator.userAgent,
-                disconnect_source: disconnectSource || 'client_onclose',
+                disconnect_source: effectiveDisconnectSource,
+                session_outcome: sessionOutcome,
+                user_stop_requested: wsUserStopRequested,
+                session_completed: wsSessionCompleted,
                 page_load_id: wsPageLoadId,
                 extra: {
-                    close_code_label: event && typeof event.code === 'number'
-                        ? classifyWsCloseCode(event.code)
-                        : 'unknown',
+                    raw_close_code: rawCode,
+                    close_code_label: closeCodeLabel,
                     online: navigator.onLine,
                     session_ending: sessionEnding,
                     recording_disconnected: recordingDisconnected,
+                    closing_intentionally: wsClosingIntentionally,
                 },
             };
         }
@@ -2828,8 +2856,11 @@
         }
 
         function reportWsDisconnectDiagnostics(event, disconnectSource) {
+            if (wsDisconnectReported) return;
+            wsDisconnectReported = true;
             const diagnostics = buildWsDisconnectDiagnostics(event, disconnectSource);
-            console.warn('[WS 断开诊断]', diagnostics);
+            const logFn = diagnostics.session_outcome === 'normal_end' ? console.log : console.warn;
+            logFn('[WS 断开诊断]', diagnostics);
             notifyPortalWsDiagnostic(diagnostics);
             if (!authToken) return;
             fetch('/api/ws/disconnect-report', {
@@ -3101,6 +3132,10 @@
             wsClientPingCount = 0;
             wsAudioFlushCount = 0;
             wsLastAudioSentAt = null;
+            wsUserStopRequested = false;
+            wsSessionCompleted = false;
+            wsClosingIntentionally = false;
+            wsDisconnectReported = false;
             
             ws.onopen = () => {
                 console.log('WebSocket 连接成功');
@@ -3426,6 +3461,7 @@
         }
 
         function applySessionResult(data) {
+            wsSessionCompleted = true;
             sessionEnding = false;
             pollAbort = true;
             pendingFileId = null;
@@ -3485,7 +3521,8 @@
                             summary_visual_status: data.summary_visual_status,
                         });
                         if (ws && ws.readyState === WebSocket.OPEN) {
-                            ws.close();
+                            wsClosingIntentionally = true;
+                            ws.close(1000, 'session_end');
                         }
                         return;
                     }
@@ -3596,8 +3633,7 @@
             releaseWakeLock();
         }
 
-        function cleanupMediaOnly() {
-            stopWsPing();
+        function cleanupAudioOnly() {
             stopBackgroundRecordingKeepalive();
             if (!mediaRecorder) return;
             if (mediaRecorder.flushTimer) {
@@ -3613,6 +3649,11 @@
             }
             mediaRecorder = null;
             isRecording = false;
+        }
+
+        function cleanupMediaOnly() {
+            stopWsPing();
+            cleanupAudioOnly();
         }
 
         function waitForWebSocketOpen(socket, timeoutMs = 8000) {
@@ -3916,9 +3957,12 @@
             } else if (data.type === 'pong') {
                 wsLastPongAt = Date.now();
             } else if (data.type === 'session_end') {
+                wsSessionCompleted = true;
                 applySessionResult(data);
+                stopWsPing();
                 if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.close();
+                    wsClosingIntentionally = true;
+                    ws.close(1000, 'session_end');
                 }
             } else if (data.type === 'room_state') {
                 collabRoomStatus = data.status || collabRoomStatus;
@@ -4202,6 +4246,7 @@
         function stopRecording() {
             if (sessionEnding) return;
             isRecording = false;
+            wsUserStopRequested = true;
             
             if (mediaRecorder) {
                 if (
@@ -4214,8 +4259,10 @@
                         0, mediaRecorder.pcmSendBuffer.length
                     );
                     ws.send(floatToPcmArrayBuffer(new Float32Array(tail)));
+                    wsAudioFlushCount += 1;
+                    wsLastAudioSentAt = Date.now();
                 }
-                cleanupMediaOnly();
+                cleanupAudioOnly();
             }
             
             if (ws && ws.readyState === WebSocket.OPEN) {
@@ -4226,6 +4273,7 @@
                     setRealtimeTranscriptStatus('已停止录音，转写继续同步');
                 } else {
                     sessionEnding = true;
+                    startWsPing();
                     ws.send(JSON.stringify({ type: 'end' }));
                     stopBtn.disabled = true;
                     stopBtn.innerHTML = '<span class="loading"></span>生成中...';
@@ -4262,6 +4310,7 @@
         });
 
         window.addEventListener('pagehide', (event) => {
+            if (wsDisconnectReported || wsSessionCompleted || wsClosingIntentionally) return;
             if (!ws || ws.readyState !== WebSocket.OPEN) return;
             reportWsDisconnectDiagnostics(
                 { code: 1001, reason: 'pagehide', wasClean: !event.persisted },

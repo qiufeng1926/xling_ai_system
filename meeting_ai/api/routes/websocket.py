@@ -4,6 +4,7 @@ import uuid
 import os
 import time
 import asyncio
+from contextlib import suppress
 from pathlib import Path
 from datetime import datetime
 
@@ -169,6 +170,7 @@ def _build_ws_diagnostics(
         "disconnect_reason": session_info.get("disconnect_reason") or "",
         "disconnect_code_label": _classify_ws_close_code(session_info.get("disconnect_code")),
         "client_report_received": bool(session_info.get("client_report_received")),
+        "normal_end": bool(session_info.get("normal_end")),
     }
     diagnostics.update(extra)
     return diagnostics
@@ -226,8 +228,27 @@ class WsDisconnectReport(BaseModel):
     ws_url_host: str | None = None
     user_agent: str | None = None
     disconnect_source: str = "client_onclose"
+    session_outcome: str | None = None
+    user_stop_requested: bool = False
+    session_completed: bool = False
     page_load_id: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
+
+
+def _is_normal_disconnect_report(
+    report: WsDisconnectReport,
+    server_diag: dict[str, Any] | None,
+) -> bool:
+    if report.session_outcome in ("normal_end", "user_stop_summary"):
+        return True
+    if report.extra.get("session_outcome") in ("normal_end", "user_stop_summary"):
+        return True
+    if report.session_completed or report.user_stop_requested:
+        if server_diag and server_diag.get("saved"):
+            return True
+    if server_diag and server_diag.get("saved") and server_diag.get("normal_end"):
+        return True
+    return False
 
 
 async def _tingwu_periodic_keepalive(session_info: dict, connection_id: str) -> None:
@@ -291,6 +312,81 @@ async def _cancel_ws_heartbeat_task(session_info: dict) -> None:
         await task
     except asyncio.CancelledError:
         pass
+
+
+async def _handle_inbound_while_busy(
+    raw_message: dict,
+    connection_id: str,
+    session_info: dict,
+) -> None:
+    """长任务期间处理客户端 ping；其他消息在长任务结束后由主循环继续处理。"""
+    if raw_message.get("type") == "websocket.disconnect":
+        session_info["disconnect_code"] = raw_message.get("code")
+        session_info["disconnect_reason"] = raw_message.get("reason") or ""
+        raise WebSocketDisconnect(
+            code=raw_message.get("code", 1000),
+            reason=raw_message.get("reason") or "",
+        )
+
+    if "text" not in raw_message:
+        return
+
+    try:
+        message = json.loads(raw_message["text"])
+    except json.JSONDecodeError:
+        return
+
+    if message.get("type") == "ping":
+        session_info["last_client_ping_at"] = time.time()
+        session_info["client_ping_count"] = session_info.get("client_ping_count", 0) + 1
+        await manager.send_json(connection_id, {"type": "pong"})
+
+
+async def _run_with_ping_drain(
+    websocket: WebSocket,
+    connection_id: str,
+    session_info: dict,
+    coro,
+    *,
+    stage: str = "summary",
+    interval: float = 12.0,
+):
+    """长任务期间继续响应 ping 并下发心跳，避免 cpolar/代理因服务端阻塞而断开。"""
+    task = asyncio.create_task(coro)
+    try:
+        while not task.done():
+            recv_task = asyncio.create_task(websocket.receive())
+            done, pending = await asyncio.wait(
+                {task, recv_task},
+                timeout=interval,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                recv_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await recv_task
+                await manager.send_json(
+                    connection_id,
+                    {"type": "heartbeat", "stage": stage},
+                )
+                continue
+
+            if task in done:
+                recv_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await recv_task
+                break
+
+            raw_message = recv_task.result()
+            await _handle_inbound_while_busy(raw_message, connection_id, session_info)
+    except WebSocketDisconnect:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        raise
+
+    return await task
 
 
 async def _run_with_keepalive(
@@ -616,7 +712,13 @@ async def websocket_transcribe(
                             "type": "generating_transcript",
                             "message": "正在整理说话人分离转写，请稍候...",
                         })
-                        await tingwu_engine.finalize_stream_async(session_info["transcriber"])
+                        await _run_with_ping_drain(
+                            websocket,
+                            connection_id,
+                            session_info,
+                            tingwu_engine.finalize_stream_async(session_info["transcriber"]),
+                            stage="transcript",
+                        )
                         session_info["tingwu_finalized"] = True
                         session_info["total_text"] = session_info["transcriber"].total_text()
 
@@ -671,8 +773,10 @@ async def websocket_transcribe(
 
                     # 并行生成 Markdown + 图文速览（期间发送心跳保活）
                     try:
-                        dual = await _run_with_keepalive(
+                        dual = await _run_with_ping_drain(
+                            websocket,
                             connection_id,
+                            session_info,
                             generate_dual_summaries(
                                 get_llm_client(),
                                 session_info["total_text"],
@@ -755,6 +859,9 @@ async def websocket_transcribe(
                             "summary_file": summary_path,
                             **end_result_base,
                         }
+                        session_info["normal_end"] = True
+                        session_info["disconnect_code"] = 1000
+                        session_info["disconnect_reason"] = "session_end"
                         sent = await manager.send_json(connection_id, end_result)
                         if not sent:
                             logger.warning(
@@ -816,6 +923,9 @@ async def websocket_transcribe(
                             "error": "会议纪要生成失败，请稍后重试",
                             **end_result_base,
                         }
+                        session_info["normal_end"] = True
+                        session_info["disconnect_code"] = 1000
+                        session_info["disconnect_reason"] = "session_end"
                         await manager.send_json(connection_id, end_result)
 
                     break
@@ -829,11 +939,13 @@ async def websocket_transcribe(
     except WebSocketDisconnect as exc:
         session_info["disconnect_code"] = getattr(exc, "code", session_info.get("disconnect_code"))
         session_info["disconnect_reason"] = getattr(exc, "reason", None) or session_info.get("disconnect_reason") or ""
+        disconnect_level = "info" if session_info.get("normal_end") or session_info.get("saved") else "warning"
         _log_ws_disconnect(
             connection_id,
             session_info,
             start_time,
             "WebSocket 断开连接",
+            level=disconnect_level,
             disconnect_source="server_websocket_disconnect",
         )
     except RuntimeError as e:
@@ -949,14 +1061,22 @@ async def ws_disconnect_report(
     if archived and server_diag:
         server_diag["client_report_received"] = True
     close_label = _classify_ws_close_code(report.close_code)
+    is_normal = _is_normal_disconnect_report(report, server_diag)
+    log_fn = logger.info if is_normal else logger.warning
+    log_message = (
+        "WebSocket 客户端断开诊断上报（正常结束）"
+        if is_normal
+        else "WebSocket 客户端断开诊断上报"
+    )
 
-    logger.warning(
-        "WebSocket 客户端断开诊断上报",
+    log_fn(
+        log_message,
         extra={
             "request_id": connection_id,
             "output_params": {
                 "user_id": current_user.id,
                 "username": current_user.username,
+                "is_normal_end": is_normal,
                 "client_report": report.model_dump(),
                 "close_code_label": close_label,
                 "server_diagnostics": server_diag,
