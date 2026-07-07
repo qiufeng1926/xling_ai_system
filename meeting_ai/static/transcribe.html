@@ -2774,6 +2774,7 @@
         let wsSessionCompleted = false;
         let wsClosingIntentionally = false;
         let wsDisconnectReported = false;
+        let backgroundSubmitTimer = null;
         let maxUploadBytes = 524288000; // 默认 500MB，启动后从 /api/settings/upload-limits 同步
 
         function classifyWsCloseCode(code) {
@@ -2796,18 +2797,15 @@
             if (wsSessionCompleted || wsClosingIntentionally) {
                 sessionOutcome = 'normal_end';
                 effectiveDisconnectSource = 'normal_session_end';
-            } else if (wsUserStopRequested && sessionEnding) {
-                sessionOutcome = 'user_stop_summary';
-                effectiveDisconnectSource = 'user_stop_summary_phase';
             } else if (wsUserStopRequested) {
-                sessionOutcome = 'normal_end';
-                effectiveDisconnectSource = 'normal_session_end_after_stop';
+                sessionOutcome = 'background_processing';
+                effectiveDisconnectSource = 'background_processing';
             } else if (isRecording && !isCollabMode) {
                 sessionOutcome = 'unexpected';
             }
 
-            const closeCodeLabel = sessionOutcome === 'normal_end'
-                ? 'normal_session_end'
+            const closeCodeLabel = (sessionOutcome === 'normal_end' || sessionOutcome === 'background_processing')
+                ? sessionOutcome
                 : (rawCode !== null ? classifyWsCloseCode(rawCode) : 'unknown');
 
             return {
@@ -3460,6 +3458,65 @@
             switchSummaryTab(prefix, 'markdown');
         }
 
+        function finishRecordingInBackground(data) {
+            if (wsSessionCompleted) return;
+            if (backgroundSubmitTimer) {
+                clearTimeout(backgroundSubmitTimer);
+                backgroundSubmitTimer = null;
+            }
+            wsSessionCompleted = true;
+            sessionEnding = false;
+            pollAbort = true;
+            if (pollFallbackTimer) {
+                clearTimeout(pollFallbackTimer);
+                pollFallbackTimer = null;
+            }
+            if (data && data.file_id) {
+                pendingFileId = data.file_id;
+                lastRealtimeFileId = data.file_id;
+            }
+            if (data && data.meeting_name) {
+                lastMeetingName = data.meeting_name;
+            }
+            if (data && data.total_text) {
+                renderRealtimeTranscript(data.total_text);
+            }
+            const msg = (data && data.message)
+                || '录音已结束，纪要正在后台生成，请稍后在「会议记录」查看';
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            stopBtn.innerHTML = '停止录音';
+            recordingStartedAt = null;
+            recordingDisconnected = false;
+            setRealtimeTranscriptStatus(msg);
+            notifyPortalRecordingState({
+                recording: false,
+                generating: false,
+                disconnected: false,
+                statusText: '',
+                startedAt: null,
+            });
+            if (isPortalEmbedded()) {
+                try {
+                    window.parent.postMessage({
+                        type: 'xlink:recording-background',
+                        file_id: data && data.file_id,
+                        message: msg,
+                    }, window.location.origin);
+                } catch (e) {
+                    console.warn('通知门户后台处理失败', e);
+                }
+            }
+            stopWsPing();
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                wsClosingIntentionally = true;
+                ws.close(1000, 'background_processing');
+            }
+            if (!isPortalEmbedded()) {
+                console.info(msg);
+            }
+        }
+
         function applySessionResult(data) {
             wsSessionCompleted = true;
             sessionEnding = false;
@@ -3922,10 +3979,20 @@
                         true
                     );
                 }
+            } else if (data.type === 'session_processing') {
+                finishRecordingInBackground(data);
             } else if (data.type === 'generating_transcript') {
                 setRealtimeTranscriptStatus(data.message || '正在整理说话人分离转写...');
                 stopBtn.disabled = true;
                 stopBtn.innerHTML = '<span class="loading"></span>整理中...';
+                if (pollFallbackTimer) clearTimeout(pollFallbackTimer);
+                pollFallbackTimer = setTimeout(() => {
+                    if (sessionEnding && !wsSessionCompleted && !pendingFileId) {
+                        setRealtimeTranscriptStatus(
+                            '正在整理转写，说话人分离可能需要 1-2 分钟，请稍候…'
+                        );
+                    }
+                }, 30000);
             } else if (data.type === 'transcribe_complete') {
                 if (data.file_id) {
                     pendingFileId = data.file_id;
@@ -4272,20 +4339,21 @@
                     stopBtn.disabled = true;
                     setRealtimeTranscriptStatus('已停止录音，转写继续同步');
                 } else {
-                    sessionEnding = true;
-                    startWsPing();
+                    wsUserStopRequested = true;
                     ws.send(JSON.stringify({ type: 'end' }));
                     stopBtn.disabled = true;
-                    stopBtn.innerHTML = '<span class="loading"></span>生成中...';
-                    setRealtimeTranscriptStatus('正在生成会议纪要，请稍候...');
-                    notifyPortalRecordingState({
-                        recording: false,
-                        generating: true,
-                        statusText: '正在生成会议纪要，请稍候...',
-                        startedAt: recordingStartedAt,
-                    });
+                    stopBtn.innerHTML = '<span class="loading"></span>提交中...';
+                    setRealtimeTranscriptStatus('正在提交录音，请稍候…');
+                    if (backgroundSubmitTimer) clearTimeout(backgroundSubmitTimer);
+                    backgroundSubmitTimer = setTimeout(() => {
+                        if (!wsSessionCompleted && wsUserStopRequested) {
+                            finishRecordingInBackground({
+                                message: '录音已结束，纪要正在后台生成，请稍后在「会议记录」查看',
+                            });
+                        }
+                    }, 8000);
                 }
-                // 保持连接直到收到 session_end，不在此处关闭 WebSocket
+                // 收到 session_processing 后即可释放界面，无需等待 session_end
             } else {
                 startBtn.disabled = false;
                 stopBtn.disabled = true;

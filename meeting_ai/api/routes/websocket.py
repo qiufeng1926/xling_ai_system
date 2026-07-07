@@ -4,7 +4,6 @@ import uuid
 import os
 import time
 import asyncio
-from contextlib import suppress
 from pathlib import Path
 from datetime import datetime
 
@@ -45,7 +44,12 @@ from asr.tingwu_realtime import (
 from llm.client_holder import get_llm_client
 from llm.summary_service import generate_dual_summaries, visual_dict_from_result
 from config.config import output_dir
-from db.session import save_meeting_to_db_async
+from db.session import (
+    save_meeting_to_db_async,
+    update_meeting_status_async,
+    update_meeting_summaries_async,
+    update_meeting_transcript_async,
+)
 from utils.executors import run_io
 
 router = APIRouter()
@@ -239,9 +243,9 @@ def _is_normal_disconnect_report(
     report: WsDisconnectReport,
     server_diag: dict[str, Any] | None,
 ) -> bool:
-    if report.session_outcome in ("normal_end", "user_stop_summary"):
+    if report.session_outcome in ("normal_end", "user_stop_summary", "background_processing"):
         return True
-    if report.extra.get("session_outcome") in ("normal_end", "user_stop_summary"):
+    if report.extra.get("session_outcome") in ("normal_end", "user_stop_summary", "background_processing"):
         return True
     if report.session_completed or report.user_stop_requested:
         if server_diag and server_diag.get("saved"):
@@ -314,81 +318,6 @@ async def _cancel_ws_heartbeat_task(session_info: dict) -> None:
         pass
 
 
-async def _handle_inbound_while_busy(
-    raw_message: dict,
-    connection_id: str,
-    session_info: dict,
-) -> None:
-    """长任务期间处理客户端 ping；其他消息在长任务结束后由主循环继续处理。"""
-    if raw_message.get("type") == "websocket.disconnect":
-        session_info["disconnect_code"] = raw_message.get("code")
-        session_info["disconnect_reason"] = raw_message.get("reason") or ""
-        raise WebSocketDisconnect(
-            code=raw_message.get("code", 1000),
-            reason=raw_message.get("reason") or "",
-        )
-
-    if "text" not in raw_message:
-        return
-
-    try:
-        message = json.loads(raw_message["text"])
-    except json.JSONDecodeError:
-        return
-
-    if message.get("type") == "ping":
-        session_info["last_client_ping_at"] = time.time()
-        session_info["client_ping_count"] = session_info.get("client_ping_count", 0) + 1
-        await manager.send_json(connection_id, {"type": "pong"})
-
-
-async def _run_with_ping_drain(
-    websocket: WebSocket,
-    connection_id: str,
-    session_info: dict,
-    coro,
-    *,
-    stage: str = "summary",
-    interval: float = 12.0,
-):
-    """长任务期间继续响应 ping 并下发心跳，避免 cpolar/代理因服务端阻塞而断开。"""
-    task = asyncio.create_task(coro)
-    try:
-        while not task.done():
-            recv_task = asyncio.create_task(websocket.receive())
-            done, pending = await asyncio.wait(
-                {task, recv_task},
-                timeout=interval,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if not done:
-                recv_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await recv_task
-                await manager.send_json(
-                    connection_id,
-                    {"type": "heartbeat", "stage": stage},
-                )
-                continue
-
-            if task in done:
-                recv_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await recv_task
-                break
-
-            raw_message = recv_task.result()
-            await _handle_inbound_while_busy(raw_message, connection_id, session_info)
-    except WebSocketDisconnect:
-        if not task.done():
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-        raise
-
-    return await task
-
-
 async def _run_with_keepalive(
     connection_id: str,
     coro,
@@ -406,6 +335,127 @@ async def _run_with_keepalive(
                 {"type": "heartbeat", "stage": stage},
             )
     return await task
+
+
+async def _process_realtime_session_background(
+    *,
+    session_info: dict,
+    connection_id: str,
+    start_time: float,
+    file_id: str,
+    transcript_filename: str,
+    summary_filename: str,
+    transcript_path: str,
+    user_meeting_name: str,
+    initial_text: str,
+) -> None:
+    """停止录音后在后台完成听悟收尾、纪要生成，不阻塞 WebSocket 连接。"""
+    user_id = session_info.get("user_id")
+    transcriber = session_info.get("transcriber")
+    total_text = initial_text
+
+    try:
+        if (
+            session_info.get("tingwu_started")
+            and transcriber is not None
+            and not session_info.get("tingwu_failed")
+        ):
+            await tingwu_engine.finalize_stream_async(transcriber)
+            total_text = transcriber.total_text() or total_text
+            await run_io(Path(transcript_path).write_text, total_text, encoding="utf-8")
+            await update_meeting_transcript_async(
+                file_id,
+                transcript=total_text,
+                transcript_file_path=transcript_path,
+                tingwu_task_id=getattr(transcriber, "task_id", None),
+            )
+            logger.info(
+                "后台听悟收尾完成",
+                extra={
+                    "request_id": connection_id,
+                    "output_params": {
+                        "file_id": file_id,
+                        "text_length": len(total_text),
+                    },
+                },
+            )
+
+        dual = await generate_dual_summaries(
+            get_llm_client(),
+            total_text,
+            user_meeting_name or None,
+            session_info.get("start_time"),
+        )
+        if dual.markdown_error or not dual.markdown:
+            raise RuntimeError(dual.markdown_error or "Markdown 速览生成失败")
+
+        summary = dual.markdown
+        summary_visual_dict = visual_dict_from_result(dual)
+        visual_title = (
+            summary_visual_dict.get("title")
+            if isinstance(summary_visual_dict, dict)
+            else None
+        )
+        meeting_name = resolve_meeting_name(
+            user_meeting_name or None,
+            summary=summary,
+            visual_title=visual_title,
+            at=session_info.get("start_time"),
+        )
+
+        summary_path = os.path.join(output_dir, "summaries", summary_filename)
+        await run_io(Path(summary_path).write_text, summary, encoding="utf-8")
+        visual_path = summary_path.replace(".md", "_visual.json")
+        if dual.visual_json:
+            await run_io(Path(visual_path).write_text, dual.visual_json, encoding="utf-8")
+
+        total_duration_ms = (time.time() - start_time) * 1000
+        await update_meeting_summaries_async(
+            file_id,
+            summary=summary,
+            summary_visual=dual.visual_json,
+            summary_visual_status=dual.visual_status,
+            summary_file_path=summary_path,
+            meeting_name=meeting_name,
+            total_duration_ms=round(total_duration_ms, 2),
+        )
+        logger.info(
+            "后台会议纪要生成完成",
+            extra={
+                "request_id": connection_id,
+                "output_params": {
+                    "file_id": file_id,
+                    "summary_length": len(summary),
+                    "total_duration_ms": round(total_duration_ms, 2),
+                },
+            },
+        )
+        from services.notification_emit import notify_meeting_realtime_complete
+
+        if user_id:
+            notify_meeting_realtime_complete(user_id, file_id)
+    except Exception as e:
+        logger.error(
+            "后台会议纪要生成失败",
+            exc_info=True,
+            extra={
+                "request_id": connection_id,
+                "output_params": {
+                    "file_id": file_id,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
+            },
+        )
+        await update_meeting_status_async(
+            file_id,
+            "failed",
+            f"生成总结失败: {str(e)}",
+        )
+        from services.notification_emit import notify_meeting_realtime_complete
+
+        if user_id:
+            notify_meeting_realtime_complete(user_id, file_id)
 
 
 async def _persist_realtime_session_emergency(
@@ -707,32 +757,30 @@ async def websocket_transcribe(
                     session_info["total_text"] = session_info["transcriber"].total_text()
 
                 elif message.get("type") == "end":
-                    if session_info["tingwu_started"]:
-                        await manager.send_json(connection_id, {
-                            "type": "generating_transcript",
-                            "message": "正在整理说话人分离转写，请稍候...",
-                        })
-                        await _run_with_ping_drain(
-                            websocket,
-                            connection_id,
-                            session_info,
-                            tingwu_engine.finalize_stream_async(session_info["transcriber"]),
-                            stage="transcript",
-                        )
-                        session_info["tingwu_finalized"] = True
-                        session_info["total_text"] = session_info["transcriber"].total_text()
+                    logger.info(
+                        "收到结束录音请求，提交后台处理",
+                        extra={"request_id": connection_id},
+                    )
 
-                    # 会话结束，生成 AI 总结
-                    duration_ms = (time.time() - start_time) * 1000
-                    logger.info(f"会话结束，开始生成 AI 总结", extra={'request_id': connection_id, 'output_params': {'duration_ms': round(duration_ms, 2), 'total_text_length': len(session_info["total_text"]), 'audio_chunks': session_info["audio_chunks"]}})
-                    
-                    # 保存转写文本
+                    keepalive_task = session_info.get("tingwu_keepalive_task")
+                    if keepalive_task is not None and not keepalive_task.done():
+                        keepalive_task.cancel()
+                        try:
+                            await keepalive_task
+                        except asyncio.CancelledError:
+                            pass
+                        session_info["tingwu_keepalive_task"] = None
+
+                    user_meeting_name = (session_info.get("meeting_name") or "").strip()
+                    total_text = (session_info.get("total_text") or "").strip()
+                    transcriber_ref = session_info.get("transcriber")
+                    if transcriber_ref is not None:
+                        total_text = transcriber_ref.total_text() or total_text
+
                     file_id = str(uuid.uuid4())
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     session_info["file_id"] = file_id
-                    
-                    # 构建文件名（用户填写名称时加入前缀）
-                    user_meeting_name = (session_info.get("meeting_name") or "").strip()
+
                     safe_name = safe_filename_prefix(user_meeting_name or None).rstrip("_")
                     transcript_filename = (
                         f"{safe_name}_{file_id}_{timestamp}_realtime.txt"
@@ -740,194 +788,64 @@ async def websocket_transcribe(
                         else f"{file_id}_{timestamp}_realtime.txt"
                     )
                     summary_filename = transcript_filename.replace(".txt", ".md")
-                    
-                    # 异步保存转写文本
                     transcript_path = os.path.join(
                         output_dir, "transcripts",
-                        transcript_filename
+                        transcript_filename,
                     )
-                    await run_io(Path(transcript_path).write_text, session_info["total_text"], encoding='utf-8')
-                    logger.info(f"实时转写文本已保存", extra={'request_id': connection_id, 'output_params': {'transcript_file': transcript_path, 'text_length': len(session_info["total_text"])}})
+                    await run_io(
+                        Path(transcript_path).write_text,
+                        total_text,
+                        encoding="utf-8",
+                    )
 
-                    end_result_base = {
-                        "total_text": session_info["total_text"],
+                    meeting_name = resolve_meeting_name(
+                        user_meeting_name or None,
+                        at=session_info.get("start_time"),
+                    )
+                    duration_ms = (time.time() - start_time) * 1000
+                    meeting_data = {
                         "file_id": file_id,
-                        "transcript_file": transcript_path,
-                        "duration": str(
-                            datetime.now()
-                            - datetime.fromisoformat(session_info["start_time"])
-                        ),
+                        "user_id": session_info["user_id"],
+                        "meeting_name": meeting_name,
+                        "original_filename": transcript_filename,
+                        "meeting_type": "realtime",
+                        "audio_file_path": None,
+                        "transcript_file_path": transcript_path,
+                        "summary_file_path": None,
+                        "transcript": total_text,
+                        "summary": None,
+                        "transcript_length": len(total_text),
+                        "summary_length": 0,
+                        "total_duration_ms": round(duration_ms, 2),
+                        "status": "processing",
+                        "tingwu_task_id": getattr(transcriber_ref, "task_id", None),
                     }
+                    await save_meeting_to_db_async(meeting_data)
+                    session_info["saved"] = True
+                    session_info["background_processing"] = True
+                    session_info["normal_end"] = True
 
-                    # 先推送转写完成，前端可立即展示全文
                     await manager.send_json(connection_id, {
-                        "type": "transcribe_complete",
-                        **end_result_base,
-                    })
-                    session_info["heartbeat_stage"] = "summary"
-                    await manager.send_json(connection_id, {
-                        "type": "generating_summary",
-                        "message": "正在生成文字与图文速览...",
+                        "type": "session_processing",
                         "file_id": file_id,
+                        "meeting_name": meeting_name,
+                        "total_text": total_text,
+                        "message": "录音已结束，正在后台生成纪要，请稍后在「会议记录」查看",
                     })
 
-                    # 并行生成 Markdown + 图文速览（期间发送心跳保活）
-                    try:
-                        dual = await _run_with_ping_drain(
-                            websocket,
-                            connection_id,
-                            session_info,
-                            generate_dual_summaries(
-                                get_llm_client(),
-                                session_info["total_text"],
-                                user_meeting_name or None,
-                                session_info.get("start_time"),
-                            ),
-                            stage="summary",
+                    asyncio.create_task(
+                        _process_realtime_session_background(
+                            session_info=session_info,
+                            connection_id=connection_id,
+                            start_time=start_time,
+                            file_id=file_id,
+                            transcript_filename=transcript_filename,
+                            summary_filename=summary_filename,
+                            transcript_path=transcript_path,
+                            user_meeting_name=user_meeting_name,
+                            initial_text=total_text,
                         )
-                        if dual.markdown_error or not dual.markdown:
-                            raise RuntimeError(dual.markdown_error or 'Markdown 速览生成失败')
-
-                        summary = dual.markdown
-                        summary_visual_dict = visual_dict_from_result(dual)
-                        visual_title = (
-                            summary_visual_dict.get("title")
-                            if isinstance(summary_visual_dict, dict)
-                            else None
-                        )
-                        meeting_name = resolve_meeting_name(
-                            user_meeting_name or None,
-                            summary=summary,
-                            visual_title=visual_title,
-                            at=session_info.get("start_time"),
-                        )
-
-                        summary_path = os.path.join(
-                            output_dir, "summaries", summary_filename
-                        )
-                        await run_io(Path(summary_path).write_text, summary, encoding='utf-8')
-                        visual_path = summary_path.replace('.md', '_visual.json')
-                        if dual.visual_json:
-                            await run_io(Path(visual_path).write_text, dual.visual_json, encoding='utf-8')
-
-                        total_duration_ms = (time.time() - start_time) * 1000
-                        logger.info(
-                            "实时会议纪要已保存",
-                            extra={
-                                "request_id": connection_id,
-                                "output_params": {
-                                    "summary_file": summary_path,
-                                    "summary_length": len(summary),
-                                    "total_duration_ms": round(total_duration_ms, 2),
-                                },
-                            },
-                        )
-
-                        # 保存到数据库
-                        try:
-                            meeting_data = {
-                                'file_id': file_id,
-                                'user_id': session_info["user_id"],
-                                'meeting_name': meeting_name,
-                                'original_filename': transcript_filename,
-                                'meeting_type': 'realtime',
-                                'audio_file_path': None,
-                                'transcript_file_path': transcript_path,
-                                'summary_file_path': summary_path,
-                                'transcript': session_info["total_text"],
-                                'summary': summary,
-                                'summary_visual': dual.visual_json,
-                                'summary_visual_status': dual.visual_status,
-                                'transcript_length': len(session_info["total_text"]),
-                                'summary_length': len(summary),
-                                'total_duration_ms': round(total_duration_ms, 2),
-                                'status': 'completed',
-                            }
-                            await save_meeting_to_db_async(meeting_data)
-                            session_info["saved"] = True
-                            logger.info(f"实时会议数据已保存到数据库", extra={'request_id': connection_id})
-                        except Exception as db_error:
-                            logger.error(f"保存实时会议数据到数据库失败: {str(db_error)}", exc_info=True, extra={'request_id': connection_id})
-
-                        end_result = {
-                            "type": "session_end",
-                            "meeting_name": meeting_name,
-                            "summary": summary,
-                            "summary_visual": summary_visual_dict,
-                            "summary_visual_status": dual.visual_status,
-                            "summary_visual_error": dual.visual_error,
-                            "summary_file": summary_path,
-                            **end_result_base,
-                        }
-                        session_info["normal_end"] = True
-                        session_info["disconnect_code"] = 1000
-                        session_info["disconnect_reason"] = "session_end"
-                        sent = await manager.send_json(connection_id, end_result)
-                        if not sent:
-                            logger.warning(
-                                "session_end 推送失败，客户端可能已断开，结果已保存至文件",
-                                extra={
-                                    "request_id": connection_id,
-                                    "file_id": file_id,
-                                },
-                            )
-
-                    except Exception as e:
-                        total_duration_ms = (time.time() - start_time) * 1000
-                        logger.error(
-                            "生成 AI 总结失败",
-                            exc_info=True,
-                            extra={
-                                "request_id": connection_id,
-                                "output_params": {
-                                    "error": str(e),
-                                    "error_type": type(e).__name__,
-                                    "duration_ms": round(total_duration_ms, 2),
-                                },
-                            },
-                        )
-                        
-                        # 即使AI总结失败，也保存转写文本到数据库
-                        try:
-                            fallback_name = resolve_meeting_name(
-                                user_meeting_name or None,
-                                at=session_info.get("start_time"),
-                            )
-                            meeting_data = {
-                                'file_id': file_id,
-                                'user_id': session_info["user_id"],
-                                'meeting_name': fallback_name,
-                                'original_filename': transcript_filename,
-                                'meeting_type': 'realtime',
-                                'audio_file_path': None,
-                                'transcript_file_path': transcript_path,
-                                'summary_file_path': None,
-                                'transcript': session_info["total_text"],
-                                'summary': None,
-                                'transcript_length': len(session_info["total_text"]),
-                                'summary_length': 0,
-                                'total_duration_ms': round(total_duration_ms, 2),
-                                'status': 'failed',
-                                'error_message': f"生成总结失败: {str(e)}",
-                            }
-                            await save_meeting_to_db_async(meeting_data)
-                            session_info["saved"] = True
-                            logger.info(f"失败的实时会议数据已保存到数据库", extra={'request_id': connection_id})
-                        except Exception as db_error:
-                            logger.error(f"保存失败的实时会议数据到数据库失败: {str(db_error)}", exc_info=True, extra={'request_id': connection_id})
-                        
-                        end_result = {
-                            "type": "session_end",
-                            "meeting_name": fallback_name,
-                            "summary": None,
-                            "error": "会议纪要生成失败，请稍后重试",
-                            **end_result_base,
-                        }
-                        session_info["normal_end"] = True
-                        session_info["disconnect_code"] = 1000
-                        session_info["disconnect_reason"] = "session_end"
-                        await manager.send_json(connection_id, end_result)
-
+                    )
                     break
                     
             except json.JSONDecodeError:
@@ -1006,7 +924,8 @@ async def websocket_transcribe(
 
         transcriber = session_info.get("transcriber")
         if (
-            transcriber is not None
+            not session_info.get("background_processing")
+            and transcriber is not None
             and session_info.get("tingwu_started")
             and not session_info.get("tingwu_finalized")
             and not session_info.get("tingwu_failed")
@@ -1018,7 +937,11 @@ async def websocket_transcribe(
             except Exception as e:
                 logger.warning(f"听悟会话收尾失败: {e}", extra={"request_id": connection_id})
 
-        if not session_info.get("saved") and session_info.get("audio_chunks", 0) > 0:
+        if (
+            not session_info.get("background_processing")
+            and not session_info.get("saved")
+            and session_info.get("audio_chunks", 0) > 0
+        ):
             try:
                 await _persist_realtime_session_emergency(
                     session_info,

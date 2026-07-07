@@ -84,6 +84,8 @@
             <div class="meeting-history__item-head">
               <div class="meeting-history__item-title">
                 {{ displayName(item) }}
+                <el-tag v-if="item.status === 'processing'" size="small" type="warning">纪要生成中</el-tag>
+                <el-tag v-else-if="item.status === 'failed'" size="small" type="danger">生成失败</el-tag>
                 <el-tag v-if="item.is_collaborative" size="small" type="primary">协作</el-tag>
                 <el-tag v-if="item.meeting_type === 'realtime'" size="small">实时</el-tag>
                 <el-tag v-else-if="item.meeting_type === 'batch'" size="small" type="info">批量</el-tag>
@@ -178,6 +180,12 @@ function isDownloadSelectable(item: MeetingListItem) {
 }
 
 function previewMessage(item: MeetingListItem) {
+  if (item.status === 'processing') {
+    return '纪要正在后台生成，请稍后刷新查看'
+  }
+  if (item.status === 'failed') {
+    return '纪要生成失败，可在详情中查看转写内容'
+  }
   if (isSuperAdminUser.value) {
     if (item.can_access === false) {
       return '暂无浏览权限'

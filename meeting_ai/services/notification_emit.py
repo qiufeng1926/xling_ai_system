@@ -35,6 +35,17 @@ def notify_meeting_access_created(db: Session, applicant_id: int, kind: str) -> 
     notification_hub.publish(applicant_id, {"channel": "meeting_access", "action": "submitted", "kind": kind})
 
 
+def notify_meeting_realtime_complete(user_id: int, file_id: str) -> None:
+    notification_hub.publish(
+        user_id,
+        {
+            "channel": "meeting_realtime",
+            "action": "completed",
+            "file_id": file_id,
+        },
+    )
+
+
 def notify_meeting_access_reviewed(applicant_id: int | None, kind: str, status: str) -> None:
     if not applicant_id:
         return

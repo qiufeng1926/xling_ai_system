@@ -204,6 +204,15 @@ function handlePortalMessage(event: MessageEvent) {
   const data = event.data
   if (!data) return
 
+  if (data.type === 'xlink:recording-background') {
+    ElMessage.success({
+      message: data.message || '录音已结束，纪要正在后台生成，请稍后在「会议记录」查看',
+      duration: 6000,
+      showClose: true,
+    })
+    return
+  }
+
   if (data.type === 'xlink:ws-disconnect-diagnostic') {
     logPortalDiagnostic('ws_disconnect', {
       ...(data.diagnostics || {}),

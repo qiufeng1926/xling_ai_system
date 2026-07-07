@@ -189,6 +189,56 @@ def update_meeting_status(file_id: str, status: str, error_message: str = None):
             logger.warning(f"未找到会议记录: file_id={file_id}")
 
 
+def update_meeting_transcript(
+    file_id: str,
+    *,
+    transcript: str,
+    transcript_file_path: str | None = None,
+    tingwu_task_id: str | None = None,
+) -> bool:
+    with get_db_session() as session:
+        meeting = session.query(Meeting).filter(Meeting.file_id == file_id).first()
+        if not meeting:
+            logger.warning(f"未找到会议记录: file_id={file_id}")
+            return False
+        meeting.transcript = transcript
+        meeting.transcript_length = len(transcript)
+        if transcript_file_path is not None:
+            meeting.transcript_file_path = transcript_file_path
+        if tingwu_task_id is not None:
+            meeting.tingwu_task_id = tingwu_task_id
+        logger.info(
+            f"会议转写已更新: file_id={file_id}, transcript_length={meeting.transcript_length}"
+        )
+        return True
+
+
+async def update_meeting_transcript_async(
+    file_id: str,
+    *,
+    transcript: str,
+    transcript_file_path: str | None = None,
+    tingwu_task_id: str | None = None,
+) -> bool:
+    from utils.executors import run_io
+    return await run_io(
+        update_meeting_transcript,
+        file_id,
+        transcript=transcript,
+        transcript_file_path=transcript_file_path,
+        tingwu_task_id=tingwu_task_id,
+    )
+
+
+async def update_meeting_status_async(
+    file_id: str,
+    status: str,
+    error_message: str | None = None,
+) -> None:
+    from utils.executors import run_io
+    await run_io(update_meeting_status, file_id, status, error_message)
+
+
 def update_meeting_summaries(
     file_id: str,
     *,
@@ -197,6 +247,8 @@ def update_meeting_summaries(
     summary_visual_status: str | None = None,
     summary_file_path: str | None = None,
     llm_duration_ms: int | None = None,
+    meeting_name: str | None = None,
+    total_duration_ms: float | None = None,
 ) -> bool:
     """更新已有会议的 AI 总结字段（不改动转写原文）"""
     with get_db_session() as session:
@@ -214,10 +266,39 @@ def update_meeting_summaries(
             meeting.summary_file_path = summary_file_path
         if llm_duration_ms is not None:
             meeting.llm_duration_ms = llm_duration_ms
+        if meeting_name is not None:
+            meeting.meeting_name = meeting_name
+        if total_duration_ms is not None:
+            meeting.total_duration_ms = total_duration_ms
         meeting.status = 'completed'
         meeting.error_message = None
         logger.info(f"会议总结已更新: file_id={file_id}, summary_length={meeting.summary_length}")
         return True
+
+
+async def update_meeting_summaries_async(
+    file_id: str,
+    *,
+    summary: str | None,
+    summary_visual: str | None = None,
+    summary_visual_status: str | None = None,
+    summary_file_path: str | None = None,
+    llm_duration_ms: int | None = None,
+    meeting_name: str | None = None,
+    total_duration_ms: float | None = None,
+) -> bool:
+    from utils.executors import run_io
+    return await run_io(
+        update_meeting_summaries,
+        file_id,
+        summary=summary,
+        summary_visual=summary_visual,
+        summary_visual_status=summary_visual_status,
+        summary_file_path=summary_file_path,
+        llm_duration_ms=llm_duration_ms,
+        meeting_name=meeting_name,
+        total_duration_ms=total_duration_ms,
+    )
 
 
 def _detach_instance(session: Session, instance):
