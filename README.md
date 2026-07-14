@@ -4,15 +4,17 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-green.svg)](https://fastapi.tiangolo.com/)
 [![Vue](https://img.shields.io/badge/Vue-3.4+-brightgreen.svg)](https://vuejs.org/)
 
-**xlink** 是一个多模块 AI 业务平台 Monorepo，通过统一的 Vue 3 门户整合两大业务系统：
+**xlink** 是一个多模块 AI 业务平台 Monorepo，通过统一的 Vue 3 门户整合多项业务能力：
 
-| 模块 | 目录 | 说明 |
-|------|------|------|
-| **达人信息管理** | `Information_Aggregation/` | 多平台达人数据采集、标签分类、智能匹配、MCN 管理 |
-| **会议 AI** | `meeting_ai/` | 实时语音转写、批量音频处理、AI 会议纪要、协作会议 |
-| **飞书** | `flybook/` | 飞书开放平台 API、事件回调（独立后端；前端仍在门户） |
+| 模块 | 目录 / 入口 | 说明 |
+|------|-------------|------|
+| **达人信息管理** | `Information_Aggregation/` | 多平台达人采集、标签、智能匹配、MCN、审核入库 |
+| **会议 AI** | `meeting_ai/` | 实时/批量转写、AI 纪要、协作会议、导出与通知 |
+| **飞书** | `flybook/` | OAuth 绑定、云文档、文档库镜像、妙纪 AI |
+| **企微** | 门户 `/qywechat/*` + 达人后端 API | 企微邮箱、审批与回调（管理员） |
+| **平台管理** | 门户侧栏 | 用户/权限、离职交接、跨模块审批 |
 
-用户在门户登录一次，即可访问全部模块；两个后端独立部署，通过 **共享 JWT** 与 **Vite 反向代理** 打通。
+用户登录一次即可访问全部模块；后端按服务独立部署，通过 **共享 JWT**、**内部密钥** 与 **反向代理** 打通。
 
 ---
 
@@ -35,37 +37,33 @@
 ## 系统架构
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    xlink 统一门户 (Vue 3)                        │
-│                    http://localhost:5173                         │
-│  ┌──────────────────────┐    ┌──────────────────────────────┐ │
-│  │  达人信息管理         │    │  会议 AI                      │ │
-│  │  /influencer/*       │    │  /meeting/*                  │ │
-│  └──────────┬───────────┘    └──────────────┬───────────────┘ │
-└─────────────┼───────────────────────────────┼───────────────────┘
-              │ Vite Proxy                    │ Vite Proxy
-              ▼                               ▼
-┌─────────────────────────┐     ┌─────────────────────────────┐
-│  达人后端 (FastAPI)      │     │  会议 AI 后端 (FastAPI)      │
-│  :8000                  │     │  :8001                      │
-│  /api/v1/*              │     │  /api/auth, /api/meetings,  │
-│                         │     │  /api/ws, /meeting-app      │
-└──────────┬──────────────┘     └──────────────┬──────────────┘
-           │                                    │
-           ▼                                    ▼
-┌─────────────────────┐              ┌─────────────────────┐
-│  MySQL (influencer_db)│            │  MySQL (meeting_ai)  │
-│  Redis               │              │  阿里云通义听悟       │
-└─────────────────────┘              │  智谱 GLM / FunASR   │
-                                     └─────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         xlink 统一门户 (Vue 3)                            │
+│                    开发 :5173  /  Docker :80                              │
+│  达人 /influencer/* · 会议 /meeting/* · 飞书 /flybook/* · 企微 /qywechat/*  │
+└───────┬───────────────────┬────────────────────┬─────────────────────────┘
+        │ Vite / Nginx      │                    │
+        ▼                   ▼                    ▼
+┌───────────────┐   ┌───────────────┐   ┌────────────────┐
+│ 达人后端       │   │ 会议 AI       │   │ 飞书后端        │
+│ :8000         │   │ :8001         │   │ :8002          │
+│ /api/v1/*     │◄─►│ /api/*        │   │ /api/flybook/* │
+│ 通知 SSE      │   │ WS / 通知 SSE │   │ WS 妙纪        │
+│ 企微 / 离职   │   │ 协作 / 导出   │   │ 云文档 / 镜像  │
+└───────┬───────┘   └───────┬───────┘   └───────┬────────┘
+        │                   │                    │
+        ▼                   ▼                    ▼
+   MySQL influencer_db   MySQL meeting_ai    飞书开放平台
+   Redis（采集队列）      听悟 / FunASR / LLM   （token 存门户用户）
 ```
 
 **设计要点：**
 
-- **门户壳**：`Information_Aggregation/frontend` 承载全部前端，模块注册见 `src/shell/moduleRegistry.ts`
-- **双后端**：达人 API 与会议 API 各自独立，无共享代码库，数据库分离
-- **认证桥接**：门户签发的 JWT（`iss: xling`）由 `meeting_ai/api/portal_auth.py` 解析，自动同步用户与权限
-- **会议 UI 嵌入**：单人/协作录制通过 iframe 加载 `meeting_ai/static/transcribe.html`，路径代理为 `/meeting-app/`
+- **门户壳**：`Information_Aggregation/frontend` 承载全部前端；业务模块见 `src/modules/*`，菜单含企微与平台管理
+- **多后端**：达人 / 会议 / 飞书进程与代码库独立，数据库分离；跨服务调用靠 JWT + `PORTAL_INTERNAL_KEY`
+- **认证桥接**：门户签发 JWT（`iss: xling`），`meeting_ai` / `flybook` 的 `portal_auth` 解析并同步用户权限
+- **实时通道**：会议实时转写 WebSocket、妙纪 WebSocket；达人与会议各自提供通知 SSE
+- **会议 UI**：单人/协作录制通过 iframe 加载 `meeting_ai/static/transcribe.html`（路径 `/meeting-app/`）
 
 ---
 
@@ -73,21 +71,29 @@
 
 ### 达人信息管理
 
-- 多平台自动化采集（抖音星图、小红书蒲公英，基于 Playwright）
-- 多层级标签体系与自动打标
-- 多维度智能匹配引擎（粉丝量、互动率、标签、性价比等）
-- MCN 机构与旗下达人关联管理
-- 采集数据审核入库工作流
-- 三级 RBAC 权限（超级管理员 / 管理员 / 用户）
+- 多平台自动化采集（抖音星图、小红书蒲公英，Playwright）
+- 多层级标签与自动打标、智能匹配、MCN 管理
+- 采集审核入库、三级 RBAC
+- 离职申请 / 交接 / 归档，联动会议数据交接
+- 站内通知（SSE）、飞书文档访问与日终导出
 
 ### 会议 AI
 
-- 实时语音转写（阿里云通义听悟 WebSocket）
-- 批量音频上传转写（FunASR Paraformer）
-- AI 自动生成 Markdown 会议纪要 + 结构化图文速览
-- 协作会议：创建房间、邀请成员、多人同步录制与合并转写
-- 会议历史管理、日期筛选、DOCX / 可视化导出
-- 三级权限与跨模块权限申请审批
+- 实时转写（阿里云通义听悟 WebSocket）+ 批量上传（FunASR）
+- AI 纪要：Markdown + 图文速览；LLM 可切换 **智谱 GLM / DeepSeek**（`LLM_PROVIDER`）
+- 协作会议：房间、邀请、多人同步录制与合并转写
+- 会议历史、浏览/下载权限申请、DOCX / 可视化导出
+- 通知 SSE；离职场景内部交接接口
+
+### 飞书
+
+- OAuth **绑定**（须先登录 xlink，非独立登录页）
+- 消息页嵌入、云文档创建/导入、文档库与镜像
+- **妙纪 AI**：妙记检索、产物获取、实时转写 WebSocket
+
+### 企微（管理员）
+
+- 企微邮箱、审批流与事件回调（达人后端 `/api/v1/qywechat/*`）
 
 ---
 
@@ -96,48 +102,35 @@
 ```
 xling_ai_system/
 ├── README.md                          # 本文件（Monorepo 总览）
-├── .gitignore
+├── docker-compose.yml                 # 全栈编排（推荐）
+├── docker/                            # 生产部署脚本与清单
+│   ├── DEPLOY.md                      # 生产环境检查清单
+│   ├── .env.example
+│   ├── mysql/                         # meeting_ai 建库与授权 SQL
+│   └── scripts/                       # Win / Linux 构建启动脚本
 │
-├── Information_Aggregation/           # 达人系统 + 统一门户前端
-│   ├── backend/                       # FastAPI 后端（:8000）
-│   │   ├── app/
-│   │   │   ├── api/v1/                # REST API 路由
-│   │   │   ├── collectors/            # Playwright 采集器
-│   │   │   ├── services/              # 业务逻辑层
-│   │   │   ├── models/                # SQLAlchemy 模型
-│   │   │   └── main.py                # 应用入口
-│   │   ├── alembic/                   # 数据库迁移
-│   │   └── .env.example
+├── Information_Aggregation/           # 达人后端 + 统一门户前端
+│   ├── backend/                       # FastAPI（:8000）
+│   │   └── app/api/v1/                # 达人 / 通知 / 离职 / 企微 / 飞书文档 …
 │   ├── frontend/                      # Vue 3 门户（:5173）
-│   │   ├── src/
-│   │   │   ├── modules/
-│   │   │   │   ├── influencer/        # 达人模块路由
-│   │   │   │   └── meeting/           # 会议模块路由
-│   │   │   ├── shell/moduleRegistry.ts
-│   │   │   └── views/
-│   │   └── vite.config.ts             # 多后端代理配置
-│   ├── scripts/                       # 启动脚本、数据库初始化
-│   ├── docker-compose.yml             # 达人系统容器编排（不含 meeting_ai）
-│   └── README.md                      # 达人系统详细文档
+│   │   └── src/modules/               # influencer / meeting / flybook / qywechat
+│   ├── docker-compose.yml             # 仅达人 + 门户（不含会议/飞书）
+│   └── README.md
 │
-├── meeting_ai/                        # 会议 AI 独立后端
-    ├── api/
-    │   ├── main.py                    # 应用入口
-    │   ├── portal_auth.py             # 门户 JWT 用户解析
-    │   └── routes/                    # auth / meeting / websocket / collaborative ...
-    ├── asr/                           # 语音识别（听悟 + FunASR）
-    ├── llm/                           # 智谱 GLM 总结生成
-    ├── services/                      # 协作会议、房间运行时
-    ├── static/transcribe.html         # 会议录制 Web UI（iframe 嵌入）
-    ├── db/                            # 数据库模型与迁移
-    └── README.md                      # 会议 AI 详细文档
-
-└── flybook/                           # 飞书独立后端
-    ├── api/
-    │   ├── main.py                    # 应用入口（:8002）
-    │   ├── portal_auth.py             # 门户 JWT 校验
-    │   └── routes/                    # config / callback
-    ├── integrations/feishu/           # 开放平台客户端、事件加解密
+├── meeting_ai/                        # 会议 AI（:8001）
+│   ├── api/                           # 路由、portal_auth、协作 WS
+│   ├── asr/                           # 听悟实时 + FunASR 批量
+│   ├── llm/                           # GLM / DeepSeek
+│   ├── services/                      # 协作房间、通知中心
+│   ├── static/transcribe.html
+│   ├── db/
+│   └── README.md
+│
+└── flybook/                           # 飞书后端（:8002）
+    ├── api/routes/                    # auth / docs / minutes / callback
+    ├── api/ws/                        # 妙纪实时转写
+    ├── integrations/feishu/
+    ├── services/
     └── README.md
 ```
 
@@ -147,23 +140,24 @@ xling_ai_system/
 
 | 依赖 | 版本 | 用途 |
 |------|------|------|
-| Python | 3.10+（会议 AI 建议 3.11+） | 两个后端 |
+| Python | 3.10+（会议 AI 建议 3.11+） | 三个后端 |
 | Node.js | 18+ | 门户前端 |
-| MySQL | 8.0+ | 两个独立数据库 |
+| MySQL | 8.0+ | `influencer_db` + `meeting_ai` |
 | Redis | 7+ | 达人采集任务队列 |
 | Playwright Chromium | — | 达人平台采集 |
 | FFmpeg | — | 会议 AI 音频处理 |
 
-**外部 API（会议 AI 必填）：**
+**外部 API：**
 
-- 智谱 AI（GLM）— 会议纪要生成
-- 阿里云通义听悟 — 实时语音转写
+- 会议：阿里云通义听悟；智谱 GLM 和/或 DeepSeek（按 `LLM_PROVIDER`）
+- 飞书：开放平台 App ID / Secret、OAuth 重定向 URL
+- 企微：按业务在达人后端配置（可选）
 
 ---
 
 ## 快速开始
 
-以下步骤在本地启动完整的 xlink 门户（达人 + 会议双模块）。
+本地启动完整门户（达人 + 会议 + 飞书）。
 
 ### 1. 克隆仓库
 
@@ -187,38 +181,35 @@ cd Information_Aggregation/scripts
 CREATE DATABASE meeting_ai CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
-会议 AI 启动时会自动建表；也可参考 `meeting_ai/db/create_table.sql`。
+会议 AI 启动时会自动建表 / 迁移字段；也可参考 `meeting_ai/db/create_table.sql`。
 
 ### 3. 配置环境变量
 
 ```bash
-# 达人后端
 cp Information_Aggregation/backend/.env.example Information_Aggregation/backend/.env
-
-# 门户前端
 cp Information_Aggregation/frontend/.env.example Information_Aggregation/frontend/.env
-
-# 会议 AI
 cp meeting_ai/.env.example meeting_ai/.env
-
-# 飞书
 cp flybook/.env.example flybook/.env
 ```
 
-**关键：各后端 JWT 密钥须与门户一致**
+**关键：三端 JWT / 内部密钥保持一致**
 
 ```env
 # Information_Aggregation/backend/.env
 SECRET_KEY=dev-local-secret-key-at-least-32-characters-long
+PORTAL_INTERNAL_KEY=dev-flybook-internal-key-change-me
+FLYBOOK_INTERNAL_KEY=dev-flybook-internal-key-change-me
 
 # meeting_ai/.env
 JWT_SECRET=dev-local-secret-key-at-least-32-characters-long
+PORTAL_INTERNAL_KEY=dev-flybook-internal-key-change-me
 
 # flybook/.env
 JWT_SECRET=dev-local-secret-key-at-least-32-characters-long
+FLYBOOK_INTERNAL_KEY=dev-flybook-internal-key-change-me
 ```
 
-会议 AI 还需填写 `GLM_API_KEY`、阿里云听悟相关密钥及 MySQL 连接信息。
+会议 AI 还需填写听悟密钥，以及 `GLM_API_KEY` 或 `DEEPSEEK_API_KEY`（取决于 `LLM_PROVIDER`）。飞书需填写 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 与 OAuth 回调地址。
 
 ### 4. 安装依赖
 
@@ -235,7 +226,7 @@ npm install
 # 会议 AI
 cd ../../meeting_ai
 pip install -r requirements.txt
-python test_system.py   # 可选：验证各模块
+python test_system.py   # 可选
 
 # 飞书
 cd ../flybook
@@ -244,18 +235,16 @@ pip install -r requirements.txt
 
 ### 5. 启动服务
 
-在多个终端分别运行：
-
 ```bash
 # 终端 1 — 达人后端 (:8000)
 cd Information_Aggregation/backend
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
-# 终端 2 — 会议 AI 后端 (:8001)
+# 终端 2 — 会议 AI (:8001)
 cd meeting_ai
 uvicorn api.main:app --reload --host 0.0.0.0 --port 8001
 
-# 终端 3 — 飞书后端 (:8002)
+# 终端 3 — 飞书 (:8002)
 cd flybook
 uvicorn api.main:app --reload --host 0.0.0.0 --port 8002
 
@@ -264,24 +253,24 @@ cd Information_Aggregation/frontend
 npm run dev
 ```
 
-**Windows 快捷方式**（仅启动达人前后端）：
+**Windows 快捷方式**（仅达人前后端）：
 
 ```powershell
 Information_Aggregation\scripts\start_dev.bat
 ```
 
-> 使用 `start_dev.bat` 后仍需手动启动 meeting_ai（:8001）与 flybook（:8002），否则对应模块不可用。
+> 使用 `start_dev.bat` 后仍需手动启动 meeting_ai（:8001）与 flybook（:8002）。
 
 ### 6. 访问系统
 
 | 地址 | 说明 |
 |------|------|
 | http://localhost:5173 | xlink 统一门户 |
-| http://localhost:8000/docs | 达人 API 文档 |
-| http://localhost:8001/docs | 会议 AI API 文档 |
-| http://localhost:8002/docs | 飞书 API 文档 |
+| http://localhost:8000/docs | 达人 API |
+| http://localhost:8001/docs | 会议 AI API |
+| http://localhost:8002/docs | 飞书 API |
 
-**默认超级管理员**（达人系统首次启动自动创建）：
+**默认超级管理员**（达人系统首次启动自动创建，亦可由 `.env` 的 `ADMIN_*` 覆盖）：
 
 - 用户名：`qiufengai`
 - 密码：`qfai12@@`
@@ -296,9 +285,9 @@ Information_Aggregation\scripts\start_dev.bat
 |------|------|------|
 | 门户前端 | 5173 | Vue 3 SPA |
 | 达人后端 | 8000 | `/api/v1/*` |
-| 会议 AI 后端 | **8001** | 门户集成模式（避免与 8000 冲突） |
-| 飞书后端 | **8002** | `/api/flybook/*` |
-| MySQL | 3306 | 达人/会议库可共用同一实例 |
+| 会议 AI | **8001** | 门户集成模式 |
+| 飞书 | **8002** | `/api/flybook/*` |
+| MySQL | 3306 | 两库可同实例 |
 | Redis | 6379 | 达人采集队列 |
 
 ### Vite 代理规则
@@ -307,17 +296,15 @@ Information_Aggregation\scripts\start_dev.bat
 
 | 前端路径 | 代理目标 | 用途 |
 |----------|----------|------|
-| `/api/v1/*` | `:8000` | 达人 API |
-| `/api/flybook/*` | `:8002` | 飞书 API |
-| `/api/auth`, `/api/meetings`, `/api/meeting`, `/api/ws`, `/api/admin`, `/api/export`, `/api/settings` | `:8001` | 会议 AI API |
+| `/api/v1/*` | `:8000` | 达人 / 企微 / 通知 / 离职等 |
+| `/api/flybook/*` | `:8002` | 飞书（含 WebSocket） |
+| `/api/auth`, `/api/meetings`, `/api/meeting`, `/api/ws`, `/api/admin`, `/api/export`, `/api/settings`, `/api/notifications` | `:8001` | 会议 AI |
 | `/meeting-app/*` | `:8001` | 会议录制 iframe |
 | `/static/*` | `:8001` | 会议静态资源 |
 
 ---
 
 ## 统一认证
-
-门户与会议 AI 通过 JWT 实现单点登录，无需二次认证。
 
 ### 令牌格式（达人后端签发）
 
@@ -343,97 +330,121 @@ Information_Aggregation\scripts\start_dev.bat
 | `admin` | `admin` |
 | `user` | `user` |
 
-### 用户同步机制
+### 用户同步与跨服务
 
-用户首次携带门户 JWT 访问会议 API 时，`portal_auth.py` 会在 `meeting_ai` 数据库中自动创建对应用户记录，并同步权限字段。两个系统各自维护用户表，无数据库级外键关联。
+- 携带门户 JWT 访问会议 API 时，`meeting_ai/api/portal_auth.py` 会同步用户与权限到本地库
+- 飞书绑定 token 存在门户用户上；flybook 用 JWT 识别当前用户
+- 离职交接等场景通过 `PORTAL_INTERNAL_KEY` 调用内部接口（会议 `internal_offboard`、飞书文档镜像等）
 
 ### 权限管理入口
 
-- 门户「平台用户管理」：直接分配会议相关权限
-- 门户「平台权限管理」：统一审批达人库 + 会议权限申请
-- 会议 AI 独立模式：仍保留 `/api/auth/*` 本地注册登录（`meeting_ai` 单独部署时使用）
+- 门户「平台用户管理」：分配会议等权限
+- 门户「平台权限管理」：达人库 + 会议等申请审批
+- 门户「离职交接」：申请 / 交接任务 / 管理归档
+- 会议 AI 独立部署时仍可用本地 `/api/auth/*` 注册登录
 
 ---
 
 ## 配置说明
 
-### 达人后端关键配置
+### 达人后端
 
 文件：`Information_Aggregation/backend/.env`
 
 | 变量 | 说明 |
 |------|------|
-| `SECRET_KEY` | JWT 签名密钥（须与 meeting_ai 一致） |
-| `DATABASE_URL` / `DB_*` | MySQL 连接 |
-| `REDIS_URL` | Redis 连接 |
-| `COLLECTOR_MODE` | 采集模式：`mock` / `api` / `browser` |
-| `XINGTU_STORAGE_STATE` | 星图 Playwright 登录态 |
-| `PUGONGYING_STORAGE_STATE` | 蒲公英 Playwright 登录态 |
+| `SECRET_KEY` | JWT 签名（须与 meeting_ai / flybook 一致） |
+| `PORTAL_INTERNAL_KEY` / `FLYBOOK_INTERNAL_KEY` | 内部服务密钥 |
+| `DATABASE_URL` / `DB_*` | MySQL |
+| `REDIS_URL` | Redis |
+| `COLLECTOR_MODE` | `mock` / `api` / `browser` |
+| `MEETING_AI_API_URL` / `FLYBOOK_API_URL` | 跨服务地址（Docker 内为容器名） |
 
-### 会议 AI 关键配置
+### 会议 AI
 
 文件：`meeting_ai/.env`
 
 | 变量 | 说明 |
 |------|------|
-| `JWT_SECRET` | JWT 签名密钥（须与达人 SECRET_KEY 一致） |
-| `GLM_API_KEY` | 智谱 AI API Key |
-| `ALIBABA_CLOUD_ACCESS_KEY_ID/SECRET` | 阿里云密钥 |
-| `TINGWU_APP_KEY` | 通义听悟 AppKey |
-| `DB_*` | MySQL（`meeting_ai` 库） |
-| `FFMPEG_PATH` | FFmpeg 可执行文件路径 |
+| `JWT_SECRET` | 与达人 `SECRET_KEY` 一致 |
+| `LLM_PROVIDER` | `glm` 或 `deepseek` |
+| `GLM_API_KEY` / `DEEPSEEK_API_KEY` | 对应提供商密钥 |
+| `ALIBABA_CLOUD_*` / `TINGWU_APP_KEY` | 通义听悟 |
+| `PORTAL_API_URL` / `PORTAL_INTERNAL_KEY` | 门户联动 |
+| `DB_*` | `meeting_ai` 库 |
+| `FFMPEG_PATH` | FFmpeg 路径 |
 
-### 门户前端关键配置
+### 飞书
+
+文件：`flybook/.env`
+
+| 变量 | 说明 |
+|------|------|
+| `JWT_SECRET` | 与达人一致 |
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 开放平台应用 |
+| `FEISHU_OAUTH_REDIRECT_URI` | 须与开放平台重定向 URL 完全一致 |
+| `PORTAL_FRONTEND_URL` | 绑定完成后跳转地址 |
+| `FLYBOOK_INTERNAL_KEY` | 与门户内部密钥一致 |
+
+### 门户前端
 
 文件：`Information_Aggregation/frontend/.env`
 
 | 变量 | 说明 |
 |------|------|
-| `VITE_INFLUENCER_API_TARGET` | 达人后端地址（默认 `http://127.0.0.1:8000`） |
-| `VITE_MEETING_API_TARGET` | 会议后端地址（默认 `http://127.0.0.1:8001`） |
-| `VITE_MEETING_APP_PATH` | iframe 路径（默认 `/meeting-app/`） |
+| `VITE_INFLUENCER_API_TARGET` | 默认 `http://127.0.0.1:8000` |
+| `VITE_MEETING_API_TARGET` | 默认 `http://127.0.0.1:8001` |
+| `VITE_FLYBOOK_API_TARGET` | 默认 `http://127.0.0.1:8002` |
+| `VITE_MEETING_APP_PATH` | 默认 `/meeting-app/` |
+| `VITE_FLYBOOK_URL` | 飞书消息页嵌入地址 |
 
 ---
 
 ## 部署方式
 
-### 方式一：Docker Compose（达人系统）
+### 方式一：根目录 Docker Compose（推荐全栈）
 
-`Information_Aggregation/docker-compose.yml` 包含 MySQL、Redis、达人后端、门户前端，**不包含 meeting_ai**。
+根目录 `docker-compose.yml` 包含 MySQL、Redis、达人后端、会议 AI、飞书、门户前端。
 
 ```bash
-cd Information_Aggregation
-docker-compose up -d
+cp docker/.env.example docker/.env
+# 同时准备 Information_Aggregation/backend/.env、meeting_ai/.env、flybook/.env
+docker compose --env-file docker/.env up -d --build
 ```
 
-生产环境需额外部署 meeting_ai，并在 Nginx / Vite 中配置相同的代理规则。
+生产检查清单与 Windows/Linux 脚本见 [`docker/DEPLOY.md`](docker/DEPLOY.md)。
 
-### 方式二：全栈本地开发
+### 方式二：仅达人系统 Compose
 
-参见 [快速开始](#快速开始)，三个服务分别启动。
+`Information_Aggregation/docker-compose.yml` **不含** meeting_ai / flybook，适合单独跑达人模块。
 
-### 方式三：会议 AI 独立部署
+### 方式三：本地多进程开发
 
-meeting_ai 可脱离门户单独运行（`:8000`），自带 `transcribe.html` 前端。详见 [`meeting_ai/README.md`](meeting_ai/README.md) 部署章节。
+见 [快速开始](#快速开始)。
 
-### 生产环境建议
+### 方式四：会议 AI 独立部署
 
-1. 修改 `SECRET_KEY` / `JWT_SECRET` 为强随机字符串（≥32 位）
-2. 设置 `DEBUG=false`（达人后端）、`APP_ENV=production`（会议 AI）
-3. 限制 `CORS_ORIGINS` 为实际域名
-4. 使用 Nginx 反向代理，配置 WebSocket 升级（会议实时转写）
-5. 启用 HTTPS
+meeting_ai 可单独运行（文档默认示例端口 `:8000`），自带 `transcribe.html`。门户集成时请使用 **:8001**。详见 [`meeting_ai/README.md`](meeting_ai/README.md)。
+
+### 生产建议
+
+1. 使用强随机 `SECRET_KEY` / `JWT_SECRET` / `PORTAL_INTERNAL_KEY`（≥32 位）且三端一致
+2. `DEBUG=false`、`APP_ENV=production`
+3. 限制 `CORS_ORIGINS`；网关配置 HTTPS
+4. Nginx 需开启 WebSocket 升级（会议实时转写、飞书妙纪）
+5. 勿将 MySQL / Redis 端口暴露公网
 
 ---
 
 ## 子项目文档
 
-各模块的详细 API、数据库设计、故障排查请参阅：
-
 | 文档 | 内容 |
 |------|------|
-| [`Information_Aggregation/README.md`](Information_Aggregation/README.md) | 达人采集、标签、匹配、权限、Docker 部署 |
-| [`meeting_ai/README.md`](meeting_ai/README.md) | 实时转写、批量处理、协作会议、日志系统 |
+| [`Information_Aggregation/README.md`](Information_Aggregation/README.md) | 达人采集、门户前端、权限、企微与离职 API |
+| [`meeting_ai/README.md`](meeting_ai/README.md) | 转写、协作、LLM、导出、通知与部署 |
+| [`meeting_ai/db/README.md`](meeting_ai/db/README.md) | 会议库表结构 |
+| [`flybook/README.md`](flybook/README.md) | OAuth、云文档、妙纪 AI |
+| [`docker/DEPLOY.md`](docker/DEPLOY.md) | 生产 Docker 部署清单 |
 
 ---
 
@@ -441,38 +452,36 @@ meeting_ai 可脱离门户单独运行（`:8000`），自带 `transcribe.html` �
 
 ### 登录后会议模块报 401
 
-两个后端的 JWT 密钥不一致。确认 `SECRET_KEY`（达人）与 `JWT_SECRET`（会议）完全相同，重启两个后端。
+JWT 密钥不一致。确认达人 `SECRET_KEY` 与会议 / 飞书 `JWT_SECRET` 完全相同后重启服务。
 
-### 会议模块页面空白或 iframe 加载失败
+### 会议 iframe 空白或 `/api/ws` 失败
 
-1. 确认 meeting_ai 已在 **8001** 端口运行
-2. 检查 `VITE_MEETING_API_TARGET=http://127.0.0.1:8001`
-3. 浏览器控制台是否有 `/meeting-app/` 或 `/api/ws` 连接错误
+1. meeting_ai 是否监听 **8001**
+2. `VITE_MEETING_API_TARGET=http://127.0.0.1:8001`
+3. 浏览器麦克风权限与控制台报错
 
-### 达人采集任务一直 pending
+### 飞书绑定失败
 
-1. 确认 Redis 服务正常
-2. 检查 Playwright Chromium 是否安装：`playwright install chromium`
-3. 重新保存平台登录态：
-   ```bash
-   python Information_Aggregation/scripts/save_xingtu_session.py
-   python Information_Aggregation/scripts/save_pugongying_session.py
-   ```
+1. 开放平台重定向 URL 是否等于 `FEISHU_OAUTH_REDIRECT_URI`
+2. `PORTAL_FRONTEND_URL` 是否为当前访问的门户地址
+3. `FLYBOOK_INTERNAL_KEY` 是否与达人后端一致
+
+### 达人采集一直 pending
+
+1. Redis 是否正常
+2. `playwright install chromium`
+3. 重新保存登录态：`save_xingtu_session.py` / `save_pugongying_session.py`
 
 ### 实时转写无输出
 
-1. 检查阿里云听悟密钥与 `TINGWU_APP_KEY`
-2. 运行 `python meeting_ai/scripts/test_tingwu_connect.py` 验证连通性
-3. 确认浏览器已授予麦克风权限
+1. 听悟 `TINGWU_APP_KEY` 与阿里云密钥
+2. `python meeting_ai/scripts/test_tingwu_connect.py`（若脚本存在）
+3. 麦克风权限
 
-### 数据库连接失败
+### Docker 中 meeting_ai 报 MySQL Access denied
 
 ```powershell
-# 重新初始化达人库
-cd Information_Aggregation/scripts
-.\setup_local.ps1
+docker\scripts\win\fix-mysql-grants.cmd
 ```
 
 ---
-
-

@@ -1,597 +1,290 @@
-# 达人信息聚合系统 (Influencer Information Aggregation)
+# 达人信息聚合系统 & xlink 门户前端
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-green.svg)](https://fastapi.tiangolo.com/)
 [![Vue](https://img.shields.io/badge/Vue-3.4+-brightgreen.svg)](https://vuejs.org/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## 📖 项目简介
+本目录包含两大部分：
 
-达人信息聚合系统是一个**智能化的多平台达人数据采集、管理与匹配平台**，支持抖音（星图）、小红书（蒲公英）等主流社交媒体平台的达人信息自动采集、智能标签分类、精准匹配推荐等功能。
+1. **达人信息管理后端**（`:8000`）— 多平台采集、标签、匹配、MCN、审核、企微、离职、通知等
+2. **xlink 统一门户前端**（`:5173`）— Vue 3 SPA，同时承载达人 / 会议 AI / 飞书 / 企微 / 平台管理
 
-### ✨ 核心特性
-
-- 🚀 **多平台自动化采集**：基于 Playwright 的浏览器自动化，支持抖音星图、小红书蒲公英
-- 🏷️ **智能标签系统**：多层级标签分类，自动打标与手动管理结合
-- 🎯 **智能匹配引擎**：基于多维度指标的达人精准匹配算法
-- 👥 **RBAC 权限管理**：超级管理员/管理员/用户三级权限体系
-- 📊 **MCN 机构管理**：机构信息与旗下达人关联管理
-- ✅ **审核工作流**：采集数据审核入库机制
-- 🔐 **安全可靠**：JWT 认证、登录限流、CORS 防护
-- 🐳 **容器化部署**：Docker Compose 一键启动
+完整 Monorepo 说明见仓库根目录 [`README.md`](../README.md)。
 
 ---
 
-## 🏗️ 技术架构
+## 核心能力
 
-### 后端技术栈
+### 达人业务
 
-- **框架**: FastAPI 0.109+
-- **ORM**: SQLAlchemy 2.0 + Alembic
-- **数据库**: MySQL 8.0
-- **缓存**: Redis 7
-- **认证**: JWT (python-jose) + bcrypt
-- **自动化**: Playwright 1.41+
-- **配置管理**: Pydantic Settings
-- **日志**: Python logging + RotatingFileHandler
+- 多平台采集（抖音星图、小红书蒲公英，Playwright）
+- 多层级标签、智能匹配、MCN 机构管理
+- 采集审核入库、JWT + 三级 RBAC
 
-### 前端技术栈
+### 门户与平台能力
 
-- **框架**: Vue 3.4 + TypeScript
-- **UI 组件**: Element Plus 2.5
-- **状态管理**: Pinia 2.1
-- **路由**: Vue Router 4.3
-- **HTTP 客户端**: Axios 1.6
-- **构建工具**: Vite 5.1
+- 统一登录，JWT 被会议 AI / 飞书后端复用
+- 站内通知 SSE（`/api/v1/notifications/stream`）
+- 离职申请 / 交接 / 管理归档
+- 企微邮箱与审批（管理员，`/qywechat/*`）
+- 飞书文档访问记录与日终导出（内部 API）
 
-### 系统架构图
+---
+
+## 技术栈
+
+| 层 | 技术 |
+|----|------|
+| 后端 | FastAPI、SQLAlchemy 2、Alembic、Pydantic Settings、JWT（python-jose）、bcrypt |
+| 数据 | MySQL 8（`influencer_db`）、Redis 7 |
+| 采集 | Playwright |
+| 前端 | Vue 3.4、TypeScript、Element Plus、Pinia、Vue Router、Axios、Vite 5 |
 
 ```
-┌─────────────┐         ┌──────────────┐         ┌─────────────┐
-│   Frontend  │ ◄─────► │   Backend    │ ◄─────► │   MySQL     │
-│  Vue 3 + TS │  HTTP   │   FastAPI    │  SQL    │   Database  │
-│  Element+   │         │  Services    │         │             │
-└─────────────┘         └──────────────┘         └─────────────┘
-                               │
-                        ┌──────┴──────┐
-                        │             │
-                  ┌─────▼─────┐ ┌────▼──────┐
-                  │  Redis    │ │Playwright │
-                  │  (Cache)  │ │Collectors │
-                  └───────────┘ └───────────┘
+┌──────────────┐     Vite Proxy      ┌─────────────────┐
+│  门户 Frontend │ ─────────────────► │ 达人 Backend    │
+│  :5173 / :80 │                     │ :8000 /api/v1   │
+└──────┬───────┘                     └────────┬────────┘
+       │ 另代理 :8001 / :8002                 │
+       ▼                                      ▼
+  meeting_ai / flybook                 MySQL + Redis + Playwright
 ```
 
 ---
 
-## 📁 项目结构
+## 项目结构
 
 ```
 Information_Aggregation/
-├── backend/                    # 后端服务
+├── backend/
 │   ├── app/
-│   │   ├── api/v1/            # API 路由层
-│   │   │   ├── auth.py        # 认证接口
-│   │   │   ├── influencers.py # 达人接口
-│   │   │   ├── collection.py  # 采集任务接口
-│   │   │   ├── match.py       # 匹配接口
-│   │   │   ├── agencies.py    # MCN 机构接口
-│   │   │   ├── tags.py        # 标签接口
-│   │   │   ├── users.py       # 用户管理接口
-│   │   │   └── permissions.py # 权限接口
-│   │   ├── collectors/        # 采集器模块
-│   │   │   ├── base.py        # 抽象基类
-│   │   │   ├── xingtu_browser.py    # 星图浏览器采集
-│   │   │   ├── pugongying_browser.py # 蒲公英浏览器采集
-│   │   │   └── registry.py    # 采集器注册表
-│   │   ├── services/          # 业务逻辑层
-│   │   │   ├── collection_service.py
-│   │   │   ├── influencer_service.py
-│   │   │   ├── match_engine.py
-│   │   │   └── ...
-│   │   ├── models/            # 数据模型
-│   │   ├── schemas/           # Pydantic 验证模型
-│   │   ├── utils/             # 工具函数
-│   │   ├── config.py          # 配置管理
-│   │   ├── database.py        # 数据库连接
-│   │   └── main.py            # 应用入口
-│   ├── cookies/               # 浏览器登录态存储
-│   ├── logs/                  # 日志文件
-│   ├── scripts/               # 辅助脚本
-│   ├── alembic/               # 数据库迁移
-│   ├── .env                   # 环境变量配置
-│   ├── requirements.txt       # Python 依赖
+│   │   ├── api/v1/              # REST 路由（见下方 API 表）
+│   │   ├── collectors/          # 星图 / 蒲公英采集器
+│   │   ├── services/
+│   │   ├── models/ / schemas/
+│   │   └── main.py
+│   ├── alembic/
+│   ├── cookies/ / logs/
+│   ├── .env.example
 │   └── Dockerfile
 │
-├── frontend/                  # 前端应用
+├── frontend/                    # xlink 统一门户
 │   ├── src/
-│   │   ├── api/              # API 请求封装
-│   │   ├── components/       # 公共组件
-│   │   ├── views/            # 页面组件
-│   │   ├── router/           # 路由配置
-│   │   ├── stores/           # Pinia 状态管理
-│   │   ├── utils/            # 工具函数
-│   │   └── App.vue
-│   ├── package.json
-│   └── Dockerfile
+│   │   ├── modules/             # influencer / meeting / flybook / qywechat
+│   │   ├── shell/moduleRegistry.ts
+│   │   ├── views/               # 各模块页面
+│   │   ├── api/ / stores / layouts/
+│   │   └── composables/         # 如 useUserNotifications（SSE）
+│   ├── vite.config.ts           # 多后端代理
+│   └── .env.example
 │
-├── scripts/                   # 部署脚本
-│   ├── setup_local.ps1       # 本地数据库初始化
-│   ├── start_backend.bat     # 启动后端
-│   ├── start_dev.bat         # 开发环境启动
-│   └── stop_all.bat          # 停止所有服务
-│
-└── docker-compose.yml         # Docker 编排配置
+├── scripts/                     # setup_local、start_dev、会话保存等
+├── docker-compose.yml           # 仅达人 + 门户（不含会议/飞书）
+└── README.md
 ```
 
 ---
 
-## 🚀 快速开始
+## 快速开始
+
+> 若同时需要会议 AI 与飞书，请按仓库根 README 启动三个后端；本目录 Compose **不包含**它们。全栈推荐根目录 `docker-compose.yml`。
 
 ### 前置要求
 
-- **Python**: 3.10+
-- **Node.js**: 18+
-- **MySQL**: 8.0+
-- **Redis**: 7+
-- **Playwright**: 需安装 Chromium 浏览器
+Python 3.10+、Node.js 18+、MySQL 8、Redis 7、Playwright Chromium。
 
-### 方式一：Docker Compose 部署（推荐）
+### Docker（仅本目录）
 
 ```bash
-# 1. 克隆项目
-git clone <repository-url>
 cd Information_Aggregation
-
-# 2. 配置环境变量
 cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env
-
-# 3. 一键启动所有服务
 docker-compose up -d
-
-# 4. 访问应用
-# 前端: http://localhost:5173
-# 后端 API: http://localhost:8000
-# API 文档: http://localhost:8000/docs
 ```
 
-### 方式二：本地开发环境
+- 前端：http://localhost:5173（或镜像映射端口）
+- API：http://localhost:8000/docs
 
-#### 1. 数据库初始化
+### 本地开发
 
 ```powershell
-# Windows PowerShell
+# 1. 初始化库
 cd scripts
 .\setup_local.ps1
 
-# 或使用 Python 脚本
-python setup_db.py
-```
-
-#### 2. 后端启动
-
-```bash
-# 进入后端目录
-cd backend
-
-# 创建虚拟环境
-python -m venv venv
-venv\Scripts\activate  # Windows
-# source venv/bin/activate  # Linux/Mac
-
-# 安装依赖
+# 2. 后端
+cd ..\backend
 pip install -r requirements.txt
-
-# 安装 Playwright 浏览器
 playwright install chromium
-
-# 配置环境变量
 copy .env.example .env
-# 编辑 .env 文件，设置数据库连接等信息
-
-# 启动服务
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
 
-#### 3. 前端启动
-
-```bash
-# 进入前端目录
-cd frontend
-
-# 安装依赖
+# 3. 前端
+cd ..\frontend
 npm install
-
-# 配置环境变量
 copy .env.example .env
-
-# 启动开发服务器
 npm run dev
 ```
 
-#### 4. 访问应用
+Windows 一键：`scripts\start_dev.bat`（仅达人前后端）。
 
-- **前端界面**: http://localhost:5173
-- **后端 API**: http://localhost:8000
-- **API 文档**: http://localhost:8000/docs (Swagger UI)
-- **健康检查**: http://localhost:8000/health
+**默认超管**：`qiufengai` / `qfai12@@`（可用 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 覆盖）。
 
 ---
 
-## ⚙️ 配置说明
+## 配置说明
 
-### 后端配置 (backend/.env)
+### 后端 `backend/.env`
 
 ```bash
-# 基础配置
 DEBUG=true
 SECRET_KEY=dev-local-secret-key-at-least-32-characters-long
+PORTAL_INTERNAL_KEY=dev-flybook-internal-key-change-me
+FLYBOOK_INTERNAL_KEY=dev-flybook-internal-key-change-me
 
-# 首次启动自动创建管理员
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=change-me-on-first-run
-
-# 数据库配置
 DB_HOST=localhost
 DB_PORT=3306
 DB_USER=app_user
 DB_PASSWORD=app123
 DB_NAME=influencer_db
-
-# Redis 配置
 REDIS_URL=redis://localhost:6379/0
 
-# 采集配置
-COLLECTOR_MODE=browser  # mock / api / browser
-
-# Playwright 配置
+COLLECTOR_MODE=browser
 PLAYWRIGHT_HEADLESS=false
-PLAYWRIGHT_SLOW_MO=80
+CORS_ORIGINS=http://localhost:5173
 
-# CORS 配置（局域网访问需添加 IP）
-CORS_ORIGINS=http://localhost:5173,http://192.168.1.100:5173
+# 跨服务（本地默认）
+MEETING_AI_API_URL=http://127.0.0.1:8001
+FLYBOOK_API_URL=http://127.0.0.1:8002
 ```
 
-### 前端配置 (frontend/.env)
+`SECRET_KEY` 必须与 `meeting_ai` / `flybook` 的 `JWT_SECRET` 一致。
+
+### 前端 `frontend/.env`
 
 ```bash
-# API 代理目标
-VITE_API_TARGET=http://127.0.0.1:8000
-
-# 如需直接指定 API 地址（内网穿透场景）
-# VITE_API_BASE_URL=http://192.168.1.100:8000/api/v1
+VITE_INFLUENCER_API_TARGET=http://127.0.0.1:8000
+VITE_MEETING_API_TARGET=http://127.0.0.1:8001
+VITE_FLYBOOK_API_TARGET=http://127.0.0.1:8002
+VITE_MEETING_APP_PATH=/meeting-app/
+VITE_FLYBOOK_URL=https://your-tenant.feishu.cn/next/messenger
 ```
 
 ---
 
-## 🔑 默认账号
+## 门户模块
 
-首次启动时，系统会自动创建超级管理员账号：
+| 路径前缀 | 模块 | 说明 |
+|----------|------|------|
+| `/influencer/*` | 达人 | 库、采集、匹配、标签、机构等 |
+| `/meeting/*` | 会议 AI | 历史、权限相关页；录制走 iframe `/meeting-app/` |
+| `/flybook/*` | 飞书 | 消息、云文档、文档库、妙纪 AI |
+| `/qywechat/*` | 企微 | 邮箱、审批（管理员） |
+| 侧栏「平台管理」 | 用户 / 权限 / 离职 | 跨模块治理 |
 
-- **用户名**: `qiufengai`
-- **密码**: `qfai12@@`
-
-或在 `.env` 中通过 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 自定义。
-
----
-
-## 📊 核心功能
-
-### 1. 自动采集
-
-支持多平台达人信息自动化采集：
-
-- **抖音星图**: 基于 Playwright 浏览器自动化
-- **小红书蒲公英**: 基于 Playwright 浏览器自动化
-- **筛选条件**: 粉丝数、互动率、报价范围、内容类型等多维度筛选
-
-**使用流程**:
-1. 保存登录态: `python scripts/save_xingtu_session.py`
-2. 创建采集任务（前端界面或 API）
-3. 后台异步执行采集
-4. 审核采集结果后入库
-
-### 2. 智能标签
-
-- **预置标签**: 系统内置行业、领域、内容类型等标签
-- **层级管理**: 支持父子标签分类
-- **自动打标**: 基于达人信息自动匹配标签
-- **手动管理**: 管理员可自定义标签体系
-
-### 3. 智能匹配
-
-基于多维度指标的智能匹配算法：
-
-- 粉丝量级匹配
-- 互动率评估
-- 性价比分析（CPM/CPE）
-- 标签相似度计算
-- 内容风格匹配
-
-### 4. 权限管理
-
-三级 RBAC 权限体系：
-
-| 角色 | 权限范围 |
-|------|---------|
-| **超级管理员** | 全部权限，包括用户管理 |
-| **管理员** | 达人库、采集任务、匹配、标签管理 |
-| **用户** | 查看达人库、申请权限、提交采集任务 |
-
-### 5. MCN 机构管理
-
-- 机构信息维护
-- 旗下达人关联
-- 合作政策记录
+模块注册：`frontend/src/shell/moduleRegistry.ts`（企微路由在 `modules/qywechat`，菜单在 `MainLayout`）。
 
 ---
 
-## 🛠️ 常用命令
+## 达人核心功能
 
-### 后端
+### 自动采集
 
-```bash
-# 启动开发服务器
-cd backend
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+1. 保存登录态：`python scripts/save_xingtu_session.py` / `save_pugongying_session.py`
+2. 创建任务 → Worker 异步执行 → 审核入库
 
-# 生成数据库迁移
-alembic revision --autogenerate -m "description"
+### 智能标签 / 匹配 / MCN
 
-# 执行迁移
-alembic upgrade head
+- 层级标签与自动打标
+- 粉丝量、互动率、性价比、标签相似度等匹配维度
+- 机构与旗下达人关联
 
-# 运行采集任务（独立进程）
-python scripts/run_collect_worker.py <task_id>
-```
+### 权限（RBAC）
 
-### 前端
+| 角色 | 范围 |
+|------|------|
+| 超级管理员 | 全部，含用户与平台管理 |
+| 管理员 | 达人业务 + 企微等管理项 |
+| 用户 | 可见范围内达人、申请权限、提交采集等 |
 
-```bash
-cd frontend
+会议相关权限字段会写入 JWT `perms`，供会议后端同步。
 
-# 开发模式
-npm run dev
+### 离职交接
 
-# 生产构建
-npm run build
+- 用户申请离职 → 交接人处理 → 管理员归档
+- 可联动会议 AI 内部交接接口（`PORTAL_INTERNAL_KEY`）
 
-# 预览构建结果
-npm run preview
-```
+### 通知
 
-### Docker
-
-```bash
-# 启动所有服务
-docker-compose up -d
-
-# 查看日志
-docker-compose logs -f backend
-
-# 停止服务
-docker-compose down
-
-# 重新构建
-docker-compose up -d --build
-```
+- SSE：`GET /api/v1/notifications/stream`
+- 前端 `useUserNotifications` 刷新角标与待办
 
 ---
 
-## 🧪 测试
+## API 概览
 
-```bash
-# 后端测试（待实现）
-cd backend
-pytest
-
-# 前端测试（待实现）
-cd frontend
-npm run test
-```
-
-> ⚠️ **注意**: 当前版本测试覆盖率较低，建议在修改核心逻辑后手动验证功能。
-
----
-
-## 📝 API 文档
-
-启动后端服务后，访问以下地址查看 API 文档：
-
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
-
-### 主要接口概览
+启动后：http://localhost:8000/docs
 
 | 模块 | 路径前缀 | 说明 |
 |------|---------|------|
-| 认证 | `/api/v1/auth` | 登录、登出、刷新 Token |
-| 达人 | `/api/v1/influencers` | 达人列表、详情、搜索 |
-| 采集 | `/api/v1/collection` | 创建任务、任务状态、审核 |
-| 匹配 | `/api/v1/match` | 创建匹配、查看结果 |
-| 标签 | `/api/v1/tags` | 标签 CRUD、层级管理 |
-| 机构 | `/api/v1/agencies` | MCN 机构管理 |
-| 用户 | `/api/v1/users` | 用户管理（超管） |
-| 权限 | `/api/v1/permissions` | 权限申请与审核 |
+| 认证 | `/api/v1/auth` | 登录、刷新 Token |
+| 通知 | `/api/v1/notifications` | SSE 与通知相关 |
+| 达人 | `/api/v1/influencers` | 列表 / 详情 / 搜索 |
+| 采集 | `/api/v1/collection` | 任务与审核 |
+| 匹配 | `/api/v1/match` | 匹配任务与结果 |
+| 标签 | `/api/v1/tags` | 标签 CRUD |
+| 机构 | `/api/v1/agencies` | MCN |
+| 用户 | `/api/v1/users` | 用户管理 |
+| 离职 | `/api/v1/offboarding` | 申请 / 交接 / 管理 |
+| 权限 | `/api/v1/permissions` | 申请与审批 |
+| 企微 | `/api/v1/qywechat/*` | 邮箱、审批、回调（兼容 `/api/v1/wecom/*`） |
+| 飞书文档 | `/api/v1/...`（feishu_documents） | 文档访问与内部接口 |
+| 日终导出 | `/api/v1/...`（daily_export_internal） | 内部导出 |
 
 ---
 
-## 🔒 安全建议
+## 常用命令
 
-### 生产环境部署
-
-1. **修改默认密钥**
-   ```bash
-   SECRET_KEY=<至少32位的随机字符串>
-   ```
-
-2. **关闭调试模式**
-   ```bash
-   DEBUG=false
-   ```
-
-3. **限制 CORS 来源**
-   ```bash
-   CORS_ORIGINS=https://your-domain.com
-   ```
-
-4. **使用强密码**
-   - 数据库密码
-   - 管理员密码
-   - Redis 密码（如启用）
-
-5. **启用 HTTPS**
-   - 使用 Nginx 反向代理
-   - 配置 SSL 证书
-
-6. **定期更新依赖**
-   ```bash
-   pip list --outdated
-   npm outdated
-   ```
-
----
-
-## 🐛 常见问题
-
-### 1. 数据库连接失败
-
-```
-错误: Can't connect to MySQL server
-```
-
-**解决方案**:
-```powershell
-# 检查 MySQL 服务是否启动
-Get-Service MySQL*
-
-# 重新初始化数据库
-.\scripts\setup_local.ps1
-```
-
-### 2. Playwright 浏览器未安装
-
-```
-错误: Executable doesn't exist at ...
-```
-
-**解决方案**:
 ```bash
+# 后端
 cd backend
-playwright install chromium
-```
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+alembic revision --autogenerate -m "description"
+alembic upgrade head
 
-### 3. 采集任务一直 pending
+# 前端
+cd frontend
+npm run dev
+npm run build
 
-**检查项**:
-- Redis 服务是否正常运行
-- Worker 进程是否启动
-- 查看后端日志: `backend/logs/`
-
-### 4. CORS 跨域错误
-
-**解决方案**:
-在 `backend/.env` 中添加前端地址：
-```bash
-CORS_ORIGINS=http://localhost:5173,http://your-ip:5173
-```
-
-### 5. Cookie 过期导致采集失败
-
-**解决方案**:
-```bash
-# 重新保存登录态
-python scripts/save_xingtu_session.py
-python scripts/save_pugongying_session.py
+# 本目录 Docker
+docker-compose up -d
+docker-compose logs -f backend
 ```
 
 ---
 
-## 📈 性能优化建议
+## 安全建议
 
-### 数据库优化
-
-- 为常用查询字段添加索引（`platform_uid`, `follower_count`）
-- 定期清理过期日志和临时数据
-- 使用连接池（已配置 `pool_pre_ping`）
-
-### 缓存策略
-
-- Redis 缓存热点数据（标签列表、达人详情）
-- 设置合理的 TTL（Time-To-Live）
-
-### 采集优化
-
-- 调整 `PLAYWRIGHT_SLOW_MO` 平衡速度与稳定性
-- 使用代理 IP 池避免封禁
-- 实施请求频率限制
+1. 生产修改 `SECRET_KEY`、管理员密码、数据库密码
+2. `DEBUG=false`，收紧 `CORS_ORIGINS`
+3. HTTPS 终止于 Nginx / 网关
+4. 内部密钥勿提交仓库
 
 ---
 
-## 🗺️ 路线图
+## 常见问题
 
-### v1.0 (当前版本)
-- ✅ 多平台采集
-- ✅ 基础标签系统
-- ✅ 智能匹配
-- ✅ RBAC 权限
+**数据库连不上** — 检查 MySQL 服务后执行 `scripts\setup_local.ps1`。
 
-### v1.1 (计划中)
-- [ ] 单元测试覆盖率达到 60%
-- [ ] Celery 异步任务队列
-- [ ] Prometheus 监控集成
-- [ ] 前端 E2E 测试
+**Playwright 缺失** — `cd backend && playwright install chromium`。
 
-### v2.0 (长期规划)
-- [ ] 微服务架构拆分
-- [ ] Elasticsearch 全文检索
-- [ ] 机器学习增强匹配
-- [ ] 消息队列解耦
+**采集 pending** — 确认 Redis、Worker、登录 Cookie 未过期。
+
+**CORS** — 在 `.env` 的 `CORS_ORIGINS` 加入前端来源。
+
+**会议 / 飞书在门户不可用** — 本目录仅启动了达人服务；请另启 `:8001` / `:8002`，或使用根目录全栈 Compose。
 
 ---
 
-## 🤝 贡献指南
-
-欢迎提交 Issue 和 Pull Request！
-
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
-
----
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
-
----
-
-## 👥 联系方式
-
-- **项目维护者**: 秋枫
-- **邮箱**: [your-email@example.com]
-- **Issue**: [GitHub Issues](https://github.com/your-repo/issues)
-
----
-
-## 🙏 致谢
-
-感谢以下开源项目：
-
-- [FastAPI](https://fastapi.tiangolo.com/)
-- [Vue.js](https://vuejs.org/)
-- [Element Plus](https://element-plus.org/)
-- [Playwright](https://playwright.dev/)
-- [SQLAlchemy](https://www.sqlalchemy.org/)
-
----
-
-<div align="center">
-
-**如果这个项目对你有帮助，请给个 ⭐ Star 支持一下！**
-
-Made with ❤️ by 秋枫团队
-
-</div>
+更完整的端口、代理与跨服务约定见 [仓库根 README](../README.md)。
