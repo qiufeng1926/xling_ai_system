@@ -571,7 +571,13 @@ class TingwuStreamingSession:
 
         return self._completed_text
 
-
+    def seed_completed_text(self, text: str) -> None:
+        """断线重连后续写前，注入已备份的转写内容。"""
+        seeded = (text or "").strip()
+        if not seeded:
+            self._completed_text = ""
+            return
+        self._completed_text = seeded if seeded.endswith("\n") else seeded + "\n"
 
     @property
 

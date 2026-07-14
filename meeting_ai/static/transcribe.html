@@ -2777,6 +2777,16 @@
         let backgroundSubmitTimer = null;
         let maxUploadBytes = 524288000; // 默认 500MB，启动后从 /api/settings/upload-limits 同步
 
+        // 断线自动重连续写
+        const WS_RECONNECT_DELAY_MS = 1000;
+        const WS_RECONNECT_MAX_ATTEMPTS = 8;
+        const PCM_BUFFER_MAX_SAMPLES = 16000 * 45; // 断线期间最多缓冲约 45s 音频
+        let activeRecordingId = null;
+        let lastKnownTranscript = '';
+        let wsReconnecting = false;
+        let wsReconnectAttempts = 0;
+        let wsReconnectTimer = null;
+
         function classifyWsCloseCode(code) {
             const labels = {
                 1000: 'normal_closure',
@@ -3130,8 +3140,11 @@
             wsClientPingCount = 0;
             wsAudioFlushCount = 0;
             wsLastAudioSentAt = null;
-            wsUserStopRequested = false;
-            wsSessionCompleted = false;
+            // 重连续写时保留 userStop / sessionCompleted 以外的录音状态
+            if (!wsReconnecting) {
+                wsUserStopRequested = false;
+                wsSessionCompleted = false;
+            }
             wsClosingIntentionally = false;
             wsDisconnectReported = false;
             
@@ -3170,43 +3183,176 @@
                 updateStatus('已断开', false);
                 stopWsPing();
                 const wasRecording = isRecording;
-                cleanupMediaOnly();
-                if (sessionEnding && pendingFileId) {
-                    setRealtimeTranscriptStatus('连接已断开，正在获取会议纪要...');
-                    pollMeetingSummary(pendingFileId);
-                } else if (sessionEnding) {
-                    resetRealtimeSessionUI('连接已断开，请查看历史记录');
-                } else if (wasRecording && !isCollabMode) {
-                    sessionEnding = false;
-                    pollAbort = true;
+                const intentionalClose =
+                    wsClosingIntentionally ||
+                    wsSessionCompleted ||
+                    sessionEnding ||
+                    wsUserStopRequested;
+
+                if (intentionalClose) {
+                    cleanupMediaOnly();
+                    if (sessionEnding && pendingFileId) {
+                        setRealtimeTranscriptStatus('连接已断开，正在获取会议纪要...');
+                        pollMeetingSummary(pendingFileId);
+                    } else if (sessionEnding) {
+                        resetRealtimeSessionUI('连接已断开，请查看历史记录');
+                    }
+                    return;
+                }
+
+                // 录音中意外断开：保留麦克风，1s 内自动重连并续写
+                if (wasRecording) {
                     recordingDisconnected = true;
-                    startBtn.disabled = false;
-                    stopBtn.disabled = false;
-                    stopBtn.innerHTML = '停止录音';
-                    setRealtimeTranscriptStatus(
-                        '连接意外断开，转写可能已在服务端自动保存，请稍后在「会议记录」中查看'
-                    );
+                    setRealtimeTranscriptStatus('连接意外断开，已备份内容，正在自动重连…');
                     notifyPortalRecordingState({
-                        recording: false,
+                        recording: true,
                         generating: false,
                         disconnected: true,
-                        statusText: '连接意外断开，请到会议记录查看是否已保存',
+                        statusText: '连接断开，正在自动重连并续写…',
                         startedAt: recordingStartedAt,
                     });
-                    if (!isPortalEmbedded()) {
-                        showErrorAlert(
-                            '录音连接已断开（可能因网络或长时间穿透超时）。' +
-                            '若已录制较久，请等待约 1 分钟后到「会议记录」查看是否已自动保存转写。'
-                        );
-                    }
+                    scheduleRecordingReconnect();
+                    return;
                 }
+
+                cleanupMediaOnly();
             };
+        }
+
+        function clearReconnectTimer() {
+            if (wsReconnectTimer) {
+                clearTimeout(wsReconnectTimer);
+                wsReconnectTimer = null;
+            }
+        }
+
+        function trimPcmSendBuffer() {
+            if (!mediaRecorder || !mediaRecorder.pcmSendBuffer) return;
+            const buf = mediaRecorder.pcmSendBuffer;
+            if (buf.length > PCM_BUFFER_MAX_SAMPLES) {
+                buf.splice(0, buf.length - PCM_BUFFER_MAX_SAMPLES);
+            }
+        }
+
+        function flushMediaPcmBuffer(force) {
+            if (!mediaRecorder || !mediaRecorder.pcmSendBuffer) return;
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            const pcmSendBuffer = mediaRecorder.pcmSendBuffer;
+            if (!force && pcmSendBuffer.length < SEND_BUFFER_SAMPLES) return;
+            if (pcmSendBuffer.length === 0) return;
+            const take = force
+                ? pcmSendBuffer.splice(0, pcmSendBuffer.length)
+                : pcmSendBuffer.splice(0, SEND_BUFFER_SAMPLES);
+            ws.send(floatToPcmArrayBuffer(new Float32Array(take)));
+            wsAudioFlushCount += 1;
+            wsLastAudioSentAt = Date.now();
+        }
+
+        function scheduleRecordingReconnect() {
+            if (!isRecording || sessionEnding || wsUserStopRequested) return;
+            if (wsReconnectAttempts >= WS_RECONNECT_MAX_ATTEMPTS) {
+                console.error('WebSocket 自动重连次数已达上限');
+                cleanupMediaOnly();
+                isRecording = false;
+                recordingDisconnected = true;
+                startBtn.disabled = false;
+                stopBtn.disabled = false;
+                stopBtn.innerHTML = '停止录音';
+                setRealtimeTranscriptStatus(
+                    '多次重连失败，转写已备份，请到「会议记录」查看 interrupted 记录'
+                );
+                notifyPortalRecordingState({
+                    recording: false,
+                    generating: false,
+                    disconnected: true,
+                    statusText: '重连失败，请到会议记录查看备份',
+                    startedAt: recordingStartedAt,
+                });
+                if (!isPortalEmbedded()) {
+                    showErrorAlert(
+                        '录音连接多次重连失败。已录制内容已在服务端自动备份，请稍后在「会议记录」中查看。'
+                    );
+                }
+                wsReconnecting = false;
+                return;
+            }
+
+            clearReconnectTimer();
+            wsReconnecting = true;
+            wsReconnectAttempts += 1;
+            const attempt = wsReconnectAttempts;
+            setRealtimeTranscriptStatus(
+                `连接断开，${WS_RECONNECT_DELAY_MS / 1000}s 后自动重连（第 ${attempt} 次）…`
+            );
+
+            wsReconnectTimer = setTimeout(async () => {
+                wsReconnectTimer = null;
+                if (!isRecording || sessionEnding || wsUserStopRequested) {
+                    wsReconnecting = false;
+                    return;
+                }
+                try {
+                    await performRecordingReconnect();
+                    wsReconnectAttempts = 0;
+                    wsReconnecting = false;
+                    recordingDisconnected = false;
+                    setRealtimeTranscriptStatus('已重连，继续转写中…');
+                    notifyPortalRecordingState({
+                        recording: true,
+                        generating: false,
+                        disconnected: false,
+                        statusText: '已重连，继续转写中…',
+                        startedAt: recordingStartedAt,
+                    });
+                    startWsPing();
+                    flushMediaPcmBuffer(true);
+                } catch (err) {
+                    console.error('录音重连失败:', err);
+                    wsReconnecting = false;
+                    scheduleRecordingReconnect();
+                }
+            }, WS_RECONNECT_DELAY_MS);
+        }
+
+        async function performRecordingReconnect() {
+            const meetingName =
+                (document.getElementById('meetingNameInput')?.value || '').trim() ||
+                lastMeetingName ||
+                '';
+            // 避免误关残留 socket；不清理麦克风
+            if (ws) {
+                try {
+                    ws.onclose = null;
+                    ws.close();
+                } catch (e) { /* ignore */ }
+                ws = null;
+            }
+            collabWsReady = false;
+            connectWebSocket(meetingName);
+            await waitForWebSocketOpen(ws);
+            ensureAudioContextRunning();
+
+            const tingwuReadyWait = waitForTingwuReady();
+            const payload = {
+                type: 'record_start',
+                meeting_name: meetingName,
+                client_transcript: lastKnownTranscript || '',
+            };
+            if (!isCollabMode && activeRecordingId) {
+                payload.resume_recording_id = activeRecordingId;
+            }
+            ws.send(JSON.stringify(payload));
+            await tingwuReadyWait;
         }
 
         function resetRealtimeSessionUI(statusText) {
             sessionEnding = false;
             recordingDisconnected = false;
             pollAbort = true;
+            clearReconnectTimer();
+            wsReconnecting = false;
+            wsReconnectAttempts = 0;
+            activeRecordingId = null;
             startBtn.disabled = false;
             stopBtn.disabled = false;
             stopBtn.innerHTML = '停止录音';
@@ -3464,6 +3610,10 @@
                 clearTimeout(backgroundSubmitTimer);
                 backgroundSubmitTimer = null;
             }
+            clearReconnectTimer();
+            wsReconnecting = false;
+            wsReconnectAttempts = 0;
+            activeRecordingId = null;
             wsSessionCompleted = true;
             sessionEnding = false;
             pollAbort = true;
@@ -3962,6 +4112,9 @@
             }
             
             if (data.type === 'result') {
+                if (data.total_text) {
+                    lastKnownTranscript = data.total_text;
+                }
                 if (data.is_partial) {
                     renderRealtimeTranscript(
                         data.total_text || '',
@@ -4036,6 +4189,7 @@
                 collabParticipants = data.participants || [];
                 renderCollabParticipants(collabParticipants);
                 if (data.merged_transcript) {
+                    lastKnownTranscript = data.merged_transcript;
                     renderRealtimeTranscript(data.merged_transcript);
                 }
                 if (collabRole === 'viewer') {
@@ -4047,6 +4201,7 @@
                 }
             } else if (data.type === 'transcript_update') {
                 if (data.merged_transcript) {
+                    lastKnownTranscript = data.merged_transcript;
                     renderRealtimeTranscript(data.merged_transcript);
                 }
             } else if (data.type === 'participant_event') {
@@ -4060,14 +4215,30 @@
                     if (collabRole !== 'viewer') startBtn.disabled = false;
                 }
             } else if (data.type === 'tingwu_ready') {
-                console.log('听悟通道就绪');
+                console.log('听悟通道就绪', {
+                    recording_id: data.recording_id,
+                    resumed: data.resumed,
+                });
+                if (data.recording_id) {
+                    activeRecordingId = data.recording_id;
+                }
+                if (data.total_text) {
+                    lastKnownTranscript = data.total_text;
+                    renderRealtimeTranscript(data.total_text);
+                }
+                if (data.file_id) {
+                    pendingFileId = data.file_id;
+                    lastRealtimeFileId = data.file_id;
+                }
                 if (tingwuReadyResolve) {
                     tingwuReadyResolve();
                     tingwuReadyResolve = null;
                     tingwuReadyReject = null;
                 }
                 if (isRecording) {
-                    setRealtimeTranscriptStatus('正在录音，实时转写中…');
+                    setRealtimeTranscriptStatus(
+                        data.resumed ? '已重连，继续转写中…' : '正在录音，实时转写中…'
+                    );
                 }
             } else if (data.type === 'error') {
                 showErrorAlert(data.message || '转写出现问题，请稍后重试');
@@ -4139,6 +4310,11 @@
                 sessionEnding = false;
                 pendingFileId = null;
                 pollAbort = true;
+                clearReconnectTimer();
+                wsReconnecting = false;
+                wsReconnectAttempts = 0;
+                activeRecordingId = null;
+                lastKnownTranscript = '';
                 if (pollFallbackTimer) {
                     clearTimeout(pollFallbackTimer);
                     pollFallbackTimer = null;
@@ -4227,9 +4403,11 @@
                 isRecording = true;
                 recordingStartedAt = Date.now();
                 recordingDisconnected = false;
+                wsReconnectAttempts = 0;
+                wsReconnecting = false;
 
                 processor.onaudioprocess = (e) => {
-                    if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
+                    if (!isRecording) return;
 
                     const inputData = e.inputBuffer.getChannelData(0);
                     const resampled = resampleTo16k(inputData, sourceSampleRate);
@@ -4237,6 +4415,10 @@
                     for (let i = 0; i < resampled.length; i++) {
                         pcmSendBuffer.push(resampled[i]);
                     }
+                    trimPcmSendBuffer();
+
+                    // 断线期间只缓冲，不丢麦；重连后 flush
+                    if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
                     // 有语音时尽快发送；静音也依赖定时 flush，避免听悟 IDLE_TIMEOUT
                     const hasSpeech = calcRms(resampled) >= SILENCE_RMS_THRESHOLD;
@@ -4314,6 +4496,8 @@
             if (sessionEnding) return;
             isRecording = false;
             wsUserStopRequested = true;
+            clearReconnectTimer();
+            wsReconnecting = false;
             
             if (mediaRecorder) {
                 if (
@@ -4357,7 +4541,11 @@
             } else {
                 startBtn.disabled = false;
                 stopBtn.disabled = true;
-                setRealtimeTranscriptStatus('录音已停止');
+                setRealtimeTranscriptStatus(
+                    lastKnownTranscript
+                        ? '连接已断开，已停止录音；转写已备份，请到「会议记录」查看'
+                        : '录音已停止'
+                );
             }
             
             console.log('停止录音');
