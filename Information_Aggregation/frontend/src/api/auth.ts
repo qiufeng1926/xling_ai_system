@@ -36,3 +36,7 @@ export function register(data: {
 export function getMe() {
   return request.get<any, ApiResponse<UserInfo>>('/auth/me')
 }
+
+export function refreshAuthToken() {
+  return request.post<any, ApiResponse<TokenData>>('/auth/refresh', null, { silent: true })
+}

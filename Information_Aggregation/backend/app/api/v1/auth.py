@@ -165,6 +165,12 @@ def register(db: DbSession, request: Request, data: UserRegister):
     return _issue_portal_token(user)
 
 
+@router.post("/refresh", response_model=ResponseBase[Token])
+def refresh_token(current_user: User = Depends(get_current_user)):
+    """在用户有操作时续期登录态，重置 3 天有效期"""
+    return _issue_portal_token(current_user)
+
+
 @router.get("/me", response_model=ResponseBase[UserInfo])
 def get_me(current_user: User = Depends(get_current_user)):
     perms = effective_permissions(current_user)

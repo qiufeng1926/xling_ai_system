@@ -57,9 +57,11 @@ request.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
-      router.push(AUTH_ROUTES.login)
+      if (router.currentRoute.value.path !== AUTH_ROUTES.login) {
+        router.push(AUTH_ROUTES.login)
+      }
     }
-    if (!error.config?.silent) {
+    if (!error.config?.silent && error.response?.status !== 401) {
       ElMessage.error(formatApiError(error.response?.data?.detail) || error.message || '网络错误')
     }
     return Promise.reject(error)

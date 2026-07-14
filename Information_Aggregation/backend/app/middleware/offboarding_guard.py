@@ -13,6 +13,7 @@ from app.utils.security import decode_access_token
 
 _OFFBOARDING_ALLOWED_PREFIXES = (
     "/api/v1/auth/me",
+    "/api/v1/auth/refresh",
     "/api/v1/offboarding",
     "/health",
     "/docs",

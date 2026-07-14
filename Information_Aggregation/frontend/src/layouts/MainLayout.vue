@@ -228,6 +228,7 @@ import { getMeetingViewRequestStats } from '@/api/meetings'
 import { getFeishuDocumentAccessStats } from '@/api/feishuDocuments'
 import { getHandoverArchive, getMyHandoverTasks } from '@/api/offboarding'
 import { useUserNotifications } from '@/composables/useUserNotifications'
+import { useSessionRefresh } from '@/composables/useSessionRefresh'
 import {
   ROLE_LABELS,
   canManageUsers,
@@ -451,6 +452,8 @@ onMounted(() => {
 useUserNotifications(async () => {
   await Promise.all([refreshPendingInvites(), refreshAccessRequestStats(), refreshHandoverTasks()])
 })
+
+useSessionRefresh()
 
 function handleLogout() {
   userStore.logout()

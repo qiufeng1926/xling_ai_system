@@ -43,7 +43,8 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
 
     SECRET_KEY: str = DEFAULT_SECRET_KEY
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 8
+    # 登录态有效期（分钟），默认 3 天；前端在用户有操作时会调用 /auth/refresh 续期
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 3
 
     # 首次启动无用户时，通过环境变量创建管理员（生产环境必填）
     ADMIN_USERNAME: str = ""
