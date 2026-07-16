@@ -42,6 +42,10 @@ export const QYWECHAT_ROUTES = {
   approval: '/qywechat/approval',
 } as const
 
+export const AGENT_ROUTES = {
+  home: '/agent',
+} as const
+
 /** @deprecated 使用 FLYBOOK_ROUTES */
 export const FEISHU_ROUTES = FLYBOOK_ROUTES
 

@@ -90,6 +90,17 @@
           </el-menu-item>
         </el-sub-menu>
 
+        <el-sub-menu index="module-agent">
+          <template #title>
+            <el-icon><Cpu /></el-icon>
+            <span>智能体</span>
+          </template>
+          <el-menu-item :index="AGENT_ROUTES.home">
+            <el-icon><ChatLineRound /></el-icon>
+            <span>智能体</span>
+          </el-menu-item>
+        </el-sub-menu>
+
         <el-sub-menu v-if="showAdminMenus" index="module-qywechat">
           <template #title>
             <el-icon><Comment /></el-icon>
@@ -240,7 +251,7 @@ import {
   isUser,
   normalizeRole,
 } from '@/utils/permission'
-import { AUTH_ROUTES, FLYBOOK_ROUTES, INFLUENCER_ROUTES, MEETING_ROUTES, QYWECHAT_ROUTES } from '@/constants/routes'
+import { AUTH_ROUTES, AGENT_ROUTES, FLYBOOK_ROUTES, INFLUENCER_ROUTES, MEETING_ROUTES, QYWECHAT_ROUTES } from '@/constants/routes'
 
 const route = useRoute()
 const router = useRouter()
@@ -313,6 +324,7 @@ const activeMenu = computed(() => {
   if (path.startsWith('/flybook/doc-library')) return FLYBOOK_ROUTES.docLibrary
   if (path.startsWith('/flybook/docs')) return FLYBOOK_ROUTES.docs
   if (path.startsWith('/flybook') || path.startsWith('/feishu')) return FLYBOOK_ROUTES.messenger
+  if (path.startsWith('/agent')) return AGENT_ROUTES.home
   if (path.startsWith('/qywechat/mail') || path.startsWith('/wecom/mail')) return QYWECHAT_ROUTES.mail
   if (path.startsWith('/qywechat/approval') || path.startsWith('/wecom/approval')) return QYWECHAT_ROUTES.approval
   if (path.startsWith('/qywechat') || path.startsWith('/wecom')) return QYWECHAT_ROUTES.mail
@@ -329,6 +341,9 @@ const defaultOpeneds = computed(() => {
   }
   if (route.path.startsWith('/flybook') || route.path.startsWith('/feishu')) {
     return ['module-flybook']
+  }
+  if (route.path.startsWith('/agent')) {
+    return ['module-agent']
   }
   if (route.path.startsWith('/influencer/users') || route.path.startsWith('/influencer/access-review') || route.path.startsWith('/influencer/offboarding')) {
     return ['module-platform']
@@ -466,6 +481,13 @@ function handleLogout() {
   height: 100vh;
 }
 
+.layout-container > :deep(.el-container) {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .layout-aside {
   background: #001529;
 }
@@ -516,6 +538,15 @@ function handleLogout() {
 
 .layout-main {
   background: #f5f7fa;
+  /* 限制主区高度，让子页面（如智能体聊天）内部滚动，而不是把整页撑破 */
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.layout-main :deep(.agent-hub) {
+  height: calc(100vh - 120px);
+  max-height: calc(100vh - 120px);
 }
 
 .meeting-solo-page {

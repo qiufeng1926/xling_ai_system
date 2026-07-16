@@ -20,14 +20,17 @@ $userSql = $user.Replace("'", "''")
 $sql = @"
 CREATE DATABASE IF NOT EXISTS influencer_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE DATABASE IF NOT EXISTS meeting_ai CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS xlink_agent CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '$userSql'@'%' IDENTIFIED BY '$passSql';
 CREATE USER IF NOT EXISTS '$userSql'@'localhost' IDENTIFIED BY '$passSql';
 ALTER USER '$userSql'@'%' IDENTIFIED BY '$passSql';
 ALTER USER '$userSql'@'localhost' IDENTIFIED BY '$passSql';
 GRANT ALL PRIVILEGES ON influencer_db.* TO '$userSql'@'%';
 GRANT ALL PRIVILEGES ON meeting_ai.* TO '$userSql'@'%';
+GRANT ALL PRIVILEGES ON xlink_agent.* TO '$userSql'@'%';
 GRANT ALL PRIVILEGES ON influencer_db.* TO '$userSql'@'localhost';
 GRANT ALL PRIVILEGES ON meeting_ai.* TO '$userSql'@'localhost';
+GRANT ALL PRIVILEGES ON xlink_agent.* TO '$userSql'@'localhost';
 FLUSH PRIVILEGES;
 "@
 
@@ -39,4 +42,4 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-Write-Host "OK: $user @ $name (influencer_db + meeting_ai)"
+Write-Host "OK: $user @ $name (influencer_db + meeting_ai + xlink_agent)"

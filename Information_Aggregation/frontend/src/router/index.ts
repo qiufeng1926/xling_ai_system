@@ -7,6 +7,7 @@ import { influencerRoutes } from '@/modules/influencer/routes'
 import { meetingRoutes } from '@/modules/meeting/routes'
 import { flybookRoutes } from '@/modules/flybook/routes'
 import { qywechatRoutes } from '@/modules/qywechat/routes'
+import { agentRoutes } from '@/modules/agent/routes'
 
 const legacyRedirectRoutes = Object.entries(LEGACY_REDIRECTS).map(([path, redirect]) => ({
   path,
@@ -63,6 +64,10 @@ const router = createRouter({
         {
           path: 'qywechat',
           children: qywechatRoutes,
+        },
+        {
+          path: 'agent',
+          children: agentRoutes,
         },
       ],
     },

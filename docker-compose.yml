@@ -1,10 +1,10 @@
-# xlink 全栈编排：达人后端 + 会议 AI + 飞书 + 门户前端
+# xlink 全栈编排：达人后端 + 会议 AI + 飞书 + 智能体 + 门户前端
 # 用法：
 #   cp docker/.env.example docker/.env   # 按需修改密钥与各 API Key
 #   docker compose --env-file docker/.env up -d --build
 #
-# 仅启动三个后端（不含前端）：
-#   docker compose --env-file docker/.env up -d --build mysql redis influencer-backend meeting-ai flybook
+# 仅启动后端（不含前端）：
+#   docker compose --env-file docker/.env up -d --build mysql redis influencer-backend meeting-ai flybook qdrant xlink-agent
 
 name: xlink
 
@@ -24,6 +24,7 @@ services:
       - mysql_data:/var/lib/mysql
       - ./Information_Aggregation/scripts/init.sql:/docker-entrypoint-initdb.d/01-influencer.sql:ro
       - ./docker/mysql/02-meeting-ai.sql:/docker-entrypoint-initdb.d/02-meeting-ai.sql:ro
+      - ./docker/mysql/04-xlink-agent.sql:/docker-entrypoint-initdb.d/04-xlink-agent.sql:ro
       - ./docker/mysql/03-grants.sql:/docker-entrypoint-initdb.d/03-grants.sql:ro
     command: >
       --character-set-server=utf8mb4
@@ -138,6 +139,50 @@ services:
       influencer-backend:
         condition: service_started
 
+  qdrant:
+    image: qdrant/qdrant:v1.12.5
+    container_name: xlink_qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  xlink-agent:
+    build:
+      context: ./xlink_agent/backend
+      dockerfile: Dockerfile
+    image: xlink/xlink-agent:latest
+    container_name: xlink_agent
+    restart: unless-stopped
+    env_file:
+      - ./xlink_agent/backend/.env
+    ports:
+      - "${AGENT_API_PORT:-8003}:8003"
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      JWT_SECRET: ${JWT_SECRET:-dev-local-secret-key-at-least-32-characters-long}
+      PORTAL_API_URL: http://influencer-backend:8000
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${MYSQL_USER:-app_user}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-app123}
+      DB_NAME: xlink_agent
+      QDRANT_MODE: url
+      QDRANT_URL: http://qdrant:6333
+      WORKSPACE_ROOT: /data/workspaces
+      BROWSER_HEADLESS: "true"
+    volumes:
+      - ./xlink_agent/backend/logs:/app/logs
+      - agent_workspace:/data/workspaces
+    depends_on:
+      mysql:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      influencer-backend:
+        condition: service_started
+
   portal-frontend:
     build:
       context: ./Information_Aggregation/frontend
@@ -151,13 +196,17 @@ services:
       INFLUENCER_API_HOST: influencer-backend:8000
       MEETING_API_HOST: meeting-ai:8001
       FLYBOOK_API_HOST: flybook:8002
+      AGENT_API_HOST: xlink-agent:8003
     depends_on:
       - influencer-backend
       - meeting-ai
       - flybook
+      - xlink-agent
 
 volumes:
   mysql_data:
   influencer_cookies:
   meeting_upload:
   meeting_output:
+  qdrant_data:
+  agent_workspace:

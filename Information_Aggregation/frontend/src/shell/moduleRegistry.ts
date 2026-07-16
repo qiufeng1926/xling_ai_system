@@ -2,6 +2,7 @@ import type { RouteRecordRaw } from 'vue-router'
 import { influencerRoutes } from '@/modules/influencer/routes'
 import { meetingRoutes } from '@/modules/meeting/routes'
 import { flybookRoutes } from '@/modules/flybook/routes'
+import { agentRoutes } from '@/modules/agent/routes'
 
 export interface PlatformModule {
   id: string
@@ -28,5 +29,11 @@ export const platformModules: PlatformModule[] = [
     title: '飞书',
     basePath: '/flybook',
     routes: flybookRoutes,
+  },
+  {
+    id: 'agent',
+    title: '智能体',
+    basePath: '/agent',
+    routes: agentRoutes,
   },
 ]
