@@ -141,6 +141,9 @@ def list_messages(
                 "content": m.content,
                 "created_at": m.created_at.isoformat() if m.created_at else None,
                 "files": _message_files(m.metadata_json),
+                "citations": _message_citations(m.metadata_json),
+                "trajectory": _message_trajectory(m.metadata_json),
+                "react_steps": _message_react_steps(m.metadata_json),
             }
             for m in msgs
         ]
@@ -162,6 +165,51 @@ def _message_files(metadata_json: str | None) -> list[dict]:
         if isinstance(f, dict) and f.get("file_id"):
             out.append({"file_id": f["file_id"], "name": f.get("name")})
     return out
+
+
+def _message_citations(metadata_json: str | None) -> list[dict]:
+    if not metadata_json:
+        return []
+    try:
+        meta = json.loads(metadata_json)
+    except Exception:
+        return []
+    items = meta.get("citations") if isinstance(meta, dict) else None
+    if not isinstance(items, list):
+        return []
+    out = []
+    for c in items:
+        if isinstance(c, dict) and (c.get("title") or c.get("url")):
+            out.append(
+                {
+                    "title": c.get("title") or "",
+                    "url": c.get("url") or "",
+                    "snippet": c.get("snippet") or "",
+                }
+            )
+    return out
+
+
+def _message_trajectory(metadata_json: str | None) -> list[dict]:
+    if not metadata_json:
+        return []
+    try:
+        meta = json.loads(metadata_json)
+    except Exception:
+        return []
+    items = meta.get("trajectory") if isinstance(meta, dict) else None
+    return items if isinstance(items, list) else []
+
+
+def _message_react_steps(metadata_json: str | None) -> list[dict]:
+    if not metadata_json:
+        return []
+    try:
+        meta = json.loads(metadata_json)
+    except Exception:
+        return []
+    items = meta.get("react_steps") if isinstance(meta, dict) else None
+    return items if isinstance(items, list) else []
 
 
 @router.post("/{conversation_id}/chat")

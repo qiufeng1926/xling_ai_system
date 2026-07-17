@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from agent.answer import (
     answer_parrots_search_titles,
+    build_citations,
     enrich_finish_answer,
     expand_selection_followup,
     extract_grounded_entities_from_facts,
@@ -28,6 +29,12 @@ from agent.answer import (
     synthesize_rich_answer,
     tools_shallow_without_body,
     verify_final_answer,
+)
+from agent.checkpoint import (
+    build_confirm_checkpoint,
+    parse_checkpoint,
+    restore_scratchpad,
+    restore_task_context,
 )
 from agent.context import (
     TaskContext,
@@ -52,6 +59,13 @@ from agent.react import (
     coerce_action_input,
     format_observation,
     parse_react_output,
+)
+from agent.trajectory import (
+    action_step,
+    confirm_tool_label,
+    finish_step,
+    intercept_step,
+    observation_step,
 )
 from config.config import agent_max_tool_rounds, confirmation_ttl_sec
 from db.models import Confirmation, Message, RunEvent, Skill, UserSkillInstall
@@ -504,6 +518,12 @@ async def run_chat(
     file_meta: list[dict[str, Any]] = []
     empty_extract_retries = 0
     scratchpad = ReactScratchpad()
+    paused_confirm_id: int | None = None
+    trajectory_log: list[dict[str, Any]] = []
+
+    def _emit_traj(step: dict[str, Any]) -> str:
+        trajectory_log.append(step)
+        return sse("trajectory.step", step)
 
     yield sse("run.started", {"run_id": run_id, "architecture": "react"})
     yield sse("think.open", {"title": "ReAct 推理"})
@@ -566,6 +586,7 @@ async def run_chat(
                 )
                 if recovered:
                     run_state.intercept("file_claim_recover", round_i=round_i)
+                    yield _emit_traj(intercept_step("file_claim_recover", round_i=round_i))
                     async for chunk in _emit_think("检测到空喊「已生成文件」，改为实际调用写文件工具…\n"):
                         yield chunk
                     parsed = recovered
@@ -586,6 +607,13 @@ async def run_chat(
                     and not re.match(r"^\s*(什么是|什么叫|何为|谁是)", task_ctx.goal or "")
                 ):
                     run_state.intercept("premature_finish_auto_search", round_i=round_i)
+                    yield _emit_traj(
+                        intercept_step(
+                            "premature_finish_auto_search",
+                            round_i=round_i,
+                            detail="尚未拿到有效材料，先搜索",
+                        )
+                    )
                     async for chunk in _emit_think("尚未拿到有效 Observation，先 web_search 再决策…\n"):
                         yield chunk
                     parsed = {
@@ -625,6 +653,13 @@ async def run_chat(
                     )
                     if must_fetch and next_url:
                         run_state.intercept("auto_web_fetch", round_i=round_i, url=next_url[:120])
+                        yield _emit_traj(
+                            intercept_step(
+                                "auto_web_fetch",
+                                round_i=round_i,
+                                detail=f"打开：{next_url[:100]}",
+                            )
+                        )
                         async for chunk in _emit_think(
                             f"只读任务不需用户选择，自动 web_fetch: {next_url[:100]}\n"
                         ):
@@ -653,6 +688,10 @@ async def run_chat(
                             "\n",
                             content,
                         ).strip()
+                        citations = build_citations(task_ctx.facts)
+                        if citations:
+                            yield sse("citations", {"items": citations})
+                        yield _emit_traj(finish_step(round_i=round_i, detail="已交付"))
                         scratchpad.add_thought_action(think, "finish", content, round_i)
                         scratchpad.set_observation("（已向用户交付最终答案）")
                         run_state.record_delivered(content)
@@ -694,6 +733,13 @@ async def run_chat(
                 ]
                 if q and q in prior_q:
                     run_state.intercept("duplicate_web_search", round_i=round_i, query=q[:80])
+                    yield _emit_traj(
+                        intercept_step(
+                            "duplicate_web_search",
+                            round_i=round_i,
+                            detail=f"已搜过「{q[:40]}」",
+                        )
+                    )
                     next_u = pick_fetch_url(task_ctx.facts, skip=set(task_ctx.failed_urls))
                     if next_u:
                         async for chunk in _emit_think(
@@ -787,32 +833,51 @@ async def run_chat(
             yield sse("tool.started", {"tool": tool, "args": args, "round": round_i})
             _save_event(db, user_id, conversation_id, run_id, "tool.started", {"tool": tool, "args": args})
             run_state.record_tool_start(tool, args)
+            yield _emit_traj(action_step(tool, args, round_i=round_i, status="running"))
 
             if tool in CONFIRM_TOOLS:
+                ckpt = build_confirm_checkpoint(
+                    tool=tool,
+                    args=args if isinstance(args, dict) else {"_raw": args},
+                    task_ctx=task_ctx,
+                    scratchpad=scratchpad,
+                    round_i=round_i,
+                    run_id=run_id,
+                    tools=tools,
+                    effective_goal=effective_goal,
+                )
                 conf = Confirmation(
                     user_id=user_id,
                     conversation_id=conversation_id,
                     run_id=run_id,
                     action_type=tool,
-                    payload_json=json.dumps({"tool": tool, "args": args}, ensure_ascii=False),
+                    payload_json=json.dumps(ckpt, ensure_ascii=False),
                     status="pending",
                 )
                 db.add(conf)
                 db.commit()
                 db.refresh(conf)
+                yield _emit_traj(
+                    action_step(tool, args, round_i=round_i, status="pending", reason="awaiting_confirm")
+                )
                 yield sse(
                     "confirmation.required",
                     {
                         "id": conf.id,
                         "action_type": tool,
+                        "action_label": confirm_tool_label(tool),
                         "args": args,
                         "expires_in": confirmation_ttl_sec,
                     },
                 )
-                notice = f"需要你确认操作：`{tool}`。请在确认条中同意或拒绝后继续。"
+                notice = (
+                    f"需要你确认：{confirm_tool_label(tool)}。"
+                    "请在确认条中同意或拒绝；同意后将继续执行并完成任务。"
+                )
                 async for chunk in _emit_answer(notice):
                     yield chunk
                 assistant_parts = [notice]
+                paused_confirm_id = conf.id
                 run_state.transition(RunPhase.AWAITING_CONFIRM, round_i=round_i, reason=tool)
                 _persist_run_state(db, user_id, conversation_id, run_id, run_state, milestone="awaiting_confirm")
                 break
@@ -915,6 +980,34 @@ async def run_chat(
                 bool(task_ctx.last_ok),
                 summary=obs[:400],
             )
+            fail_reason = ""
+            if not task_ctx.last_ok:
+                fail_reason = (task_ctx.last_error or obs or "执行失败")[:160]
+            elif isinstance(result, dict) and _is_blocked_page(result, cur_url):
+                fail_reason = "页面被验证码或风控拦截"
+            yield _emit_traj(
+                observation_step(
+                    tool,
+                    round_i=round_i,
+                    ok=bool(task_ctx.last_ok) and not fail_reason,
+                    summary=obs,
+                    reason=fail_reason,
+                )
+            )
+            if tool == "web_search" and task_ctx.last_ok:
+                n_hits = len(extract_search_hit_cards(task_ctx.facts))
+                if n_hits:
+                    yield _emit_traj(
+                        {
+                            "round": round_i,
+                            "kind": "search",
+                            "title": "搜索完成",
+                            "detail": f"已找到 {n_hits} 条结果，准备打开正文",
+                            "status": "ok",
+                            "reason": "",
+                            "tool": "web_search",
+                        }
+                    )
             yield sse("react.observation", {"round": round_i, "observation": obs, "tool": tool})
             async for chunk in _emit_think(f"Observation: {obs}\n"):
                 yield chunk
@@ -988,6 +1081,59 @@ async def run_chat(
             yield chunk
         assistant_parts = [content]
 
+    # 优雅暂停：等待用户确认，不走终稿兜底覆盖
+    if paused_confirm_id is not None:
+        yield sse("think.close", {})
+        notice = _user_facing_text("".join(assistant_parts).strip()) or (
+            "需要你确认操作后继续。"
+        )
+        db.add(
+            Message(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                role="assistant",
+                content=notice,
+                metadata_json=json.dumps(
+                    {
+                        "run_id": run_id,
+                        "architecture": "react",
+                        "paused": True,
+                        "confirmation_id": paused_confirm_id,
+                        "think": "".join(think_parts)[:4000],
+                        "react_steps": [
+                            {
+                                "thought": s.thought[:500],
+                                "action": s.action,
+                                "observation": (s.observation or "")[:1500],
+                                "round": s.round_i,
+                            }
+                            for s in scratchpad.steps[-12:]
+                        ],
+                        "trajectory": trajectory_log[-30:],
+                        "files": file_meta,
+                        "task_context": {
+                            "goal": task_ctx.goal,
+                            "browser_url": task_ctx.browser_url,
+                            "facts": task_ctx.facts[-10:],
+                            "artifacts": task_ctx.artifacts,
+                        },
+                        "run_state": run_state.to_dict(),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+        db.commit()
+        yield sse(
+            "done",
+            {
+                "run_id": run_id,
+                "paused": True,
+                "confirmation_id": paused_confirm_id,
+            },
+        )
+        return
+
     yield sse("think.close", {})
     final_text = _user_facing_text("".join(assistant_parts).strip()) or ""
     if not final_text or looks_like_internal(final_text) or not answer_relevant_to_goal(
@@ -1005,6 +1151,9 @@ async def run_chat(
             + "\n\n"
             + f"文件 {'、'.join(task_ctx.artifacts)} 已准备好，可点击下方下载。"
         )
+    citations = build_citations(task_ctx.facts)
+    if citations:
+        yield sse("citations", {"items": citations})
     db.add(
         Message(
             conversation_id=conversation_id,
@@ -1025,6 +1174,8 @@ async def run_chat(
                         }
                         for s in scratchpad.steps[-12:]
                     ],
+                    "trajectory": trajectory_log[-30:],
+                    "citations": citations,
                     "files": file_meta,
                     "task_context": {
                         "goal": task_ctx.goal,
@@ -1049,6 +1200,7 @@ async def resume_after_confirmation(
     confirmation_id: int,
     approved: bool,
 ) -> dict:
+    """兼容旧 JSON 接口：拒绝直接处理；同意提示走 SSE resume。"""
     conf = db.get(Confirmation, confirmation_id)
     if not conf or conf.user_id != user_id:
         return {"ok": False, "error": "确认单不存在"}
@@ -1060,24 +1212,362 @@ async def resume_after_confirmation(
         db.commit()
         return {"ok": False, "error": "确认已过期"}
 
-    conf.status = "approved" if approved else "rejected"
+    if not approved:
+        conf.status = "rejected"
+        conf.resolved_at = datetime.utcnow()
+        db.commit()
+        db.add(
+            Message(
+                conversation_id=conf.conversation_id,
+                user_id=user_id,
+                role="assistant",
+                content="已拒绝该操作，任务中止。如需继续请换一种说法再试。",
+                metadata_json=json.dumps(
+                    {"confirmation_id": confirmation_id, "status": "rejected"},
+                    ensure_ascii=False,
+                ),
+            )
+        )
+        db.commit()
+        return {"ok": True, "status": "rejected"}
+
+    return {
+        "ok": True,
+        "status": "pending_resume",
+        "need_resume_stream": True,
+        "confirmation_id": confirmation_id,
+    }
+
+
+async def resume_chat_after_confirmation(
+    db: Session,
+    *,
+    user_id: int,
+    confirmation_id: int,
+    approved: bool,
+) -> AsyncIterator[str]:
+    """SSE 续跑：同意则恢复检查点、执行工具并继续 ReAct；拒绝则短答复结束。"""
+    conf = db.get(Confirmation, confirmation_id)
+    if not conf or conf.user_id != user_id:
+        yield sse("error", {"message": "确认单不存在"})
+        yield sse("done", {"ok": False})
+        return
+    if conf.status != "pending":
+        yield sse("error", {"message": "确认单已处理"})
+        yield sse("done", {"ok": False})
+        return
+    if conf.created_at and datetime.utcnow() - conf.created_at > timedelta(seconds=confirmation_ttl_sec):
+        conf.status = "expired"
+        conf.resolved_at = datetime.utcnow()
+        db.commit()
+        yield sse("error", {"message": "确认已过期"})
+        yield sse("done", {"ok": False})
+        return
+
+    conversation_id = conf.conversation_id
+    ckpt = parse_checkpoint(conf.payload_json)
+    run_id = str(ckpt.get("run_id") or conf.run_id or uuid.uuid4().hex)
+    tool = str(ckpt.get("tool") or conf.action_type or "")
+    args = ckpt.get("args") if isinstance(ckpt.get("args"), dict) else {}
+    start_round = int(ckpt.get("round_i") or 0) + 1
+    effective_goal = str(ckpt.get("effective_goal") or "")
+    tools_ckpt = list(ckpt.get("tools") or [])
+
+    if not approved:
+        conf.status = "rejected"
+        conf.resolved_at = datetime.utcnow()
+        db.commit()
+        notice = "已拒绝该操作，任务中止。如需继续请换一种说法再试。"
+        yield sse("think.open", {"title": "确认结果"})
+        async for chunk in _emit_answer(notice):
+            yield chunk
+        yield sse("think.close", {})
+        db.add(
+            Message(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                role="assistant",
+                content=notice,
+                metadata_json=json.dumps(
+                    {"confirmation_id": confirmation_id, "status": "rejected", "run_id": run_id},
+                    ensure_ascii=False,
+                ),
+            )
+        )
+        db.commit()
+        yield sse("done", {"ok": True, "status": "rejected", "run_id": run_id})
+        return
+
+    conf.status = "approved"
     conf.resolved_at = datetime.utcnow()
     db.commit()
 
-    if not approved:
-        return {"ok": True, "status": "rejected"}
+    task_ctx = restore_task_context(ckpt.get("task_context") if isinstance(ckpt.get("task_context"), dict) else {})
+    if effective_goal and not task_ctx.goal:
+        task_ctx.goal = effective_goal
+    scratchpad = restore_scratchpad(ckpt.get("react_steps") if isinstance(ckpt.get("react_steps"), list) else [])
+    run_state = AgentRunState(run_id=run_id, goal=task_ctx.goal or effective_goal)
+    run_state.transition(RunPhase.EXECUTING, round_i=start_round - 1, reason="resume_after_confirm")
+    trajectory_log: list[dict[str, Any]] = []
 
-    payload = json.loads(conf.payload_json or "{}")
-    tool = payload.get("tool") or conf.action_type
-    args = payload.get("args") or {}
+    def _emit_traj(step: dict[str, Any]) -> str:
+        trajectory_log.append(step)
+        return sse("trajectory.step", step)
+
+    skills = _active_skills(db, user_id)
+    tools, skill_body = _merge_tools(skills)
+    if tools_ckpt:
+        # 合并检查点工具与当前可用工具
+        for t in tools_ckpt:
+            if t not in tools:
+                tools.append(t)
+    memory_raw = build_memory_context(db, user_id)
+    memory_ctx = filter_long_term_memory_lines(memory_raw, task_ctx.goal)
+
+    system = SYSTEM_PROMPT + f"\n\n可用工具: {json.dumps(tools, ensure_ascii=False)}\n\n"
+    system += render_tool_contracts(tools) + "\n\n" + skill_body
+    if memory_ctx:
+        system += f"\n\n# 长期用户记忆（已按当前目标过滤）\n{memory_ctx}"
+    system += (
+        "\n\n# 记忆纪律\n"
+        "1. 独立新问题与上一轮硬隔离：禁止联想/提及上一轮书名、新闻或结论。\n"
+        "2. 仅当用户明确追问/续作才使用最近同题上下文。\n"
+        "3. finish 必须是用户可读终稿。\n"
+        "4. 只读搜索/抓取无需用户确认；自行 web_fetch 后总结交付。\n"
+    )
+
+    history = (
+        db.query(Message)
+        .filter(Message.conversation_id == conversation_id)
+        .order_by(Message.id.asc())
+        .limit(40)
+        .all()
+    )
+    base_messages: list[dict[str, str]] = [{"role": "system", "content": system}]
+    base_messages.extend(
+        build_dialog_messages(
+            history,
+            current_goal=task_ctx.goal,
+            sanitize_fn=sanitize_public_answer,
+            looks_internal_fn=looks_like_internal,
+        )
+    )
+
+    model = get_chat_model()
+    assistant_parts: list[str] = []
+    think_parts: list[str] = ["确认后续跑"]
+    file_meta: list[dict[str, Any]] = []
+    empty_extract_retries = 0
+
+    yield sse("run.started", {"run_id": run_id, "architecture": "react", "resumed": True})
+    yield sse("think.open", {"title": "确认后续跑"})
+    async for chunk in _emit_think(f"用户已同意：{confirm_tool_label(tool)}，继续执行…\n"):
+        yield chunk
+
+    # 执行已批准工具
+    yield sse("tool.started", {"tool": tool, "args": args, "round": max(0, start_round - 1)})
+    yield _emit_traj(action_step(tool, args, round_i=max(0, start_round - 1), status="running"))
+    run_state.record_tool_start(tool, args)
     try:
         result = await execute_tool(
             tool,
             args,
             db=db,
             user_id=user_id,
-            conversation_id=conf.conversation_id,
+            conversation_id=conversation_id,
         )
-        return {"ok": True, "status": "approved", "result": _shrink(result)}
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        logger.warning("resume tool failed: %s %s", tool, exc)
+        result = {"error": str(exc)}
+    if not isinstance(result, dict):
+        result = {"error": "bad result"}
+
+    apply_result_to_context(task_ctx, tool, result, args=args)
+    if isinstance(result, dict) and result.get("frame"):
+        yield sse("browser.frame", {"url": result.get("url"), "frame": result["frame"]})
+    if isinstance(result, dict) and result.get("file_id"):
+        item = {"file_id": result["file_id"], "name": result.get("name")}
+        file_meta.append(item)
+        yield sse("file.ready", item)
+
+    obs = format_observation(tool, result)
+    scratchpad.add_thought_action("用户已确认，执行操作", tool, args, max(0, start_round - 1))
+    scratchpad.set_observation(obs)
+    run_state.record_tool_done(tool, bool(task_ctx.last_ok), summary=obs[:400])
+    yield _emit_traj(
+        observation_step(tool, round_i=max(0, start_round - 1), ok=bool(task_ctx.last_ok), summary=obs)
+    )
+    yield sse("react.observation", {"round": max(0, start_round - 1), "observation": obs, "tool": tool})
+    yield sse("tool.finished", {"tool": tool, "result": _shrink(result)})
+    async for chunk in _emit_think(f"Observation: {obs}\n"):
+        yield chunk
+
+    # 继续 ReAct 剩余轮次
+    for round_i in range(start_round, agent_max_tool_rounds):
+        run_state.begin_round(round_i)
+        messages = compact_history(base_messages, limit_pairs=4)
+        messages.append(
+            {
+                "role": "user",
+                "content": build_react_continue_prompt(task_ctx.render(), scratchpad),
+            }
+        )
+        raw = await model.chat(messages, temperature=0.2)
+        logger.info("resume react round=%s: %s", round_i, raw[:500])
+        parsed = parse_agent_output(raw, tools)
+        think = str(parsed.get("think") or "")
+        action = parsed.get("action")
+        run_state.record_react_parsed(
+            round_i=round_i,
+            action=str(action or ""),
+            tool=str(parsed.get("tool") or ""),
+            thought=think,
+        )
+        if think:
+            yield sse("react.thought", {"round": round_i, "thought": think})
+            async for chunk in _emit_think(f"Thought: {think}\n"):
+                yield chunk
+                think_parts.append(think)
+
+        if action == "final":
+            content = str(parsed.get("content") or "").strip()
+            content = await _finalize_user_answer(
+                model, task_ctx, content, round_i=round_i, thought=think, run_state=run_state
+            )
+            citations = build_citations(task_ctx.facts)
+            if citations:
+                yield sse("citations", {"items": citations})
+            yield _emit_traj(finish_step(round_i=round_i))
+            scratchpad.add_thought_action(think, "finish", content, round_i)
+            run_state.record_delivered(content)
+            yield sse("react.finish", {"round": round_i, "thought": think, "content": content[:500]})
+            async for chunk in _emit_answer(content):
+                yield chunk
+            assistant_parts = [content]
+            break
+
+        if action == "tool":
+            tool2 = str(parsed.get("tool") or "")
+            args2 = parsed.get("args") if isinstance(parsed.get("args"), (dict, str)) else {}
+            norm, verr = validate_and_normalize_args(tool2, args2)
+            if verr:
+                tip = f"工具参数无效: {verr}"
+                scratchpad.add_thought_action(think, tool2, args2, round_i)
+                scratchpad.set_observation(tip)
+                yield sse("react.observation", {"round": round_i, "observation": tip, "tool": tool2})
+                continue
+            args2 = norm or {}
+            if tool2 in CONFIRM_TOOLS:
+                tip = "续跑中不再嵌套确认，请换只读工具或直接 finish。"
+                scratchpad.add_thought_action(think, tool2, args2, round_i)
+                scratchpad.set_observation(tip)
+                yield sse("react.observation", {"round": round_i, "observation": tip})
+                continue
+
+            scratchpad.add_thought_action(think, tool2, args2, round_i)
+            yield sse("react.action", {"round": round_i, "tool": tool2, "args": args2, "thought": think})
+            yield _emit_traj(action_step(tool2, args2, round_i=round_i, status="running"))
+            yield sse("tool.started", {"tool": tool2, "args": args2, "round": round_i})
+            try:
+                result2 = await execute_tool(
+                    tool2, args2, db=db, user_id=user_id, conversation_id=conversation_id
+                )
+            except Exception as exc:
+                result2 = {"error": str(exc)}
+            if not isinstance(result2, dict):
+                result2 = {"error": "bad result"}
+            apply_result_to_context(task_ctx, tool2, result2, args=args2)
+            if isinstance(result2, dict) and result2.get("frame"):
+                yield sse("browser.frame", {"url": result2.get("url"), "frame": result2["frame"]})
+            if isinstance(result2, dict) and result2.get("file_id"):
+                item = {"file_id": result2["file_id"], "name": result2.get("name")}
+                file_meta.append(item)
+                yield sse("file.ready", item)
+            obs2 = format_observation(tool2, result2)
+            scratchpad.set_observation(obs2)
+            yield _emit_traj(
+                observation_step(tool2, round_i=round_i, ok=bool(task_ctx.last_ok), summary=obs2)
+            )
+            yield sse("react.observation", {"round": round_i, "observation": obs2, "tool": tool2})
+            yield sse("tool.finished", {"tool": tool2, "result": _shrink(result2)})
+            async for chunk in _emit_think(f"Observation: {obs2}\n"):
+                yield chunk
+            continue
+
+        content = await _finalize_user_answer(
+            model, task_ctx, str(parsed.get("content") or raw), round_i=round_i, run_state=run_state
+        )
+        run_state.record_delivered(content)
+        async for chunk in _emit_answer(content):
+            yield chunk
+        assistant_parts = [content]
+        break
+    else:
+        content = await _finalize_user_answer(
+            model, task_ctx, "", round_i=agent_max_tool_rounds, run_state=run_state
+        )
+        run_state.record_delivered(content)
+        async for chunk in _emit_answer(content):
+            yield chunk
+        assistant_parts = [content]
+
+    yield sse("think.close", {})
+    final_text = _user_facing_text("".join(assistant_parts).strip()) or ""
+    if not final_text or looks_like_internal(final_text):
+        final_text = await _finalize_user_answer(
+            model, task_ctx, final_text, round_i=agent_max_tool_rounds, run_state=run_state
+        )
+    if task_ctx.artifacts and all(a not in final_text for a in task_ctx.artifacts):
+        final_text = (
+            final_text.rstrip()
+            + "\n\n"
+            + f"文件 {'、'.join(task_ctx.artifacts)} 已准备好，可点击下方下载。"
+        )
+    citations = build_citations(task_ctx.facts)
+    if citations:
+        yield sse("citations", {"items": citations})
+    run_state.complete()
+    _persist_run_state(db, user_id, conversation_id, run_id, run_state, milestone="resume_complete")
+    db.add(
+        Message(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            role="assistant",
+            content=final_text,
+            metadata_json=json.dumps(
+                {
+                    "run_id": run_id,
+                    "architecture": "react",
+                    "resumed": True,
+                    "confirmation_id": confirmation_id,
+                    "think": "".join(think_parts)[:4000],
+                    "react_steps": [
+                        {
+                            "thought": s.thought[:500],
+                            "action": s.action,
+                            "observation": (s.observation or "")[:1500],
+                            "round": s.round_i,
+                        }
+                        for s in scratchpad.steps[-12:]
+                    ],
+                    "trajectory": trajectory_log[-30:],
+                    "citations": citations,
+                    "files": file_meta,
+                    "task_context": {
+                        "goal": task_ctx.goal,
+                        "browser_url": task_ctx.browser_url,
+                        "facts": task_ctx.facts[-10:],
+                        "artifacts": task_ctx.artifacts,
+                    },
+                    "run_state": run_state.to_dict(),
+                },
+                ensure_ascii=False,
+            ),
+        )
+    )
+    db.commit()
+    yield sse("done", {"run_id": run_id, "finalize_path": run_state.finalize_path, "resumed": True})
+
+
+# 保留旧名供路由兼容（若仍引用）
+# resume_after_confirmation 已在上方定义

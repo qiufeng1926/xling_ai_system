@@ -242,6 +242,84 @@ def test_continue_recommend_books() -> CaseResult:
     )
 
 
+def test_checkpoint_roundtrip() -> CaseResult:
+    from agent.checkpoint import (
+        build_confirm_checkpoint,
+        parse_checkpoint,
+        restore_scratchpad,
+        restore_task_context,
+    )
+    from agent.context import TaskContext
+    from agent.react import ReactScratchpad
+    import json
+
+    ctx = TaskContext(goal="删除文件")
+    ctx.add_fact("工作区有 a.docx")
+    ctx.mark_failed_url("https://bad.example")
+    pad = ReactScratchpad()
+    pad.add_thought_action("准备删除", "file_delete", {"name": "a.docx"}, 1)
+    pad.set_observation("等待确认")
+    ckpt = build_confirm_checkpoint(
+        tool="file_delete",
+        args={"name": "a.docx"},
+        task_ctx=ctx,
+        scratchpad=pad,
+        round_i=1,
+        run_id="run123",
+        tools=["file_delete", "web_search"],
+        effective_goal="删除文件",
+    )
+    raw = json.dumps(ckpt, ensure_ascii=False)
+    data = parse_checkpoint(raw)
+    ctx2 = restore_task_context(data.get("task_context"))
+    pad2 = restore_scratchpad(data.get("react_steps"))
+    ok = (
+        ctx2.goal == "删除文件"
+        and "工作区有 a.docx" in ctx2.facts
+        and "https://bad.example" in ctx2.failed_urls
+        and len(pad2.steps) == 1
+        and pad2.steps[0].action == "file_delete"
+        and data.get("tool") == "file_delete"
+        and data.get("round_i") == 1
+    )
+    return CaseResult("checkpoint_roundtrip", ok)
+
+
+def test_build_citations() -> CaseResult:
+    from agent.answer import build_citations
+
+    facts = [
+        "搜索结果(bing):\n"
+        "1. 国富论导读 — 亚当斯密经典\n"
+        "链接: https://example.com/wealth\n"
+        "2. 经济学入门书单 — 合集\n"
+        "链接: https://sogou.com/web?query=econ\n",
+        "网页正文摘要 标题: 资本论精读\nhttps://example.com/capital 正文……",
+    ]
+    cites = build_citations(facts)
+    urls = [c.get("url") for c in cites]
+    ok = (
+        any("example.com/wealth" in (u or "") for u in urls)
+        and not any("sogou.com/web" in (u or "") for u in urls)
+        and len(cites) >= 1
+    )
+    return CaseResult("build_citations", ok, f"n={len(cites)} urls={urls}")
+
+
+def test_trajectory_labels() -> CaseResult:
+    from agent.trajectory import action_step, confirm_tool_label, intercept_step
+
+    a = action_step("web_search", {"query": "经济书籍"}, round_i=0)
+    i = intercept_step("duplicate_web_search", round_i=1, detail="重复")
+    ok = (
+        a["title"] == "搜索公开网页"
+        and "经济书籍" in a["detail"]
+        and i["kind"] == "intercept"
+        and confirm_tool_label("file_delete") == "删除工作区文件"
+    )
+    return CaseResult("trajectory_labels", ok, str(a))
+
+
 async def run_all() -> list[CaseResult]:
     results: list[CaseResult] = []
     sync_tests = [
@@ -252,6 +330,9 @@ async def run_all() -> list[CaseResult]:
         test_fact_cross_topic_filter,
         test_run_state_attribution,
         test_continue_recommend_books,
+        test_checkpoint_roundtrip,
+        test_build_citations,
+        test_trajectory_labels,
     ]
     for fn in sync_tests:
         try:

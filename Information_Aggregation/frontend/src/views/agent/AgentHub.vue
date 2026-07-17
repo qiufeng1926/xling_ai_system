@@ -34,6 +34,34 @@
               ⬇ {{ f.name || `文件 #${f.file_id}` }}
             </button>
           </div>
+          <div v-if="m.citations?.length" class="cite-row">
+            <span class="cite-label">参考来源</span>
+            <button
+              v-for="(c, ci) in m.citations"
+              :key="ci"
+              type="button"
+              class="cite-chip"
+              :title="c.snippet || c.url"
+              @click="openCitation(c)"
+            >
+              {{ c.title || c.url || '来源' }}
+            </button>
+          </div>
+          <div v-if="m.trajectory?.length && !streaming" class="trace-card hist-traj">
+            <button type="button" class="trace-header" @click="toggleHistTraj(m.id)">
+              <span class="trace-title">
+                执行步骤 · {{ m.trajectory.length }} 步
+                <span v-if="trajSummary(m.trajectory)" class="trace-summary">{{ trajSummary(m.trajectory) }}</span>
+              </span>
+              <span class="think-toggle">{{ isHistTrajOpen(m.id) ? '收起' : '展开' }}</span>
+            </button>
+            <div v-show="isHistTrajOpen(m.id)" class="trace-body">
+              <div v-for="(t, ti) in m.trajectory" :key="ti" class="traj-line" :class="t.status">
+                <el-tag size="small" :type="trajTagType(t.status)">{{ t.title }}</el-tag>
+                <span class="traj-detail" :title="t.detail || t.reason || ''">{{ shortTrajDetail(t) }}</span>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div v-if="thinkingVisible" class="think-card">
@@ -42,7 +70,7 @@
               <span class="think-dot" :class="{ pulse: streaming && !thinkClosed }" />
               {{ thinkClosed ? 'ReAct 已完成' : 'ReAct 推理中' }}
             </span>
-            <span class="think-toggle">{{ thinkCollapsed ? '展开' : '收起' }}</span>
+            <span class="think-toggle">{{ thinkCollapsed ? '展开原始推理' : '收起原始推理' }}</span>
           </button>
           <div v-show="!thinkCollapsed" class="think-body">{{ thinkingText }}</div>
         </div>
@@ -59,18 +87,44 @@
           </button>
         </div>
 
-        <div v-if="toolTraces.length" class="trace-card">
-          <div class="trace-title">ReAct · Action / Observation</div>
-          <div v-for="(t, i) in toolTraces" :key="i" class="tool-line">
-            <el-tag size="small" :type="t.done ? 'success' : 'warning'">{{ t.tool }}</el-tag>
-            <span>{{ t.done ? 'Observation 已回填' : 'Action 执行中…' }}</span>
+        <div v-if="liveCitations.length" class="cite-row live-cites">
+          <span class="cite-label">参考来源</span>
+          <button
+            v-for="(c, ci) in liveCitations"
+            :key="ci"
+            type="button"
+            class="cite-chip"
+            :title="c.snippet || c.url"
+            @click="openCitation(c)"
+          >
+            {{ c.title || c.url || '来源' }}
+          </button>
+        </div>
+
+        <div v-if="trajectorySteps.length" class="trace-card">
+          <button type="button" class="trace-header" @click="trajLiveCollapsed = !trajLiveCollapsed">
+            <span class="trace-title">
+              <span class="think-dot" :class="{ pulse: streaming && !thinkClosed }" />
+              执行步骤 · {{ trajectorySteps.length }} 步
+              <span v-if="trajSummary(trajectorySteps)" class="trace-summary">{{ trajSummary(trajectorySteps) }}</span>
+            </span>
+            <span class="think-toggle">{{ trajLiveCollapsed ? '展开' : '收起' }}</span>
+          </button>
+          <div v-show="!trajLiveCollapsed" class="trace-body">
+            <div v-for="(t, i) in trajectorySteps" :key="i" class="traj-line" :class="t.status">
+              <el-tag size="small" :type="trajTagType(t.status)">{{ t.title }}</el-tag>
+              <span class="traj-detail" :title="t.detail || t.reason || ''">{{ shortTrajDetail(t) }}</span>
+            </div>
           </div>
         </div>
         <div v-if="pendingConfirm" class="confirm-bar">
-          <div>需要确认：{{ pendingConfirm.action_type }}</div>
+          <div>
+            需要确认：{{ pendingConfirm.action_label || pendingConfirm.action_type }}
+            <span class="muted"> · 同意后将继续执行</span>
+          </div>
           <div class="confirm-actions">
-            <el-button type="primary" size="small" @click="onConfirm(true)">同意</el-button>
-            <el-button size="small" @click="onConfirm(false)">拒绝</el-button>
+            <el-button type="primary" size="small" :loading="streaming" @click="onConfirm(true)">同意</el-button>
+            <el-button size="small" :disabled="streaming" @click="onConfirm(false)">拒绝</el-button>
           </div>
         </div>
       </div>
@@ -90,10 +144,12 @@
     <aside class="agent-right">
       <el-tabs v-model="rightTab">
         <el-tab-pane label="浏览器" name="browser">
-          <div class="browser-url">{{ browserUrl || 'about:blank' }}</div>
+          <div class="browser-url">{{ browserUrl || (browserBusy ? '正在检索 / 打开页面…' : 'about:blank') }}</div>
           <div class="browser-frame">
             <img v-if="browserFrame" :src="`data:image/jpeg;base64,${browserFrame}`" alt="browser" />
-            <div v-else class="browser-empty">尚无预览，Agent 打开网页后显示</div>
+            <div v-else class="browser-empty">
+              {{ browserBusy ? 'Agent 正在打开网页，预览稍后出现…' : '尚无预览，Agent 打开网页后显示' }}
+            </div>
           </div>
         </el-tab-pane>
         <el-tab-pane label="知识库" name="kb">
@@ -174,15 +230,17 @@ import {
   listKnowledgeBases,
   listMessages,
   listSkills,
-  resolveConfirmation,
   streamChat,
+  streamResumeConfirmation,
   uploadDocument,
   type ChatMessage,
   type Conversation,
+  type TrajectoryStep,
 } from '@/api/agent'
 
 type MsgFile = { file_id: number; name?: string }
-type UiMessage = ChatMessage & { files?: MsgFile[] }
+type CiteItem = { title: string; url?: string; snippet?: string }
+type UiMessage = ChatMessage & { files?: MsgFile[]; citations?: CiteItem[]; trajectory?: TrajectoryStep[] }
 
 const conversations = ref<Conversation[]>([])
 const activeId = ref<number | null>(null)
@@ -192,13 +250,18 @@ const streaming = ref(false)
 const input = ref('')
 const thinkingText = ref('')
 const thinkingVisible = ref(false)
-const thinkCollapsed = ref(false)
+const thinkCollapsed = ref(true)
 const thinkClosed = ref(false)
-const toolTraces = ref<{ tool: string; done: boolean }[]>([])
-const pendingConfirm = ref<{ id: number; action_type: string } | null>(null)
+const trajectorySteps = ref<TrajectoryStep[]>([])
+const trajLiveCollapsed = ref(false)
+/** 历史消息里展开的轨迹 id 集合 */
+const histTrajOpen = ref<Record<number, boolean>>({})
+const liveCitations = ref<CiteItem[]>([])
+const pendingConfirm = ref<{ id: number; action_type: string; action_label?: string } | null>(null)
 const readyFiles = ref<MsgFile[]>([])
 const pendingFiles = ref<MsgFile[]>([])
 const msgBoxRef = ref<HTMLElement | null>(null)
+const browserBusy = ref(false)
 
 const rightTab = ref('browser')
 const browserUrl = ref('')
@@ -306,7 +369,144 @@ function displayText(content: string) {
       return '这一轮没有整理出与你问题相关的内容。请再发一次，或把需求说得更具体一点。'
     }
   }
-  return content
+  return raw
+}
+
+function trajTagType(status?: string): 'success' | 'warning' | 'danger' | 'info' {
+  if (status === 'ok') return 'success'
+  if (status === 'fail') return 'danger'
+  if (status === 'skip' || status === 'pending') return 'warning'
+  return 'info'
+}
+
+function shortTrajDetail(t: TrajectoryStep): string {
+  const raw = (t.detail || t.reason || '').replace(/\s+/g, ' ').trim()
+  if (!raw) return ''
+  // 过长 Observation / JSON 只留一行摘要
+  if (raw.length > 96) return raw.slice(0, 96) + '…'
+  return raw
+}
+
+function trajSummary(steps: TrajectoryStep[] | undefined): string {
+  if (!steps?.length) return ''
+  const fail = steps.filter((s) => s.status === 'fail').length
+  const ok = steps.filter((s) => s.status === 'ok').length
+  const last = steps[steps.length - 1]
+  const bits: string[] = []
+  if (ok) bits.push(`${ok} 成功`)
+  if (fail) bits.push(`${fail} 失败`)
+  if (last?.title) bits.push(`最近：${last.title}`)
+  return bits.join(' · ')
+}
+
+function isHistTrajOpen(id: number): boolean {
+  return !!histTrajOpen.value[id]
+}
+
+function toggleHistTraj(id: number) {
+  histTrajOpen.value = { ...histTrajOpen.value, [id]: !histTrajOpen.value[id] }
+}
+
+function openCitation(c: CiteItem) {
+  const url = (c.url || '').trim()
+  if (!url) {
+    ElMessage.info(c.title || '无可用链接')
+    return
+  }
+  browserUrl.value = url
+  rightTab.value = 'browser'
+  browserBusy.value = true
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+function handleAgentEvent(event: string, data: unknown) {
+  const d = data as Record<string, any>
+  if (event === 'think.open') {
+    thinkingVisible.value = true
+    thinkCollapsed.value = true
+    thinkClosed.value = false
+    thinkingText.value = ''
+  } else if (event === 'think.delta') {
+    thinkingVisible.value = true
+    thinkingText.value += d.content || ''
+    scrollBottom()
+  } else if (event === 'think.close') {
+    thinkClosed.value = true
+    thinkCollapsed.value = true
+    trajLiveCollapsed.value = true
+  } else if (event === 'message.delta') {
+    streamingContent.value += d.content || ''
+    scrollBottom()
+  } else if (event === 'trajectory.step') {
+    thinkingVisible.value = true
+    trajLiveCollapsed.value = false
+    trajectorySteps.value.push({
+      round: d.round,
+      kind: d.kind,
+      title: d.title || d.tool || '步骤',
+      detail: d.detail || '',
+      status: d.status || 'running',
+      reason: d.reason || '',
+      tool: d.tool,
+    })
+    if (d.kind === 'browse' || d.kind === 'fetch' || d.tool === 'web_search') {
+      browserBusy.value = true
+      rightTab.value = 'browser'
+    }
+    scrollBottom()
+  } else if (event === 'citations') {
+    const items = Array.isArray(d.items) ? d.items : []
+    liveCitations.value = items.map((c: any) => ({
+      title: c.title || '',
+      url: c.url || '',
+      snippet: c.snippet || '',
+    }))
+  } else if (event === 'tool.started') {
+    thinkingVisible.value = true
+    if (['web_fetch', 'browser_navigate', 'web_search', 'http_request'].includes(d.tool)) {
+      browserBusy.value = true
+      rightTab.value = 'browser'
+      if (d.args?.url) browserUrl.value = String(d.args.url)
+      else if (d.args?.query) browserUrl.value = `搜索：${d.args.query}`
+    }
+  } else if (event === 'tool.finished') {
+    if (d.result?.url) {
+      browserUrl.value = String(d.result.url)
+      rightTab.value = 'browser'
+    }
+  } else if (event === 'browser.frame') {
+    if (d.frame) browserFrame.value = d.frame
+    if (d.url) browserUrl.value = d.url
+    browserBusy.value = false
+    rightTab.value = 'browser'
+  } else if (event === 'confirmation.required') {
+    pendingConfirm.value = {
+      id: d.id,
+      action_type: d.action_type,
+      action_label: d.action_label,
+    }
+  } else if (event === 'file.ready') {
+    const item = { file_id: d.file_id, name: d.name }
+    readyFiles.value.unshift(item)
+    pendingFiles.value.push(item)
+    scrollBottom()
+  } else if (event === 'done') {
+    if (d.paused) {
+      browserBusy.value = false
+    }
+  }
+}
+
+async function refreshMessagesFromServer() {
+  if (!activeId.value) return
+  const data = await listMessages(activeId.value)
+  messages.value = (data.items || []).map((m) => ({
+    ...m,
+    files: m.files?.length ? m.files : undefined,
+    citations: m.citations?.length ? m.citations : undefined,
+    trajectory: m.trajectory?.length ? m.trajectory : undefined,
+  }))
+  readyFiles.value = messages.value.flatMap((m) => m.files || []).reverse()
 }
 
 async function onDownload(fileId: number, name?: string) {
@@ -326,17 +526,16 @@ async function selectConversation(id: number) {
   activeId.value = id
   thinkingText.value = ''
   thinkingVisible.value = false
-  thinkCollapsed.value = false
+  thinkCollapsed.value = true
   thinkClosed.value = false
-  toolTraces.value = []
+  trajectorySteps.value = []
+  trajLiveCollapsed.value = true
+  liveCitations.value = []
   pendingConfirm.value = null
   streamingContent.value = ''
-  const data = await listMessages(id)
-  messages.value = (data.items || []).map((m) => ({
-    ...m,
-    files: m.files?.length ? m.files : undefined,
-  }))
-  readyFiles.value = messages.value.flatMap((m) => m.files || []).reverse()
+  browserBusy.value = false
+  histTrajOpen.value = {}
+  await refreshMessagesFromServer()
   await nextTick()
   scrollBottom()
 }
@@ -390,79 +589,48 @@ async function onSend() {
   streamingContent.value = ''
   thinkingText.value = ''
   thinkingVisible.value = false
-  thinkCollapsed.value = false
+  thinkCollapsed.value = true
   thinkClosed.value = false
-  toolTraces.value = []
+  trajectorySteps.value = []
+  trajLiveCollapsed.value = false
+  liveCitations.value = []
   pendingFiles.value = []
+  browserBusy.value = false
   messages.value.push({ id: Date.now(), role: 'user', content: text })
   await nextTick()
   scrollBottom()
 
   chatAbort = streamChat(conversationId, text, {
-    onEvent(event, data) {
-      const d = data as Record<string, any>
-      if (event === 'think.open') {
-        thinkingVisible.value = true
-        thinkCollapsed.value = false
-        thinkClosed.value = false
-        thinkingText.value = ''
-      } else if (event === 'think.delta') {
-        thinkingVisible.value = true
-        thinkingText.value += d.content || ''
-        scrollBottom()
-      } else if (event === 'think.close') {
-        thinkClosed.value = true
-        thinkCollapsed.value = true
-      } else if (event === 'message.delta') {
-        streamingContent.value += d.content || ''
-        scrollBottom()
-      } else if (event === 'tool.started') {
-        toolTraces.value.push({ tool: d.tool, done: false })
-        thinkingVisible.value = true
-      } else if (event === 'tool.finished') {
-        const last = [...toolTraces.value].reverse().find((t) => t.tool === d.tool && !t.done)
-        if (last) last.done = true
-      } else if (event === 'browser.frame') {
-        if (d.frame) browserFrame.value = d.frame
-        if (d.url) browserUrl.value = d.url
-        rightTab.value = 'browser'
-      } else if (event === 'confirmation.required') {
-        pendingConfirm.value = { id: d.id, action_type: d.action_type }
-      } else if (event === 'file.ready') {
-        const item = { file_id: d.file_id, name: d.name }
-        readyFiles.value.unshift(item)
-        pendingFiles.value.push(item)
-        scrollBottom()
-      }
-    },
+    onEvent: handleAgentEvent,
     onError(err) {
       ElMessage.error(err.message)
       streaming.value = false
       thinkClosed.value = true
+      browserBusy.value = false
     },
     async onDone() {
       streaming.value = false
       thinkClosed.value = true
+      trajLiveCollapsed.value = true
+      browserBusy.value = false
       const files = pendingFiles.value.length ? [...pendingFiles.value] : undefined
+      const cites = liveCitations.value.length ? [...liveCitations.value] : undefined
+      const traj = trajectorySteps.value.length ? [...trajectorySteps.value] : undefined
       if (streamingContent.value || files?.length) {
         messages.value.push({
           id: Date.now() + 1,
           role: 'assistant',
           content: displayText(streamingContent.value || '文件已生成'),
           files,
+          citations: cites,
+          trajectory: traj,
         })
         streamingContent.value = ''
         pendingFiles.value = []
+        liveCitations.value = []
       }
       try {
-        if (activeId.value) {
-          const data = await listMessages(activeId.value)
-          messages.value = (data.items || []).map((m) => ({
-            ...m,
-            files: m.files?.length ? m.files : undefined,
-          }))
-          readyFiles.value = messages.value.flatMap((m) => m.files || []).reverse()
-        }
+        await refreshMessagesFromServer()
         await refreshConversations()
       } catch {
         /* interceptor */
@@ -474,14 +642,55 @@ async function onSend() {
 }
 
 async function onConfirm(approved: boolean) {
-  if (!pendingConfirm.value) return
-  try {
-    await resolveConfirmation(pendingConfirm.value.id, approved)
-    ElMessage.success(approved ? '已同意并执行' : '已拒绝')
-    pendingConfirm.value = null
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '确认失败')
-  }
+  if (!pendingConfirm.value || streaming.value) return
+  const confId = pendingConfirm.value.id
+  pendingConfirm.value = null
+  streaming.value = true
+  streamingContent.value = ''
+  thinkCollapsed.value = true
+  thinkClosed.value = false
+  thinkingVisible.value = true
+
+  chatAbort = streamResumeConfirmation(confId, approved, {
+    onEvent: handleAgentEvent,
+    onError(err) {
+      ElMessage.error(err.message)
+      streaming.value = false
+      thinkClosed.value = true
+      browserBusy.value = false
+    },
+    async onDone() {
+      streaming.value = false
+      thinkClosed.value = true
+      trajLiveCollapsed.value = true
+      browserBusy.value = false
+      const files = pendingFiles.value.length ? [...pendingFiles.value] : undefined
+      const cites = liveCitations.value.length ? [...liveCitations.value] : undefined
+      const traj = trajectorySteps.value.length ? [...trajectorySteps.value] : undefined
+      if (streamingContent.value || files?.length) {
+        messages.value.push({
+          id: Date.now() + 2,
+          role: 'assistant',
+          content: displayText(streamingContent.value || (approved ? '已继续执行' : '已拒绝')),
+          files,
+          citations: cites,
+          trajectory: traj,
+        })
+        streamingContent.value = ''
+        pendingFiles.value = []
+        liveCitations.value = []
+      }
+      try {
+        await refreshMessagesFromServer()
+        await refreshConversations()
+      } catch {
+        /* interceptor */
+      }
+      ElMessage.success(approved ? '已同意并继续执行' : '已拒绝')
+      await nextTick()
+      scrollBottom()
+    },
+  })
 }
 
 async function refreshSkills() {
@@ -583,6 +792,8 @@ onMounted(async () => {
     if (data.type === 'browser.frame') {
       if (data.frame) browserFrame.value = String(data.frame)
       if (data.url) browserUrl.value = String(data.url)
+      browserBusy.value = false
+      rightTab.value = 'browser'
     }
   })
 })
@@ -714,9 +925,104 @@ onUnmounted(() => {
   background: #fff;
   border: 1px dashed #dcdfe6;
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 0;
   margin-bottom: 12px;
   font-size: 13px;
+  overflow: hidden;
+}
+.trace-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+.trace-header:hover {
+  background: #f5f7fa;
+}
+.trace-title {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  color: #606266;
+  margin-bottom: 0;
+}
+.trace-summary {
+  font-weight: 400;
+  color: #909399;
+  font-size: 12px;
+}
+.trace-body {
+  padding: 0 12px 10px;
+  max-height: 220px;
+  overflow: auto;
+  border-top: 1px dashed #ebeef5;
+}
+.traj-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 6px 0;
+  line-height: 1.4;
+}
+.traj-detail {
+  color: #606266;
+  font-size: 12px;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.traj-line.fail .traj-detail {
+  color: #f56c6c;
+}
+.cite-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.cite-row.live-cites {
+  margin-bottom: 10px;
+}
+.cite-label {
+  font-size: 12px;
+  color: #909399;
+  margin-right: 2px;
+}
+.cite-chip {
+  border: 1px solid #e4e7ed;
+  background: #fff;
+  color: #606266;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cite-chip:hover {
+  border-color: #409eff;
+  color: #409eff;
+}
+.hist-traj {
+  margin-top: 8px;
+}
+.muted {
+  color: #909399;
+  font-size: 12px;
 }
 .think-card {
   background: #f7f8fa;
@@ -772,7 +1078,6 @@ onUnmounted(() => {
   overflow: auto;
   border-top: 1px dashed #ebeef5;
 }
-.trace-title,
 .sec-title {
   font-weight: 600;
   margin-bottom: 6px;

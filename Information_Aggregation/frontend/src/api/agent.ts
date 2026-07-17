@@ -64,6 +64,19 @@ export interface ChatMessage {
   content: string
   created_at?: string
   files?: { file_id: number; name?: string }[]
+  citations?: { title: string; url?: string; snippet?: string }[]
+  trajectory?: TrajectoryStep[]
+  react_steps?: { thought?: string; action?: string; observation?: string; round?: number }[]
+}
+
+export interface TrajectoryStep {
+  round?: number
+  kind?: string
+  title: string
+  detail?: string
+  status?: string
+  reason?: string
+  tool?: string
 }
 
 export function listConversations() {
@@ -156,6 +169,79 @@ export async function downloadWorkspaceFile(fileId: number, filename?: string) {
 
 export function resolveConfirmation(id: number, approved: boolean) {
   return agentRequest.post(`/v1/confirmations/${id}`, { approved })
+}
+
+/** SSE：确认后续跑（同意继续 ReAct / 拒绝结束） */
+export function streamResumeConfirmation(
+  confirmationId: number,
+  approved: boolean,
+  handlers: {
+    onEvent: (event: string, data: unknown) => void
+    onError?: (err: Error) => void
+    onDone?: () => void
+  },
+) {
+  const controller = new AbortController()
+  const token = localStorage.getItem('token') || ''
+
+  ;(async () => {
+    try {
+      const resp = await fetch(`/api/agent/v1/confirmations/${confirmationId}/resume`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify({ approved }),
+        signal: controller.signal,
+      })
+      if (!resp.ok) {
+        let detail = `确认续跑失败: ${resp.status}`
+        try {
+          const errBody = await resp.json()
+          if (typeof errBody?.detail === 'string') detail = errBody.detail
+        } catch {
+          /* ignore */
+        }
+        throw new Error(detail)
+      }
+      if (!resp.body) throw new Error('确认续跑响应为空')
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder('utf-8')
+      let buffer = ''
+      let eventName = 'message'
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n')
+        buffer = parts.pop() || ''
+        for (const line of parts) {
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim()
+          } else if (line.startsWith('data:')) {
+            const raw = line.slice(5).trim()
+            let data: unknown = raw
+            try {
+              data = JSON.parse(raw)
+            } catch {
+              /* keep string */
+            }
+            handlers.onEvent(eventName, data)
+          } else if (line.trim() === '') {
+            eventName = 'message'
+          }
+        }
+      }
+      handlers.onDone?.()
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return
+      handlers.onError?.(e as Error)
+    }
+  })()
+
+  return controller
 }
 
 export function getMemoryProfile() {

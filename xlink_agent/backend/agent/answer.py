@@ -538,6 +538,68 @@ def extract_search_hit_cards(facts: list[str]) -> list[dict[str, str]]:
     return cards[:15]
 
 
+def build_citations(facts: list[str], *, max_n: int = 8) -> list[dict[str, str]]:
+    """组装用户可见来源：搜索命中 + 已抓取正文 URL，去重。"""
+    out: list[dict[str, str]] = []
+    seen_url: set[str] = set()
+    seen_title: set[str] = set()
+
+    def _add(title: str, url: str, snippet: str = "") -> None:
+        url = (url or "").strip()
+        title = (title or "").strip() or (url[:60] if url else "")
+        if not title and not url:
+            return
+        if url:
+            if url in seen_url:
+                return
+            # 跳过搜索引擎中间页
+            if any(
+                x in url
+                for x in (
+                    "sogou.com/web",
+                    "bing.com/search",
+                    "duckduckgo.com",
+                    "google.com/search",
+                )
+            ):
+                return
+            seen_url.add(url)
+        key = _norm_item(title)
+        if key and key in seen_title:
+            return
+        if key:
+            seen_title.add(key)
+        out.append(
+            {
+                "title": title[:120],
+                "url": url[:300],
+                "snippet": (snippet or "")[:200],
+            }
+        )
+
+    for c in extract_search_hit_cards(facts):
+        _add(c.get("title") or "", c.get("url") or "", c.get("snippet") or "")
+        if len(out) >= max_n:
+            return out
+
+    for f in facts or []:
+        if not (
+            f.startswith("网页正文摘要")
+            or f.startswith("网页内容摘要")
+            or f.startswith("页面内容摘要")
+            or f.startswith("网页摘录")
+        ):
+            continue
+        m_url = re.search(r"https?://[^\s\]）)]+", f)
+        url = m_url.group(0) if m_url else ""
+        title_m = re.search(r"标题[:：]\s*([^\n]+)", f)
+        title = (title_m.group(1).strip() if title_m else "") or "网页摘录"
+        _add(title, url, f[:160])
+        if len(out) >= max_n:
+            break
+    return out[:max_n]
+
+
 def materials_blob_for_synthesis(facts: list[str], *, max_chars: int = 7000) -> str:
     """拼给总结模型的材料包：命中卡片 + 正文摘要。"""
     parts: list[str] = []
