@@ -11,6 +11,7 @@ from typing import Any, AsyncIterator
 from sqlalchemy.orm import Session
 
 from agent.answer import (
+    answer_depth_score,
     answer_parrots_search_titles,
     build_citations,
     enrich_finish_answer,
@@ -21,6 +22,7 @@ from agent.answer import (
     has_substantive_content_facts,
     is_hollow_answer,
     is_substantive_draft,
+    is_thin_list_draft,
     looks_like_internal,
     pick_fetch_url,
     sanitize_public_answer,
@@ -60,6 +62,7 @@ from agent.react import (
     format_observation,
     parse_react_output,
 )
+from agent.research_policy import next_research_tool
 from agent.trajectory import (
     action_step,
     confirm_tool_label,
@@ -364,8 +367,20 @@ async def _finalize_user_answer(
             )
         return text
 
-    # finish 已有完整答案：无 Observation 时直接交付，避免总结器改成「没有材料」
+    # 有实质性草稿但无检索材料：薄清单要扩写；充实草稿可直接交
     if is_substantive_draft(draft, goal) and not has_materials:
+        if is_thin_list_draft(draft):
+            rich = await synthesize_rich_answer(
+                model,
+                goal=goal,
+                facts=task_ctx.facts,
+                draft=draft,
+                thought=thought,
+                force_expand=True,
+            )
+            final = _reject_internal_answer(rich, goal)
+            if final and answer_depth_score(final) >= answer_depth_score(draft):
+                return _track(FinalizePath.DRAFT_EXPANDED, final)
         return _track(FinalizePath.DRAFT_DIRECT_NO_MATERIALS, draft)
 
     if has_materials:
@@ -375,6 +390,7 @@ async def _finalize_user_answer(
             facts=task_ctx.facts,
             draft=draft,
             thought=thought,
+            force_expand=is_thin_list_draft(draft or ""),
         )
         final = _reject_internal_answer(rich, goal)
         if final and answer_relevant_to_goal(final, goal) and not answer_parrots_search_titles(
@@ -544,7 +560,12 @@ async def run_chat(
         messages.append(
             {
                 "role": "user",
-                "content": build_react_continue_prompt(task_ctx.render(), scratchpad),
+                "content": build_react_continue_prompt(
+                    task_ctx.render(),
+                    scratchpad,
+                    goal=task_ctx.goal,
+                    facts=task_ctx.facts,
+                ),
             }
         )
 
@@ -627,48 +648,70 @@ async def run_chat(
                     if not content:
                         content = ""
                     # 空壳 finish：若 thought/搜索事实已能补全则直接交付；
-                    # 有搜索结果但未抓正文：禁止让用户选编号，自动 web_fetch
+                    # 深度任务 / 材料不足：强制继续搜索或抓正文
                     enriched_preview = enrich_finish_answer(
                         content,
                         thought=think,
                         facts=task_ctx.facts,
                         goal=task_ctx.goal or "",
                     )
-                    fetched_already = any(
-                        s.action in {"web_fetch", "http_request", "browser_extract", "browser_navigate"}
-                        for s in scratchpad.steps
+                    more = next_research_tool(
+                        goal=task_ctx.goal or "",
+                        facts=task_ctx.facts,
+                        steps=scratchpad.steps,
+                        failed_urls=task_ctx.failed_urls,
+                        round_i=round_i,
+                        max_rounds=agent_max_tool_rounds,
                     )
-                    next_url = pick_fetch_url(task_ctx.facts, skip=set(task_ctx.failed_urls))
-                    must_fetch = (
-                        bool(next_url)
-                        and not fetched_already
-                        and round_i < agent_max_tool_rounds - 1
-                        and (
-                            search_only_needs_fetch(task_ctx.facts, fetched_already=fetched_already)
-                            or (
-                                is_hollow_answer(content)
-                                and is_hollow_answer(enriched_preview)
-                            )
+                    # 兼容：仅有搜索标题时也要抓
+                    if not more:
+                        fetched_already = any(
+                            s.action
+                            in {"web_fetch", "http_request", "browser_extract", "browser_navigate"}
+                            for s in scratchpad.steps
                         )
-                    )
-                    if must_fetch and next_url:
-                        run_state.intercept("auto_web_fetch", round_i=round_i, url=next_url[:120])
+                        next_url = pick_fetch_url(task_ctx.facts, skip=set(task_ctx.failed_urls))
+                        if (
+                            next_url
+                            and not fetched_already
+                            and round_i < agent_max_tool_rounds - 1
+                            and (
+                                search_only_needs_fetch(
+                                    task_ctx.facts, fetched_already=fetched_already
+                                )
+                                or (
+                                    is_hollow_answer(content)
+                                    and is_hollow_answer(enriched_preview)
+                                )
+                            )
+                        ):
+                            more = {
+                                "tool": "web_fetch",
+                                "args": {"url": next_url},
+                                "think": "搜索后自动抓取内容页",
+                                "reason": "auto_web_fetch",
+                            }
+                    if more:
+                        tool_n = str(more["tool"])
+                        args_n = more.get("args") or {}
+                        reason = str(more.get("reason") or "need_more_research")
+                        run_state.intercept(reason, round_i=round_i, tool=tool_n)
                         yield _emit_traj(
                             intercept_step(
-                                "auto_web_fetch",
+                                reason,
                                 round_i=round_i,
-                                detail=f"打开：{next_url[:100]}",
+                                detail=f"{tool_n}: {str(args_n)[:100]}",
                             )
                         )
                         async for chunk in _emit_think(
-                            f"只读任务不需用户选择，自动 web_fetch: {next_url[:100]}\n"
+                            f"材料不足，自动继续取数（{reason}）: {tool_n} {str(args_n)[:100]}\n"
                         ):
                             yield chunk
                         parsed = {
                             "action": "tool",
-                            "tool": "web_fetch",
-                            "args": {"url": next_url},
-                            "think": "搜索后自动抓取内容页",
+                            "tool": tool_n,
+                            "args": args_n,
+                            "think": str(more.get("think") or "继续调研"),
                         }
                         action = "tool"
                     else:
@@ -1409,7 +1452,12 @@ async def resume_chat_after_confirmation(
         messages.append(
             {
                 "role": "user",
-                "content": build_react_continue_prompt(task_ctx.render(), scratchpad),
+                "content": build_react_continue_prompt(
+                    task_ctx.render(),
+                    scratchpad,
+                    goal=task_ctx.goal,
+                    facts=task_ctx.facts,
+                ),
             }
         )
         raw = await model.chat(messages, temperature=0.2)

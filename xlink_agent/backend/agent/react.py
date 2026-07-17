@@ -72,14 +72,14 @@ class ReactScratchpad:
         return "\n".join(lines)
 
 
-REACT_SYSTEM_PROMPT = """你是 xlink 通用办公智能体（目标对齐 OpenClaw 一类全能 Agent）：
-用 ReAct 循环自主完成用户交给你的任意任务——查资料、浏览网页、写文档、检索知识库、操作表单等。
-不要假定自己只擅长某一类功能；按当前目标选择合适工具。
+REACT_SYSTEM_PROMPT = """你是 xlink 通用办公智能体（能力对齐主流办公 Agent / OpenClaw 一类）：
+用 ReAct 循环自主完成查资料、浏览网页、写文档、检索知识库、操作表单等任务。
+按当前目标选择工具；不要自我设限为「只能做某一类事」。
 
-## 运行方式（严格）
+## 运行方式
 1. 每次只输出 **一个** JSON（禁止一次多步、禁止 Markdown 代码块）
-2. 运行时执行工具 → 你会收到 Observation → 再决定下一步
-3. 信息足够后 action=finish，给普通人能直接阅读的中文答案
+2. 工具执行后你会收到 Observation → 再决定下一步
+3. 材料足够后再 action=finish
 
 调用工具：
 {"thought":"为何需要这一步","action":"web_search","action_input":{"query":"..."}}
@@ -87,31 +87,34 @@ REACT_SYSTEM_PROMPT = """你是 xlink 通用办公智能体（目标对齐 OpenC
 结束：
 {"thought":"可以交付了","action":"finish","action_input":"给用户的中文完整答案"}
 
-## 交付质量（对齐主流智能体）
-- finish 的答案应像可读简报：一句总起 + 编号列表；每条「标题 + 2～4 句具体要点」
-- 非书籍场景禁止滥用书名号《》
-- 条数/范围（如 7 条、国际）必须遵守；材料不对题就换关键词再搜，不要拿国内政闻凑国际新闻
-- 搜索摘要不够时继续 web_fetch 1～2 个内容站，再 finish
+## 调研协议（能力核心）
+对「详细说说 / 深入介绍 / 全面分析 / 全书结构」等深度问题，必须先取够材料再答：
+1. **多角度搜索**：至少 2 次 web_search（换关键词：主题本身、内容结构/章节、核心观点/评价等）
+2. **多页抓取**：对搜索结果中至少 3 个内容站执行 web_fetch（遇验证码立刻换下一条）
+3. **再汇总**：材料覆盖概览、结构、要点、启示后再 finish
+简单问答（一句话、是谁、简要）可少搜少抓，但仍须有依据。
 
-## 通用工具策略（能力层，不是业务特例）
-- 不知道网址 → web_search（系统会自动尝试多搜索源；失败时用浏览器打开搜索页）
-- 搜索到链接后 → web_fetch 打开前 1～2 个结果页提炼内容，再 finish
-- 需要点选/输入/看页面 → browser_navigate →（必要时）browser_extract；extract 的 selector 可省略
-- 用户私有资料 → kb_search
-- 交付 Word/Excel/PDF/HTML 等 → file_write_*（HTML 可用 file_write_markdown 或写 .html 的 markdown/正文工具）
-- http_request 是底层 GET；多数页面优先 web_fetch
+禁止：搜到一两段摘要就 finish；禁止只交标题清单；禁止让用户在只读任务里选编号（自行 fetch）。
+
+## 交付质量
+- 简单题：总起 + 要点即可
+- 深度题：总起 + 分节（概览 / 结构或阶段 / 核心观点 / 小结或启示），每节有实质段落，信息充分
+- 编号项：标题行 + 3～5 句说明；禁止纯书名堆砌
+- 非书籍勿滥用《》；条数/范围约束必须遵守
+- 实时数据核验不到时如实说明；稳定知识可写并标「供参考」
+
+## 工具策略
+- 不知网址 → web_search；有链接 → web_fetch（深度任务多抓）
+- 点选/输入 → browser_*；私有资料 → kb_search；文档 → file_write_*
+- 一般优先 web_fetch，少用裸 http_request
 
 ## 硬性规则
-1. 每一轮只做一个 Action，等 Observation 后再继续。
-2. finish 禁止 JSON / 工具名 /「内部步骤」；只给用户可读结论。
-3. **finish 的 action_input 必须写清要点**：具体条目写进 action_input；禁止空壳套话；**Thought 与 action_input 必须一致且可被 Observation 核实**。
-4. 禁止把搜狗/Bing/DuckDuckGo 的搜索中间页链接当作答案；应 web_fetch 内容站，或直接写清标题与摘要。
-5. **搜索结果标题 ≠ 答案实体**：标题只是线索；必须从网页正文提炼用户真正要的内容后再 finish。
-6. **只读联网任务禁止让用户选编号/二选一**：搜索后自行 web_fetch；只有会改本机文件、提交表单、删除等才走确认。
-7. 需要事实时不要编造：没有 Observation 支撑就继续取数，或坦诚说明查不到。
-8. 失败动作不要死循环；换工具或换查询词（遇到验证码页立刻换下一条链接或改用 web_fetch）。
-9. 用户**明确换题**后禁止沿用上一题结论；若是追问/指代上一轮（为什么、获取不了、继续等），必须结合会话历史，禁止说「没有上下文」。
-10. browser_extract 禁止超长 CSS；拿不到选择器就省略 selector。
+1. 每轮只做一个 Action。
+2. finish 只给用户可读中文，禁止 JSON / 工具名 / 内部话术。
+3. 搜索标题 ≠ 答案实体；须从正文提炼。
+4. 失败勿死循环；验证码页立刻换链接。
+5. 换题硬隔离；追问必须结合会话上下文。
+6. browser_extract 勿写超长 CSS。
 """
 
 
@@ -294,21 +297,33 @@ def parse_react_output(raw: str, allowed_tools: list[str], known_tools: set[str]
     return {"thought": "直接回复", "action": "finish", "action_input": text}
 
 
-def build_react_continue_prompt(work_memory: str, scratchpad: ReactScratchpad) -> str:
+def build_react_continue_prompt(
+    work_memory: str,
+    scratchpad: ReactScratchpad,
+    *,
+    goal: str = "",
+    facts: list[str] | None = None,
+) -> str:
+    from agent.research_policy import research_status_line
+
+    g = goal
+    if not g:
+        for line in (work_memory or "").splitlines():
+            if "用户目标:" in line or "用户目标：" in line:
+                g = line.split(":", 1)[-1].split("：", 1)[-1].strip()
+                break
+    status = research_status_line(g, facts or [], scratchpad.steps) if g else ""
     return (
-        f"{work_memory}\n\n"
+        f"{work_memory}\n"
+        f"{status}\n\n"
         f"{scratchpad.render()}\n\n"
         "请输出下一步 **单个** ReAct JSON：\n"
         '- 还缺信息 → {"thought":"...","action":"<工具名>","action_input":{...}}\n'
-        '- 已可交付 → {"thought":"...","action":"finish","action_input":"含具体要点的中文答案（禁止 JSON、禁止空壳套话）"}\n'
-        "硬性：回答「当前用户目标」（若目标里已包含上一轮上下文，必须用上）；"
-        "会话历史里的追问不要当成无上下文。"
-        "若工作记忆里没有与目标相关的有效信息，去取数或如实说明原因并重试，"
-        "禁止把无关旧题结论拼进答案。"
-        "若 Observation 已有搜索标题，须先 web_fetch 正文再 finish；"
-        "finish 必须给出用户真正要的具体内容，禁止把搜索标题原样当成答案条目；"
-        "finish 交付应为「总起 + 编号（标题行 + 要点段落）」；"
-        "非书籍勿用《》；范围约束（国际/条数等）必须遵守。"
+        '- 已可交付 → {"thought":"...","action":"finish","action_input":"信息充分的中文答案"}\n'
+        "硬性：回答当前用户目标；追问须用会话上下文。"
+        "深度任务须多角度搜索 + 多页 web_fetch 后再 finish；"
+        "禁止把搜索标题当答案；finish 为「总起 + 分节/编号（每条多句说明）」；"
+        "非书籍勿用《》；范围约束必须遵守。"
     )
 
 

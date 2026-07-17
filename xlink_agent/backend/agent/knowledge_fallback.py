@@ -22,13 +22,21 @@ async def knowledge_fallback_answer(model: Any, goal: str) -> str:
                 "1. 只回答当前问题，不要夹带无关话题。\n"
                 "2. 需要实时数据却无法核验时：说明限制，并给出可操作的下一步，不要编造精确数字。\n"
                 "3. 主观判断/推荐类问题可以基于通行知识作答，并标明「供参考」。\n"
-                "4. 输出普通人能直接读的中文，禁止 JSON / 工具名 / 内部步骤。"
+                "4. 答复要充分：总起 + 编号列表；每条「标题 + 3～5 句说明」，"
+                "不要只给标题清单。\n"
+                "5. 输出普通人能直接读的中文，禁止 JSON / 工具名 / 内部步骤。"
             ),
         },
-        {"role": "user", "content": f"用户问题：{goal}"},
+        {
+            "role": "user",
+            "content": (
+                f"用户问题：{goal}\n\n"
+                "请给出信息充分、可直接阅读的中文答复。"
+            ),
+        },
     ]
     try:
-        text = await model.chat(messages, temperature=0.4)
+        text = await model.chat(messages, temperature=0.45)
     except Exception:
         return (
             "这一轮没能用工具拿到足够材料，我也暂时没法生成可靠答复。"

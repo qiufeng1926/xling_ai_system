@@ -23,6 +23,7 @@ class RunPhase(str, Enum):
 
 class FinalizePath(str, Enum):
     DRAFT_DIRECT_NO_MATERIALS = "draft_direct_no_materials"
+    DRAFT_EXPANDED = "draft_expanded"
     RICH_SYNTHESIS = "rich_synthesis"
     DRAFT_AFTER_RICH_FAIL = "draft_after_rich_fail"
     DRAFT_NON_HOLLOW = "draft_non_hollow"

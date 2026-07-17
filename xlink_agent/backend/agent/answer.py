@@ -373,6 +373,57 @@ def is_substantive_draft(text: str, goal: str = "") -> bool:
     return len(t) >= 60
 
 
+def is_thin_list_draft(text: str) -> bool:
+    """条目只有标题、几乎无说明 → 需要扩写。"""
+    t = sanitize_public_answer(text or "").strip()
+    if not t:
+        return True
+    # 已有多行说明段落，不算薄
+    explain_lines = [
+        ln.strip()
+        for ln in t.splitlines()
+        if ln.strip()
+        and not re.match(r"^\s*\d+[\.、．]", ln)
+        and not re.match(r"^以下|^为您|^推荐|^供参考", ln)
+        and len(re.sub(r"[《》\*\#\s]", "", ln)) >= 18
+    ]
+    if len(explain_lines) >= 2 and len(t) >= 160:
+        return False
+    if answer_depth_score(t) >= 40:
+        return False
+
+    items = extract_answer_items(t)
+    if len(items) >= 2:
+        cleaned = [re.sub(r"[《》\*\s]", "", i) for i in items]
+        avg = sum(len(x) for x in cleaned) / max(len(cleaned), 1)
+        if avg <= 18 and len(t) < 420 and len(explain_lines) < 2:
+            return True
+        numbered = [ln for ln in t.splitlines() if re.match(r"^\s*\d+[\.、．]", ln.strip())]
+        if len(numbered) >= 3 and all(len(ln.strip()) < 40 for ln in numbered) and len(explain_lines) < 2:
+            return True
+    if t.count("《") >= 3 and len(t) < 280 and len(explain_lines) < 2:
+        return True
+    return False
+
+
+def answer_depth_score(text: str) -> int:
+    """粗略衡量答复充实度（越高越好）。"""
+    t = sanitize_public_answer(text or "").strip()
+    if not t:
+        return 0
+    score = min(len(t), 1200) // 15
+    score += t.count("\n") * 2
+    score += len(extract_answer_items(t)) * 4
+    # 标题后跟说明段落
+    if re.search(r"(\*\*[^*]+\*\*|^\d+[\.、．].+)\n.+\n", t, re.M):
+        score += 15
+    if any(k in t for k in ("作者", "背景", "要点", "适合", "因为", "主要", "例如")):
+        score += 8
+    if any(k in t for k in ("没有材料", "无法推荐", "无法根据检索")):
+        score -= 40
+    return score
+
+
 def _thought_has_substance(thought: str) -> bool:
     t = (thought or "").strip()
     if len(t) < 40:
@@ -600,7 +651,7 @@ def build_citations(facts: list[str], *, max_n: int = 8) -> list[dict[str, str]]
     return out[:max_n]
 
 
-def materials_blob_for_synthesis(facts: list[str], *, max_chars: int = 7000) -> str:
+def materials_blob_for_synthesis(facts: list[str], *, max_chars: int = 10000) -> str:
     """拼给总结模型的材料包：命中卡片 + 正文摘要。"""
     parts: list[str] = []
     cards = extract_search_hit_cards(facts)
@@ -623,10 +674,38 @@ def materials_blob_for_synthesis(facts: list[str], *, max_chars: int = 7000) -> 
     ]
     if bodies:
         parts.append("## 网页正文摘录")
-        for b in bodies[-4:]:
-            parts.append(b[:1200])
+        for b in bodies[-6:]:
+            parts.append(b[:1800])
+    # 其它与目标相关的事实也带上
+    extras = [
+        f
+        for f in (facts or [])
+        if f not in bodies and not f.startswith("搜索结果") and len(f) >= 20
+    ]
+    if extras:
+        parts.append("## 其它本轮有效信息")
+        for e in extras[-8:]:
+            parts.append(e[:600])
     blob = "\n".join(parts).strip()
     return blob[:max_chars]
+
+
+_SYNTH_SYSTEM = (
+    "你是通用信息整理编辑，最终答案质量对齐主流办公智能体（信息充分、结构清晰、可直接阅读）。\n"
+    "根据「用户目标」与「检索材料 / 模型草稿」撰写最终答复，规则：\n"
+    "1. 开头 1～2 句总起（点明主题；若目标含条数/范围，写清楚；可加一句筛选标准）。\n"
+    "2. 用编号列表或分节交付；每条/每节必须包含实质说明：\n"
+    "   - 标题行（书籍可用《书名》，新闻/普通条目禁止乱加《》）；\n"
+    "   - 随后 3～5 句：背景/主体、核心内容、意义或适合谁；有数字/时间则写出。\n"
+    "3. 深度问题（详细/全书/结构/分析）：采用「概览 → 结构或阶段 → 核心观点 → 小结/启示」"
+    "分层展开，尽量写充分，不要三言两语交差。\n"
+    "4. 信息要充分：宁可写长一点写清楚，也不要只堆标题。\n"
+    "5. **禁止**把搜索引擎结果页标题、栏目名、合集名当成答案条目交差。\n"
+    "6. 严格遵守目标约束；实时精确数字核验不到不要编造。\n"
+    "7. 若检索材料为空但「模型草稿」已有条目：扩写成完整可读答复，可标「供参考」；"
+    "**禁止**只说「没有材料无法推荐」或「检索材料有限」作为主要内容。\n"
+    "8. 只输出给用户的中文正文，禁止 JSON / 工具名 / 内部步骤。"
+)
 
 
 async def synthesize_rich_answer(
@@ -636,61 +715,73 @@ async def synthesize_rich_answer(
     facts: list[str],
     draft: str = "",
     thought: str = "",
+    force_expand: bool = False,
 ) -> str:
-    """豆包风格交付：总起 + 编号条目（标题行 + 2～4 句要点），严格贴合目标与材料。"""
+    """豆包风格交付：总起 + 编号条目（标题行 + 多句要点），信息尽量充分。"""
     materials = materials_blob_for_synthesis(facts)
     draft_clean = sanitize_public_answer(draft or "")
-
-    # 无检索材料但 finish 草稿已够用 → 直接交付，禁止总结器改成「没有材料」
-    if not materials and is_substantive_draft(draft_clean, goal):
-        return draft_clean
 
     if not materials and not draft_clean:
         return ""
 
+    # 无材料且草稿已充实（非薄清单）且未强制扩写 → 可直接交
+    if (
+        not materials
+        and is_substantive_draft(draft_clean, goal)
+        and not is_thin_list_draft(draft_clean)
+        and not force_expand
+    ):
+        return draft_clean
+
     n_hint = ""
     m = re.search(r"(\d+)\s*(?:本|个|条|款|篇|首|部)", goal or "")
     if m:
-        n_hint = f"用户明确要求约 {m.group(1)} 条；尽量凑够，材料不够就如实少写并说明。\n"
+        n_hint = (
+            f"用户明确要求约 {m.group(1)} 条；尽量凑够并写充分，"
+            "材料不够就如实少写并说明。\n"
+        )
+
+    expand_hint = ""
+    if force_expand or is_thin_list_draft(draft_clean) or not materials:
+        expand_hint = (
+            "特别要求：草稿若只有标题清单，必须扩写为「标题 + 3～5 句说明」的充实版本；"
+            "可使用通行稳定知识补充介绍，并在总起或文末注明「供参考」。\n"
+        )
+    from agent.research_policy import is_deep_research_goal
+
+    if is_deep_research_goal(goal):
+        expand_hint += (
+            "这是深度问题：请按「概览 / 结构或阶段 / 核心观点 / 小结启示」充分展开，"
+            "不要只写三段短介绍；材料不足处用稳定知识补全并标明供参考。\n"
+        )
 
     messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是通用信息整理编辑，最终答案质量对齐主流办公智能体（结构清晰、可直接阅读）。\n"
-                "根据「用户目标」与「检索材料」撰写最终答复，规则：\n"
-                "1. 开头一句总起（点明主题；若目标含条数/范围，写清楚）。\n"
-                "2. 用编号列表交付；每条第一行是简明标题（加粗可用 **标题**），"
-                "下面紧跟 2～4 句具体说明（人物/数字/进展/时间），信息尽量来自材料。\n"
-                "3. **禁止**给新闻/普通条目乱加书名号《》；仅当材料明确是书籍且原文带书名号时才用《》。\n"
-                "4. **禁止**把搜索引擎结果页标题、栏目名、合集名当成答案条目交差；"
-                "要从摘要/正文提炼用户真正要的内容。\n"
-                "5. 严格遵守目标约束（例如只要「国际」新闻就不要用国内政闻凑数；"
-                "若材料不对题，宁可不写或说明材料不足并建议换关键词）。\n"
-                "6. 需要实时核验但材料没有的精确数字，不要编造。\n"
-                "7. 若检索材料为空但「模型草稿」已有完整可用答案，请整理草稿交付，"
-                "可标注「供参考」；**禁止**只说「没有材料无法推荐」。\n"
-                "8. 只输出给用户的中文正文，禁止 JSON / 工具名 / 内部步骤。"
-            ),
-        },
+        {"role": "system", "content": _SYNTH_SYSTEM},
         {
             "role": "user",
             "content": (
                 f"用户目标：{goal}\n"
-                f"{n_hint}\n"
+                f"{n_hint}"
+                f"{expand_hint}\n"
                 f"检索材料：\n{materials or '（无）'}\n\n"
-                f"模型草稿（可参考，错误处请改正）：\n{(draft or '（空）')[:1500]}\n\n"
-                f"Thought（仅供参考）：\n{(thought or '（无）')[:400]}\n\n"
-                "请输出最终高质量中文答案。"
+                f"模型草稿（可参考，错误处请改正，薄清单请扩写）：\n"
+                f"{(draft or '（空）')[:2500]}\n\n"
+                f"Thought（仅供参考）：\n{(thought or '（无）')[:500]}\n\n"
+                "请输出最终高质量、信息充分的中文答案。"
             ),
         },
     ]
     try:
-        text = await model.chat(messages, temperature=0.35)
+        text = await model.chat(messages, temperature=0.4)
     except Exception:
-        return ""
+        return draft_clean if is_substantive_draft(draft_clean, goal) else ""
     out = sanitize_public_answer(text or "")
-    if not out or is_hollow_answer(out) or looks_like_internal(out):
+    if (
+        not out
+        or is_hollow_answer(out)
+        or looks_like_internal(out)
+        or any(x in out for x in ("没有材料无法", "无法根据检索材料", "目前没有提供具体"))
+    ):
         if is_substantive_draft(draft_clean, goal):
             return draft_clean
         return ""
@@ -698,8 +789,11 @@ async def synthesize_rich_answer(
         if is_substantive_draft(draft_clean, goal):
             return draft_clean
         return ""
+    # 扩写后若反而更薄，回退草稿
+    if draft_clean and answer_depth_score(out) + 8 < answer_depth_score(draft_clean):
+        return draft_clean
     # 明显滥用书名号套新闻：再压一次简单清洗
-    if out.count("《") >= 3 and not any(k in goal for k in ("书", "小说", "阅读", "著作")):
+    if out.count("《") >= 3 and not any(k in goal for k in ("书", "小说", "阅读", "著作", "经济")):
         out2 = re.sub(r"《([^》]+)》", r"\1", out)
         out = sanitize_public_answer(out2)
     return out
@@ -967,7 +1061,7 @@ def enrich_finish_answer(
     return text
 
 
-def first_content_urls_from_facts(facts: list[str], *, limit: int = 2) -> list[str]:
+def first_content_urls_from_facts(facts: list[str], *, limit: int = 3) -> list[str]:
     """从搜索事实里抽出可 web_fetch 的内容站链接（跳过搜索引擎结果页）。"""
     urls: list[str] = []
     for f in facts:
@@ -995,7 +1089,7 @@ def summarize_http_or_extract_for_memory(tool: str, result: dict[str, Any]) -> s
     """工具结果写入工作记忆：保留足够正文，供最终核实答案使用。"""
     text = str(result.get("text") or "")
     status = result.get("status")
-    brief = re.sub(r"\s+", " ", text).strip()[:1500]
+    brief = re.sub(r"\s+", " ", text).strip()[:2200]
     # 额外保留若干短行，便于模型抽出「真正条目」（通用，不假定业务）
     line_items: list[str] = []
     for ln in text.splitlines():

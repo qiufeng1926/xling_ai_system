@@ -69,22 +69,27 @@ async def test_finalize_keeps_draft_when_no_materials() -> CaseResult:
     from agent.orchestrator import _finalize_user_answer
     from agent.run_state import AgentRunState, FinalizePath
 
+    # 已较充实、不应再强制扩写的草稿
     draft = (
-        "以下是我为您推荐的7本经济类型的书籍：《穷查理宝典》、《国富论》、"
-        "《资本论》、《经济学原理》、《投资最重要的事》、《金融的逻辑》、《债务危机》。"
+        "为您推荐几本经济入门书（供参考）：\n"
+        "1. **国富论**\n亚当·斯密著，讨论分工与市场如何促进财富增长，适合想了解古典经济学的读者。\n"
+        "2. **经济学原理**\n曼昆的通识教材，案例多、入门友好，适合零基础系统学习。"
     )
     model = MockModel(
         [
-            "很抱歉，目前没有提供具体的书籍材料，因此无法根据检索材料推荐7本经济类型的书籍。",
+            "很抱歉，目前没有提供具体的书籍材料，因此无法根据检索材料推荐。",
         ]
     )
-    ctx = TaskContext(goal="推荐7本经济类型的书籍给我")
+    ctx = TaskContext(goal="推荐经济类型的书籍给我")
     rs = AgentRunState(run_id="test", goal=ctx.goal)
     out = await _finalize_user_answer(
         model, ctx, draft, round_i=3, thought="可以交付了", run_state=rs
     )
-    ok = "穷查理宝典" in out and "没有材料" not in out
-    path_ok = rs.finalize_path == FinalizePath.DRAFT_DIRECT_NO_MATERIALS.value
+    ok = "国富论" in out and "没有材料" not in out
+    path_ok = rs.finalize_path in {
+        FinalizePath.DRAFT_DIRECT_NO_MATERIALS.value,
+        FinalizePath.DRAFT_EXPANDED.value,
+    }
     return CaseResult(
         "finalize_no_materials_keeps_draft",
         ok and path_ok,
@@ -99,15 +104,64 @@ async def test_synthesize_early_return() -> CaseResult:
         "以下是我为您推荐的7本经济类型的书籍：《穷查理宝典》、《国富论》、"
         "《资本论》、《经济学原理》、《投资最重要的事》、《金融的逻辑》、《债务危机》。"
     )
-    model = MockModel(["很抱歉，没有检索材料。"])
+    # 模拟总结器误杀：应回退草稿，而不是交「没有材料」
+    model = MockModel(["很抱歉，没有检索材料，无法推荐。"])
     out = await synthesize_rich_answer(
         model,
         goal="推荐7本经济书",
         facts=[],
         draft=draft,
+        force_expand=True,
     )
     ok = "国富论" in out and "没有材料" not in out and "没有检索" not in out
     return CaseResult("synthesize_early_return_draft", ok, out[:80])
+
+
+async def test_thin_draft_requests_expand() -> CaseResult:
+    from agent.answer import is_thin_list_draft, answer_depth_score
+
+    thin = "推荐如下：《国富论》、《资本论》、《经济学原理》。"
+    rich = (
+        "以下为经济入门书单（供参考）：\n"
+        "1. **国富论**\n亚当·斯密著，奠定古典经济学。书中讨论分工与市场，适合想了解市场经济起源的读者。\n"
+        "2. **资本论**\n马克思对资本主义的分析，偏理论，适合有一定基础后再读。"
+    )
+    ok = is_thin_list_draft(thin) and not is_thin_list_draft(rich) and answer_depth_score(rich) > answer_depth_score(thin)
+    return CaseResult("thin_draft_detect", ok)
+
+
+async def test_finalize_expands_thin_draft() -> CaseResult:
+    from agent.context import TaskContext
+    from agent.orchestrator import _finalize_user_answer
+    from agent.run_state import AgentRunState, FinalizePath
+
+    draft = "推荐7本：《穷查理宝典》、《国富论》、《资本论》、《经济学原理》、《投资最重要的事》、《金融的逻辑》、《债务危机》。"
+    expanded = (
+        "为您推荐7本经济类书籍（供参考）：\n"
+        "1. **穷查理宝典**\n查理·芒格的投资智慧合集，强调多元思维模型，适合投资者与决策者。\n"
+        "2. **国富论**\n亚当·斯密奠基之作，讨论分工、市场与财富增长。\n"
+        "3. **资本论**\n马克思对资本主义运行的系统分析。\n"
+        "4. **经济学原理**\n曼昆教材，入门友好。\n"
+        "5. **投资最重要的事**\n霍华德·马克斯谈风险与周期。\n"
+        "6. **金融的逻辑**\n陈志武通俗讲解金融作用。\n"
+        "7. **债务危机**\n达利欧对债务周期的框架梳理。"
+    )
+    model = MockModel([expanded])
+    ctx = TaskContext(goal="推荐7本经济类型的书籍给我")
+    rs = AgentRunState(run_id="test", goal=ctx.goal)
+    out = await _finalize_user_answer(
+        model, ctx, draft, round_i=2, thought="可以交付了", run_state=rs
+    )
+    ok = (
+        rs.finalize_path == FinalizePath.DRAFT_EXPANDED.value
+        and "曼昆" in out
+        and len(out) > len(draft)
+    )
+    return CaseResult(
+        "finalize_expands_thin_draft",
+        ok,
+        f"path={rs.finalize_path} len={len(out)}",
+    )
 
 
 def test_web_search_duplicate_logic() -> CaseResult:
@@ -320,6 +374,49 @@ def test_trajectory_labels() -> CaseResult:
     return CaseResult("trajectory_labels", ok, str(a))
 
 
+def test_deep_research_policy() -> CaseResult:
+    from agent.react import ReactScratchpad
+    from agent.research_policy import (
+        is_deep_research_goal,
+        min_bodies_for_goal,
+        next_research_tool,
+        alt_search_queries,
+    )
+
+    goal = "详细说说全球通史"
+    ok_deep = is_deep_research_goal(goal) and min_bodies_for_goal(goal) >= 3
+    pad = ReactScratchpad()
+    pad.add_thought_action("搜", "web_search", {"query": goal}, 0)
+    pad.set_observation("搜索结果…")
+    # 仅 1 次搜索 → 应要求换角度再搜
+    nxt = next_research_tool(
+        goal=goal,
+        facts=["搜索结果:\n1. 介绍 — 摘要\n链接: https://example.com/a"],
+        steps=pad.steps,
+        round_i=1,
+        max_rounds=12,
+    )
+    ok_alt = nxt is not None and nxt.get("tool") == "web_search"
+    # 已 2 次搜索、0 正文 → 应 fetch
+    pad.add_thought_action("再搜", "web_search", {"query": "全球通史 章节"}, 1)
+    pad.set_observation("ok")
+    nxt2 = next_research_tool(
+        goal=goal,
+        facts=["搜索结果:\n1. 介绍 — 摘要\n链接: https://example.com/a\n2. 结构 — 摘要\n链接: https://example.com/b"],
+        steps=pad.steps,
+        round_i=2,
+        max_rounds=12,
+    )
+    ok_fetch = nxt2 is not None and nxt2.get("tool") == "web_fetch"
+    alts = alt_search_queries(goal, [goal])
+    ok_q = len(alts) >= 1 and all(a != goal for a in alts)
+    return CaseResult(
+        "deep_research_policy",
+        ok_deep and ok_alt and ok_fetch and ok_q,
+        f"alt={ok_alt} fetch={ok_fetch} queries={alts}",
+    )
+
+
 async def run_all() -> list[CaseResult]:
     results: list[CaseResult] = []
     sync_tests = [
@@ -333,6 +430,7 @@ async def run_all() -> list[CaseResult]:
         test_checkpoint_roundtrip,
         test_build_citations,
         test_trajectory_labels,
+        test_deep_research_policy,
     ]
     for fn in sync_tests:
         try:
@@ -343,6 +441,8 @@ async def run_all() -> list[CaseResult]:
     for coro in [
         test_finalize_keeps_draft_when_no_materials(),
         test_synthesize_early_return(),
+        test_thin_draft_requests_expand(),
+        test_finalize_expands_thin_draft(),
     ]:
         try:
             results.append(await coro)

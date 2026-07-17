@@ -54,6 +54,10 @@ INTERCEPT_TITLE: dict[str, str] = {
     "auto_web_fetch": "自动打开搜索结果",
     "premature_finish_auto_search": "补充搜索后再回答",
     "file_claim_recover": "改为实际生成文件",
+    "need_alt_search": "换角度补充检索",
+    "need_more_bodies": "继续抓取更多正文",
+    "search_for_more_sources": "再搜补充来源",
+    "no_search_yet": "先搜索再回答",
 }
 
 

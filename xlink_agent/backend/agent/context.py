@@ -34,9 +34,9 @@ class TaskContext:
         text = re.sub(r"\s+", " ", (text or "").strip())
         if not text:
             return
-        self.facts.append(text[:500])
-        if len(self.facts) > 20:
-            self.facts = self.facts[-20:]
+        self.facts.append(text[:800])
+        if len(self.facts) > 24:
+            self.facts = self.facts[-24:]
 
     def add_artifact(self, name: str) -> None:
         if name and name not in self.artifacts:

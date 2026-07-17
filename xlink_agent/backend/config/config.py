@@ -73,4 +73,4 @@ log_service_name = _env("LOG_SERVICE_NAME", "xlink-agent") or "xlink-agent"
 log_level = _env("LOG_LEVEL", "INFO") or "INFO"
 
 confirmation_ttl_sec = int(_env("CONFIRMATION_TTL_SEC", "600") or "600")
-agent_max_tool_rounds = int(_env("AGENT_MAX_TOOL_ROUNDS", "8") or "8")
+agent_max_tool_rounds = int(_env("AGENT_MAX_TOOL_ROUNDS", "12") or "12")

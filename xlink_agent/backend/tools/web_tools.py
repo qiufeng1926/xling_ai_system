@@ -66,7 +66,7 @@ def _clean_href(href: str) -> str:
     return href
 
 
-async def web_fetch(url: str, *, max_chars: int = 12000) -> dict[str, Any]:
+async def web_fetch(url: str, *, max_chars: int = 18000) -> dict[str, Any]:
     """拉取公开网页可读正文。HTTP 错误 / 空壳拦截页视为失败。"""
     try:
         url = assert_public_url(url)
