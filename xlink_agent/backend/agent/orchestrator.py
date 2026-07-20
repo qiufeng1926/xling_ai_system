@@ -133,6 +133,53 @@ def _is_blocked_page(result: dict[str, Any], url: str = "") -> bool:
     return any(m in low for m in ascii_m) or any(m in blob for m in cn_m)
 
 
+def _fill_file_write_args(
+    tool: str,
+    args: dict[str, Any] | str,
+    *,
+    goal: str = "",
+    think: str = "",
+    facts: list[str] | None = None,
+) -> dict[str, Any]:
+    """写文件前补全正文：模型常把分析写在 Thought，content 却为空。"""
+    from tools.web_tools import _pick_write_content
+
+    if not isinstance(args, dict):
+        args = {}
+    else:
+        args = dict(args)
+    existing = _pick_write_content(args)
+    if len(existing.strip()) >= 40:
+        args["content"] = existing
+        return args
+
+    parts: list[str] = []
+    # 优先用 Thought 里的长文（模型常把正文写在 thought）
+    th = (think or "").strip()
+    if len(th) >= 80 and not th.startswith("{"):
+        parts.append(th)
+    # 再用本轮 facts / 材料
+    from agent.answer import materials_blob_for_synthesis
+
+    blob = materials_blob_for_synthesis(facts or [])
+    if blob and len(blob) >= 40:
+        parts.append(blob)
+    elif facts:
+        parts.extend([f for f in facts if len(f) >= 40][-6:])
+    if goal and goal not in "\n".join(parts):
+        parts.insert(0, f"# {goal}")
+    body = "\n\n".join(p for p in parts if p).strip()
+    if len(body) >= 40:
+        args["content"] = body[:12000]
+        if not args.get("title"):
+            args["title"] = (goal or "分析报告")[:40]
+        if not args.get("filename"):
+            suffix = ".docx" if "docx" in tool else (".md" if "markdown" in tool else ".txt")
+            safe = re.sub(r'[\\/:*?"<>|]+', "_", (goal or "document")[:24]) or "document"
+            args["filename"] = f"{safe}{suffix}"
+    return args
+
+
 def _claims_file_without_artifact(text: str) -> bool:
     return bool(_FILE_CLAIM_RE.search(text or ""))
 
@@ -154,24 +201,34 @@ def _recover_file_tool(
         tool = str(parsed.get("tool") or "")
         if tool.startswith("file_write_") and (tool in tools or tool in KNOWN_TOOLS):
             args = parsed.get("args") if isinstance(parsed.get("args"), dict) else {}
-            if not args.get("content"):
-                parts = [p for p in [goal, *(facts or [])] if p]
-                args = {**args, "content": "\n".join(parts)[:4000] or content[:4000]}
+            args = _fill_file_write_args(tool, args, goal=goal, think=think, facts=facts)
+            if not str(args.get("content") or "").strip():
+                parts = [p for p in [goal, content, *(facts or [])] if p]
+                args = {**args, "content": "\n".join(parts)[:8000]}
             if not args.get("filename"):
-                args = {**args, "filename": "日报.docx" if "docx" in tool else "note.md"}
+                args = {**args, "filename": "报告.docx" if "docx" in tool else "note.md"}
             if not args.get("title"):
-                args = {**args, "title": "日报"}
+                args = {**args, "title": (goal or "报告")[:40]}
             return {"action": "tool", "tool": tool, "args": args, "think": "补执行写文件"}
     write_tools = [t for t in ("file_write_docx", "file_write_markdown") if t in tools or t in KNOWN_TOOLS]
     if write_tools and _claims_file_without_artifact(f"{think}\n{content}\n{raw}"):
         tool = "file_write_docx" if "file_write_docx" in write_tools else write_tools[0]
-        parts = [p for p in [goal, *(facts or [])] if p]
-        body = "\n".join(parts).strip() or (content if content and not content.strip().startswith("{") else "（自动补写）")
-        filename = "日报.docx" if tool == "file_write_docx" else "日报.md"
+        args = _fill_file_write_args(
+            tool,
+            {"filename": "报告.docx" if "docx" in tool else "报告.md", "title": (goal or "报告")[:40]},
+            goal=goal,
+            think=think or content,
+            facts=facts,
+        )
+        if len(str(args.get("content") or "").strip()) < 40:
+            body = (content if content and not content.strip().startswith("{") else "") or "\n".join(
+                [goal, *(facts or [])]
+            )
+            args["content"] = (body or "（自动补写：请在下一轮提供完整正文）")[:8000]
         return {
             "action": "tool",
             "tool": tool,
-            "args": {"filename": filename, "title": "日报", "content": body[:8000]},
+            "args": args,
             "think": "用户要文档但模型未真正写文件，自动补写",
         }
     return None
@@ -751,8 +808,28 @@ async def run_chat(
             tool = str(parsed.get("tool") or "")
             args = parsed.get("args") if isinstance(parsed.get("args"), (dict, str)) else {}
 
+            # 写文件：先补全正文，避免生成空文件
+            if tool.startswith("file_write_"):
+                args = _fill_file_write_args(
+                    tool,
+                    args if isinstance(args, dict) else {},
+                    goal=task_ctx.goal or "",
+                    think=think,
+                    facts=task_ctx.facts,
+                )
+
             # 入参校验/归一化（通用契约，不做业务强制改写）
             norm, verr = validate_and_normalize_args(tool, args)
+            if verr and tool.startswith("file_write_"):
+                # 再尝试用 finish 草稿/事实硬补一次
+                args = _fill_file_write_args(
+                    tool,
+                    {**(args if isinstance(args, dict) else {}), "content": str((args or {}).get("content") or think or "")},
+                    goal=task_ctx.goal or "",
+                    think=think,
+                    facts=task_ctx.facts,
+                )
+                norm, verr = validate_and_normalize_args(tool, args)
             if verr:
                 tip = f"工具参数无效: {verr}"
                 scratchpad.add_thought_action(think, tool, args, round_i)

@@ -188,32 +188,56 @@ def _write_text_file(
     suffix: str,
     mime: str,
 ) -> dict:
+    from tools.web_tools import _pick_write_content
+
     filename = str(args.get("filename") or f"note{suffix}")
     if not filename.endswith(suffix):
         filename += suffix
-    content = str(args.get("content") or "")
+    content = _pick_write_content(args) or str(args.get("content") or "")
+    if len(content.strip()) < 8:
+        return {"ok": False, "error": "正文为空，未写入文件。请在 content 中提供完整内容后重试。"}
     path = user_workspace(user_id) / Path(filename).name
     path.write_text(content, encoding="utf-8")
     row = register_workspace_file(
         db, user_id=user_id, conversation_id=conversation_id, path=path, mime=mime
     )
-    return {"file_id": row.id, "name": row.name, "path": row.path}
+    return {"file_id": row.id, "name": row.name, "path": row.path, "chars": len(content)}
 
 
 def _write_docx(db: Session, user_id: int, conversation_id: int, args: dict) -> dict:
     from docx import Document
+    from tools.web_tools import _pick_write_content
 
     filename = str(args.get("filename") or "document.docx")
     if not filename.endswith(".docx"):
         filename += ".docx"
+    content = _pick_write_content(args) or str(args.get("content") or "")
+    if len(content.strip()) < 8:
+        return {"ok": False, "error": "正文为空，未生成 Word。请把完整内容写入 content 后重试。"}
     path = user_workspace(user_id) / Path(filename).name
     doc = Document()
     title = args.get("title")
     if title:
         doc.add_heading(str(title), 0)
-    for para in str(args.get("content") or "").split("\n"):
-        doc.add_paragraph(para)
+    for para in content.split("\n"):
+        line = para.rstrip()
+        if not line.strip():
+            doc.add_paragraph("")
+            continue
+        stripped = line.strip()
+        if stripped.startswith("### "):
+            doc.add_heading(stripped[4:].strip(), level=3)
+        elif stripped.startswith("## "):
+            doc.add_heading(stripped[3:].strip(), level=2)
+        elif stripped.startswith("# "):
+            doc.add_heading(stripped[2:].strip(), level=1)
+        else:
+            doc.add_paragraph(stripped)
     doc.save(path)
+    # 二次校验：文件过小视为失败
+    size = path.stat().st_size if path.exists() else 0
+    if size < 1200 and len(content) < 20:
+        return {"ok": False, "error": "生成的 Word 几乎为空，请重试并提供更长正文。"}
     row = register_workspace_file(
         db,
         user_id=user_id,
@@ -221,7 +245,7 @@ def _write_docx(db: Session, user_id: int, conversation_id: int, args: dict) -> 
         path=path,
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
-    return {"file_id": row.id, "name": row.name}
+    return {"file_id": row.id, "name": row.name, "chars": len(content), "size": size}
 
 
 def _write_xlsx(db: Session, user_id: int, conversation_id: int, args: dict) -> dict:
@@ -289,17 +313,18 @@ def _write_pptx(db: Session, user_id: int, conversation_id: int, args: dict) -> 
 
 def _write_pdf(db: Session, user_id: int, conversation_id: int, args: dict) -> dict:
     from reportlab.lib.pagesizes import A4
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.pdfgen import canvas
+    from tools.web_tools import _pick_write_content
 
     filename = str(args.get("filename") or "document.pdf")
     if not filename.endswith(".pdf"):
         filename += ".pdf"
     path = user_workspace(user_id) / Path(filename).name
+    text = _pick_write_content(args) or str(args.get("content") or args.get("title") or "")
+    if len(text.strip()) < 8:
+        return {"ok": False, "error": "正文为空，未生成 PDF。请提供 content。"}
     c = canvas.Canvas(str(path), pagesize=A4)
     width, height = A4
-    text = str(args.get("content") or args.get("title") or "")
     y = height - 50
     # 使用内置字体，中文可能显示为方框；后续可挂载系统字体
     for line in text.split("\n"):
@@ -312,4 +337,9 @@ def _write_pdf(db: Session, user_id: int, conversation_id: int, args: dict) -> d
     row = register_workspace_file(
         db, user_id=user_id, conversation_id=conversation_id, path=path, mime="application/pdf"
     )
-    return {"file_id": row.id, "name": row.name, "note": "PDF 使用内置西文字体，中文建议用 docx"}
+    return {
+        "file_id": row.id,
+        "name": row.name,
+        "chars": len(text),
+        "note": "PDF 使用内置西文字体，中文建议用 docx",
+    }

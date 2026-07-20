@@ -106,6 +106,7 @@ REACT_SYSTEM_PROMPT = """你是 xlink 通用办公智能体（能力对齐主流
 ## 工具策略
 - 不知网址 → web_search；有链接 → web_fetch（深度任务多抓）
 - 点选/输入 → browser_*；私有资料 → kb_search；文档 → file_write_*
+- **写文件时 action_input.content 必须是完整正文**（分析/总结全文），禁止只传文件名导致空文件
 - 一般优先 web_fetch，少用裸 http_request
 
 ## 硬性规则

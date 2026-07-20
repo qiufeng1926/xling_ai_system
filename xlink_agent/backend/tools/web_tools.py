@@ -378,9 +378,18 @@ TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
         "example": {"filename": "report.html", "content": "<html>...</html>"},
     },
     "file_write_docx": {
-        "desc": "生成 Word。",
-        "input": {"filename": "x.docx", "title": "标题", "content": "正文"},
-        "example": {"filename": "文档.docx", "title": "标题", "content": "..."},
+        "desc": "生成 Word。必须把完整正文放进 content，禁止空文件。",
+        "input": {"filename": "x.docx", "title": "标题", "content": "完整正文（必填，可多段）"},
+        "example": {
+            "filename": "分析报告.docx",
+            "title": "分析报告",
+            "content": "一、概述\\n……\\n二、要点\\n1. ……",
+        },
+    },
+    "file_write_markdown": {
+        "desc": "生成 Markdown。content 必填且须为完整正文。",
+        "input": {"filename": "x.md", "content": "完整 Markdown 正文"},
+        "example": {"filename": "报告.md", "content": "# 标题\\n\\n正文……"},
     },
 }
 
@@ -472,4 +481,76 @@ def validate_and_normalize_args(tool: str, args: Any) -> tuple[dict[str, Any] | 
             return None, "kb_search 需要 query"
         return {"query": q}, None
 
+    if tool.startswith("file_write_"):
+        return _normalize_file_write_args(tool, args)
+
     return args, None
+
+
+def _normalize_file_write_args(tool: str, args: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """统一写文件入参：兼容 content/text/body 等字段，拒绝空正文。"""
+    out = dict(args)
+    content = _pick_write_content(out)
+    if tool == "file_write_xlsx":
+        rows = out.get("rows")
+        if (not rows or rows == []) and content:
+            out["rows"] = [[line] for line in content.splitlines() if line.strip()] or [[content]]
+        if not out.get("rows"):
+            return None, "file_write_xlsx 需要 rows 或 content，不能写空表"
+        return out, None
+    if tool == "file_write_pptx":
+        slides = out.get("slides")
+        if not slides and content:
+            out["slides"] = [{"title": out.get("title") or "演示", "body": content}]
+        if not out.get("slides") and not content:
+            return None, "file_write_pptx 需要 slides 或 content，不能写空幻灯片"
+        if content and not out.get("content"):
+            out["content"] = content
+        return out, None
+
+    if len(content.strip()) < 8:
+        return None, (
+            f"{tool} 的 content 为空或过短。请把完整分析/总结正文放进 action_input.content "
+            "（也可用 text/body/markdown），不要只给文件名。"
+        )
+    out["content"] = content
+    if not out.get("filename"):
+        suffix = {
+            "file_write_markdown": ".md",
+            "file_write_html": ".html",
+            "file_write_docx": ".docx",
+            "file_write_pdf": ".pdf",
+        }.get(tool, ".txt")
+        out["filename"] = f"document{suffix}"
+    if tool == "file_write_docx" and not out.get("title"):
+        # 用正文首行作标题兜底
+        first = content.strip().splitlines()[0].strip("# ").strip()
+        out["title"] = first[:40] if first else "文档"
+    return out, None
+
+
+def _pick_write_content(args: dict[str, Any]) -> str:
+    for k in ("content", "text", "body", "markdown", "html", "article", "summary", "report"):
+        v = args.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        if isinstance(v, list) and v:
+            return "\n".join(str(x) for x in v if str(x).strip())
+    paras = args.get("paragraphs") or args.get("sections")
+    if isinstance(paras, list) and paras:
+        parts: list[str] = []
+        for p in paras:
+            if isinstance(p, dict):
+                title = str(p.get("title") or p.get("heading") or "").strip()
+                body = str(p.get("body") or p.get("content") or p.get("text") or "").strip()
+                if title:
+                    parts.append(title)
+                if body:
+                    parts.append(body)
+            else:
+                s = str(p).strip()
+                if s:
+                    parts.append(s)
+        if parts:
+            return "\n".join(parts)
+    return ""
