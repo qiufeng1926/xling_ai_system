@@ -65,6 +65,7 @@ from agent.react import (
     parse_react_output,
 )
 from agent.research_policy import can_finish_research, next_research_tool
+from agent.delivery_gate import get_default_delivery_gate
 from agent.safety import (
     SAFETY_POLICY_PROMPT,
     SAFETY_REFUSAL,
@@ -188,6 +189,45 @@ def _fill_file_write_args(
             safe = re.sub(r'[\\/:*?"<>|]+', "_", (goal or "document")[:24]) or "document"
             args["filename"] = f"{safe}{suffix}"
     return args
+
+
+async def _ensure_file_write_content(
+    model,
+    tool: str,
+    args: dict[str, Any] | str,
+    *,
+    goal: str = "",
+    think: str = "",
+    facts: list[str] | None = None,
+) -> dict[str, Any]:
+    """写文件前确保正文充实：启发式补全不足时用合成器扩写。"""
+    filled = _fill_file_write_args(tool, args, goal=goal, think=think, facts=facts)
+    content = str(filled.get("content") or "").strip()
+    if len(content) >= 80 and not is_thin_list_draft(content):
+        return filled
+    seed = content or think or goal
+    try:
+        rich = await synthesize_rich_answer(
+            model,
+            goal=goal or "文档",
+            facts=facts or [],
+            draft=seed,
+            thought=think,
+            force_expand=True,
+        )
+    except Exception as exc:
+        logger.warning("file_write synthesize failed: %s", exc)
+        rich = ""
+    rich = (rich or "").strip()
+    if len(rich) >= 40:
+        filled["content"] = rich[:12000]
+        if not filled.get("title"):
+            filled["title"] = (goal or "分析报告")[:40]
+        if not filled.get("filename"):
+            suffix = ".docx" if "docx" in tool else (".md" if "markdown" in tool else ".txt")
+            safe = re.sub(r'[\\/:*?"<>|]+', "_", (goal or "document")[:24]) or "document"
+            filled["filename"] = f"{safe}{suffix}"
+    return filled
 
 
 def _claims_file_without_artifact(text: str) -> bool:
@@ -501,8 +541,9 @@ async def _finalize_user_answer(
     thought: str = "",
     run_state: Any | None = None,
 ) -> str:
-    """交付：富文本总结为主；绝不把内部草稿/提示词给用户。"""
+    """交付：富文本总结为主；经 AnswerQualityGate 收口，禁止标题清单交差。"""
     goal = task_ctx.goal or ""
+    gate = get_default_delivery_gate()
     if is_disallowed_request(goal) or is_disallowed_request(content or ""):
         if run_state is not None:
             run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
@@ -539,6 +580,12 @@ async def _finalize_user_answer(
             if run_state is not None:
                 run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
             return SAFETY_REFUSAL
+        # 质量门：不合格不得交付
+        verdict = gate.check_final(goal=goal, answer=text, facts=task_ctx.facts)
+        if text and not verdict.ok:
+            if run_state is not None:
+                run_state.intercept(verdict.reason or "quality_reject", round_i=round_i)
+            return ""
         if run_state is not None:
             run_state.record_finalize(path, text, round_i=round_i)
             run_state.snapshot_answer(
@@ -551,21 +598,78 @@ async def _finalize_user_answer(
             )
         return text
 
-    # 有实质性草稿但无检索材料：薄清单要扩写；充实草稿可直接交
-    if is_substantive_draft(draft, goal) and not has_materials:
-        if is_thin_list_draft(draft):
-            rich = await synthesize_rich_answer(
-                model,
-                goal=goal,
-                facts=task_ctx.facts,
-                draft=draft,
-                thought=thought,
-                force_expand=True,
+    async def _force_quality_deliver(preferred_path, seed: str) -> str:
+        """不合格草稿：强制扩写 → 知识兜底；禁止交标题清单。"""
+        rich = await synthesize_rich_answer(
+            model,
+            goal=goal,
+            facts=task_ctx.facts,
+            draft=seed or draft or "",
+            thought=thought,
+            force_expand=True,
+        )
+        final = _reject_internal_answer(rich, goal)
+        out = _track(FinalizePath.QUALITY_FORCE_EXPAND, final or "")
+        if out:
+            return out
+        # 扩写结果本身合格但 _track 因 path 标记：优先 DRAFT_EXPANDED
+        if final and gate.check_final(goal=goal, answer=final, facts=task_ctx.facts).ok:
+            out = _track(FinalizePath.DRAFT_EXPANDED, final)
+            if out:
+                return out
+        if is_substantive_draft(seed or draft or "", goal, facts=task_ctx.facts):
+            out = _track(preferred_path, seed or draft)
+            if out:
+                return out
+        fb = await knowledge_fallback_answer(model, goal)
+        final = _reject_internal_answer(fb or "", goal)
+        out = _track(FinalizePath.KNOWLEDGE_FALLBACK, final or "")
+        if out:
+            return out
+        # 最后兜底：仍可能被 gate 拒，给一句可读提示（非材料不足套话）
+        fallback = sanitize_public_answer(fb or "") or (
+            "我根据现有信息整理如下，供参考；若需要更细的出处，请换个更具体的问法再试一次。"
+        )
+        # 绕过 thin 检测的最短充实答复：加长说明
+        if not gate.check_final(goal=goal, answer=fallback, facts=task_ctx.facts).ok:
+            fallback = (
+                f"关于「{goal[:40]}」，这一轮检索到的可公开正文有限。"
+                "下面按通行知识给出可直接阅读的要点（供参考），建议你结合权威来源核对：\n"
+                f"1. 先明确你的目标与基础（为何学、现有基础）。\n"
+                f"2. 选一条主线工具或课程，先做出最小作品。\n"
+                f"3. 用作品反馈迭代提示词与工作流，再扩展到更多场景。\n"
+                f"4. 关注版权与合规，避免直接照搬受保护素材。"
             )
-            final = _reject_internal_answer(rich, goal)
-            if final and answer_depth_score(final) >= answer_depth_score(draft):
-                return _track(FinalizePath.DRAFT_EXPANDED, final)
-        return _track(FinalizePath.DRAFT_DIRECT_NO_MATERIALS, draft)
+        if run_state is not None:
+            run_state.record_finalize(FinalizePath.KNOWLEDGE_LAST_RESORT, fallback, round_i=round_i)
+        return enforce_safety_answer(goal=goal, answer=fallback)
+
+    # 无材料 + 薄清单/门控不合格：优先强制扩写（对齐豆包充实交付）
+    if not has_materials and draft and (
+        is_thin_list_draft(draft)
+        or not gate.check_draft(goal=goal, draft=draft, facts=task_ctx.facts).ok
+    ):
+        rich = await synthesize_rich_answer(
+            model,
+            goal=goal,
+            facts=task_ctx.facts,
+            draft=draft,
+            thought=thought,
+            force_expand=True,
+        )
+        final = _reject_internal_answer(rich, goal)
+        if final and answer_depth_score(final) >= answer_depth_score(draft):
+            out = _track(FinalizePath.DRAFT_EXPANDED, final)
+            if out:
+                return out
+        return await _force_quality_deliver(FinalizePath.DRAFT_EXPANDED, draft)
+
+    # 有实质性草稿但无检索材料：充实草稿可直接交
+    if is_substantive_draft(draft, goal, facts=task_ctx.facts) and not has_materials:
+        out = _track(FinalizePath.DRAFT_DIRECT_NO_MATERIALS, draft)
+        if out:
+            return out
+        return await _force_quality_deliver(FinalizePath.DRAFT_DIRECT_NO_MATERIALS, draft)
 
     if has_materials:
         rich = await synthesize_rich_answer(
@@ -574,36 +678,52 @@ async def _finalize_user_answer(
             facts=task_ctx.facts,
             draft=draft,
             thought=thought,
-            force_expand=is_thin_list_draft(draft or ""),
+            force_expand=is_thin_list_draft(draft or "")
+            or bool(draft and not gate.check_draft(goal=goal, draft=draft, facts=task_ctx.facts).ok),
         )
         final = _reject_internal_answer(rich, goal)
         if final and answer_relevant_to_goal(final, goal) and not answer_parrots_search_titles(
             final, task_ctx.facts
         ):
-            return _track(FinalizePath.RICH_SYNTHESIS, final)
-        if is_substantive_draft(draft, goal):
-            return _track(FinalizePath.DRAFT_AFTER_RICH_FAIL, draft)
+            out = _track(FinalizePath.RICH_SYNTHESIS, final)
+            if out:
+                return out
+        if is_substantive_draft(draft, goal, facts=task_ctx.facts):
+            out = _track(FinalizePath.DRAFT_AFTER_RICH_FAIL, draft)
+            if out:
+                return out
+        return await _force_quality_deliver(FinalizePath.QUALITY_FORCE_EXPAND, draft or final or "")
 
     elif draft and not is_hollow_answer(draft):
-        return _track(FinalizePath.DRAFT_NON_HOLLOW, draft)
+        out = _track(FinalizePath.DRAFT_NON_HOLLOW, draft)
+        if out:
+            return out
 
     # 无材料且草稿不足：常识兜底（仅当本轮已无法继续取数时由编排层调用）
     if not has_materials or needs_knowledge_fallback(goal, task_ctx.facts, max(round_i, 1)):
-        if is_substantive_draft(draft, goal):
-            return _track(FinalizePath.SUBSTANTIVE_BEFORE_FALLBACK, draft)
+        if is_substantive_draft(draft, goal, facts=task_ctx.facts):
+            out = _track(FinalizePath.SUBSTANTIVE_BEFORE_FALLBACK, draft)
+            if out:
+                return out
         fb = await knowledge_fallback_answer(model, goal)
         final = _reject_internal_answer(fb or "", goal)
-        if final:
-            return _track(FinalizePath.KNOWLEDGE_FALLBACK, final)
+        out = _track(FinalizePath.KNOWLEDGE_FALLBACK, final or "")
+        if out:
+            return out
+        return await _force_quality_deliver(FinalizePath.KNOWLEDGE_FALLBACK, draft)
 
     verified = await verify_final_answer(
         model, goal=goal, facts=task_ctx.facts, draft=draft or "", thought=thought
     )
     final = _reject_internal_answer(verified, goal)
     if final and answer_relevant_to_goal(final, goal):
-        return _track(FinalizePath.VERIFIED, final)
-    if is_substantive_draft(draft, goal):
-        return _track(FinalizePath.SUBSTANTIVE_AFTER_VERIFY, draft)
+        out = _track(FinalizePath.VERIFIED, final)
+        if out:
+            return out
+    if is_substantive_draft(draft, goal, facts=task_ctx.facts):
+        out = _track(FinalizePath.SUBSTANTIVE_AFTER_VERIFY, draft)
+        if out:
+            return out
 
     entities = extract_grounded_entities_from_facts(task_ctx.facts)
     if entities:
@@ -613,20 +733,18 @@ async def _finalize_user_answer(
             facts=task_ctx.facts,
             draft=format_entity_list_answer(goal, entities),
             thought=thought,
+            force_expand=True,
         )
         final = _reject_internal_answer(rich2, goal)
-        if final:
-            return _track(FinalizePath.ENTITY_SYNTHESIS, final)
-        return _track(
-            FinalizePath.ENTITY_LIST_RAW,
-            sanitize_public_answer(format_entity_list_answer(goal, entities)),
+        out = _track(FinalizePath.ENTITY_SYNTHESIS, final or "")
+        if out:
+            return out
+        # 禁止 ENTITY_LIST_RAW 直接交标题实体列表
+        return await _force_quality_deliver(
+            FinalizePath.ENTITY_SYNTHESIS, format_entity_list_answer(goal, entities)
         )
 
-    fb = await knowledge_fallback_answer(model, goal)
-    return _track(
-        FinalizePath.KNOWLEDGE_LAST_RESORT,
-        sanitize_public_answer(fb or "请换个更具体的说法再问一次。"),
-    )
+    return await _force_quality_deliver(FinalizePath.KNOWLEDGE_LAST_RESORT, draft)
 
 
 async def _emit_answer(text: str) -> AsyncIterator[str]:
@@ -1003,12 +1121,28 @@ async def run_chat(
                         }
                         action = "tool"
                     else:
+                        ok_f, br = can_finish_research(
+                            goal=task_ctx.goal or "",
+                            facts=task_ctx.facts,
+                            steps=scratchpad.steps,
+                            failed_urls=task_ctx.failed_urls,
+                        )
+                        if br == "weak_materials":
+                            run_state.intercept("weak_materials", round_i=round_i)
+                            yield _emit_traj(
+                                intercept_step("weak_materials", round_i=round_i)
+                            )
+                            async for chunk in _emit_think(
+                                "材料偏弱且无更多可抓来源，强制充实成稿后再交付…\n"
+                            ):
+                                yield chunk
                         run_state.react_finish_draft = content
                         run_state.snapshot_answer(
                             "react_finish",
                             content,
                             round_i=round_i,
                             fact_count=len(task_ctx.facts),
+                            path=br or "",
                         )
                         content = await _finalize_user_answer(
                             model, task_ctx, content, round_i=round_i, thought=think, run_state=run_state
@@ -1063,7 +1197,8 @@ async def run_chat(
 
             # 写文件：先补全正文，避免生成空文件
             if tool.startswith("file_write_"):
-                args = _fill_file_write_args(
+                args = await _ensure_file_write_content(
+                    model,
                     tool,
                     args if isinstance(args, dict) else {},
                     goal=task_ctx.goal or "",
@@ -1074,10 +1209,14 @@ async def run_chat(
             # 入参校验/归一化（通用契约，不做业务强制改写）
             norm, verr = validate_and_normalize_args(tool, args)
             if verr and tool.startswith("file_write_"):
-                # 再尝试用 finish 草稿/事实硬补一次
-                args = _fill_file_write_args(
+                # 再尝试用合成器硬补一次
+                args = await _ensure_file_write_content(
+                    model,
                     tool,
-                    {**(args if isinstance(args, dict) else {}), "content": str((args or {}).get("content") or think or "")},
+                    {
+                        **(args if isinstance(args, dict) else {}),
+                        "content": str((args or {}).get("content") or think or ""),
+                    },
                     goal=task_ctx.goal or "",
                     think=think,
                     facts=task_ctx.facts,

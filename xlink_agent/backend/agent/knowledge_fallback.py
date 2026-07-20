@@ -48,7 +48,19 @@ async def knowledge_fallback_answer(model: Any, goal: str) -> str:
 
 
 def needs_knowledge_fallback(goal: str, facts: list[str], rounds_done: int) -> bool:
-    """任意任务：工具跑了若干轮仍无与目标相关的事实 → 允许常识兜底。"""
+    """任意任务：工具跑了若干轮仍无与目标相关的事实 → 允许常识兜底。
+
+    有搜索命中且仍可抓正文时不触发，避免过早「材料不足」。
+    """
+    from agent.answer import pick_fetch_url
+    from agent.research_policy import count_body_facts, has_search_hit_facts
+
+    if (
+        has_search_hit_facts(facts)
+        and count_body_facts(facts) < 1
+        and pick_fetch_url(facts)
+    ):
+        return False
     relevant = [f for f in facts if fact_relevant_to_goal(f, goal)]
     if relevant:
         return False

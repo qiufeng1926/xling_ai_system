@@ -112,6 +112,10 @@ INTERCEPT_TITLE: dict[str, str] = {
     "need_more_research": "材料不足，继续取数",
     "llm_unavailable": "模型连接中断，改用已有材料",
     "safety_block": "安全策略：暂不支持该问题",
+    "weak_materials": "材料偏弱，强制充实成稿",
+    "parrot_titles": "拒绝标题清单交差",
+    "thin_list": "条目过薄，继续扩写",
+    "quality_force_expand": "质量门控强制扩写",
 }
 
 _FAIL_SHORT: tuple[tuple[str, str], ...] = (

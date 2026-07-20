@@ -356,14 +356,21 @@ def is_hollow_answer(text: str) -> bool:
     return False
 
 
-def is_substantive_draft(text: str, goal: str = "") -> bool:
-    """finish 草稿是否已可直接交付（不必再经「无材料」总结器否定）。"""
+def is_substantive_draft(text: str, goal: str = "", facts: list[str] | None = None) -> bool:
+    """finish 草稿是否已可直接交付（不必再经「无材料」总结器否定）。
+
+    facts 用于检测是否复读搜索标题；thin_list / parrot 一律不算可交。
+    """
     t = sanitize_public_answer(text or "").strip()
     if not t or is_hollow_answer(t) or looks_like_internal(t):
         return False
-    if answer_parrots_search_titles(t, []):  # 无 facts 时仍检测合集标题口吻
-        if re.search(r"\d+\s*本.*(推荐|书单|合集)", t):
-            return False
+    facts = facts or []
+    if facts and answer_parrots_search_titles(t, facts):
+        return False
+    if answer_parrots_search_titles(t, []) and re.search(r"\d+\s*本.*(推荐|书单|合集)", t):
+        return False
+    if is_thin_list_draft(t):
+        return False
     items = extract_answer_items(t)
     if len(items) >= 2:
         return True
@@ -808,7 +815,11 @@ async def synthesize_rich_answer(
     try:
         text = await model.chat(messages, temperature=0.4)
     except Exception:
-        return draft_clean if is_substantive_draft(draft_clean, goal) else ""
+        if is_substantive_draft(draft_clean, goal, facts=facts):
+            return draft_clean
+        if draft_clean and (extract_answer_items(draft_clean) or draft_clean.count("《") >= 2):
+            return draft_clean
+        return ""
     out = sanitize_public_answer(text or "")
     out = strip_pick_number_prompts(out)
     if (
@@ -818,11 +829,18 @@ async def synthesize_rich_answer(
         or asks_user_to_pick_number(out)
         or any(x in out for x in ("没有材料无法", "无法根据检索材料", "目前没有提供具体"))
     ):
-        if is_substantive_draft(draft_clean, goal):
+        if is_substantive_draft(draft_clean, goal, facts=facts):
+            return strip_pick_number_prompts(draft_clean)
+        # 薄清单：模型误杀时仍回退草稿，避免交「没有材料」
+        if draft_clean and (
+            extract_answer_items(draft_clean) or draft_clean.count("《") >= 2 or len(draft_clean) >= 24
+        ):
             return strip_pick_number_prompts(draft_clean)
         return ""
     if answer_parrots_search_titles(out, facts):
-        if is_substantive_draft(draft_clean, goal):
+        if is_substantive_draft(draft_clean, goal, facts=facts):
+            return strip_pick_number_prompts(draft_clean)
+        if draft_clean and (extract_answer_items(draft_clean) or draft_clean.count("《") >= 2):
             return strip_pick_number_prompts(draft_clean)
         return ""
     # 扩写后若反而更薄，回退草稿
@@ -1090,12 +1108,19 @@ def enrich_finish_answer(
     facts: list[str] | None = None,
     goal: str = "",
 ) -> str:
-    """若 finish 空壳：优先用 thought 中的要点列表，其次用搜索事实重写。"""
+    """若 finish 空壳：优先用 thought 中的要点列表，其次用搜索事实重写。
+
+    回填后若质量门控不通过（标题清单/薄列表），返回空串，迫使走合成。
+    """
+    from agent.delivery_gate import get_default_delivery_gate
+
     text = sanitize_public_answer(finish_text or "")
     facts = facts or []
     if not is_hollow_answer(text):
         cleaned = _strip_search_engine_urls(text)
-        return cleaned or text
+        candidate = cleaned or text
+        # 不合格草稿保留原文，由 finalize 强制扩写；此处不清空以免丢失扩写种子
+        return candidate
 
     if _thought_has_substance(thought):
         # 常见：模型把列表写在 thought，finish 只剩套话
@@ -1108,13 +1133,32 @@ def enrich_finish_answer(
                 body = listed.group(1).strip()
         if not body.startswith("根据") and not re.match(r"^\d+", body.lstrip()):
             body = "根据本轮搜集，要点如下：\n" + body
-        return sanitize_public_answer(body)
+        candidate = sanitize_public_answer(body)
+        v = get_default_delivery_gate().check_draft(goal=goal, draft=candidate, facts=facts)
+        if not v.ok:
+            return ""
+        return candidate
 
     from_entities = format_entity_list_answer(goal, extract_grounded_entities_from_facts(facts))
     if from_entities:
+        v = get_default_delivery_gate().check_draft(goal=goal, draft=from_entities, facts=facts)
+        if not v.ok:
+            return ""
         return from_entities
 
     return text
+
+
+def reject_or_pass_final_answer(
+    *,
+    goal: str,
+    answer: str,
+    facts: list[str] | None = None,
+) -> str | None:
+    """终稿质量门：合格返回文本，否则 None（编排层应扩写或兜底）。"""
+    from agent.delivery_gate import reject_or_pass_final
+
+    return reject_or_pass_final(goal=goal, answer=answer, facts=facts)
 
 
 def first_content_urls_from_facts(facts: list[str], *, limit: int = 3) -> list[str]:

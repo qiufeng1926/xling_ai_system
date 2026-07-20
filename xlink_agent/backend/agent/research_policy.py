@@ -165,34 +165,15 @@ def can_finish_research(
 ) -> tuple[bool, str]:
     """finish 前硬门控：(是否允许交付, 拦截 reason)。
 
-    - 深度任务：须达到最小搜索次数与正文页数
-    - 浅任务：若已有搜索命中但尚无正文且还有可抓链接 → 禁止 finish
+    委托 AnswerQualityGate.check_research，保持签名兼容。
+    reason 可能为 weak_materials（允许 finish，但 finalize 须强制合成）。
     """
-    deep = is_deep_research_goal(goal)
-    searches = count_search_steps(steps)
-    bodies = count_body_facts(facts)
-    min_s = min_searches_for_goal(goal)
-    min_b = min_bodies_for_goal(goal)
-    skip = set(failed_urls or [])
+    from agent.delivery_gate import get_default_delivery_gate
 
-    if deep:
-        if searches < min_s:
-            return False, "need_alt_search"
-        if bodies < min_b:
-            next_u = pick_fetch_url(facts, skip=skip)
-            if next_u or searches < min_s + 1:
-                return False, "need_more_bodies"
-        return True, ""
-
-    # 浅任务：有 hits 无 body → 必须先抓（禁止只交标题清单 / 让用户选编号）
-    if (
-        has_search_hit_facts(facts)
-        and bodies < 1
-        and not has_substantive_content_facts(facts)
-        and pick_fetch_url(facts, skip=skip)
-    ):
-        return False, "search_hits_no_body"
-    return True, ""
+    v = get_default_delivery_gate().check_research(
+        goal=goal, facts=facts, steps=steps, failed_urls=failed_urls
+    )
+    return v.ok, v.reason
 
 
 def next_research_tool(
@@ -207,24 +188,32 @@ def next_research_tool(
     """若材料不足以支撑充分答复，返回下一步应执行的 tool 动作；否则 None。"""
     if round_i >= max_rounds - 1:
         return None
+
+    from agent.delivery_gate import get_default_delivery_gate
+
     deep = is_deep_research_goal(goal)
     searches = count_search_steps(steps)
     bodies = count_body_facts(facts)
-    min_s = min_searches_for_goal(goal)
     min_b = min_bodies_for_goal(goal)
     skip = set(failed_urls or [])
 
-    # 1) 先保证有搜索
-    if searches < 1:
-        return {
-            "tool": "web_search",
-            "args": {"query": goal},
-            "think": "自动补搜索",
-            "reason": "no_search_yet",
-        }
+    verdict = get_default_delivery_gate().check_research(
+        goal=goal, facts=facts, steps=steps, failed_urls=failed_urls
+    )
+    # 允许 finish（含 weak_materials）→ 不再强制取数
+    if verdict.ok:
+        return None
 
-    # 2) 深度任务：多角度再搜一轮
-    if deep and searches < min_s:
+    reason = verdict.reason or "need_more_research"
+
+    if reason in {"no_search_yet", "need_alt_search"} or searches < 1:
+        if searches < 1:
+            return {
+                "tool": "web_search",
+                "args": {"query": goal},
+                "think": "自动补搜索",
+                "reason": "no_search_yet",
+            }
         alts = alt_search_queries(goal, prior_search_queries(steps))
         if alts:
             return {
@@ -234,7 +223,37 @@ def next_research_tool(
                 "reason": "need_alt_search",
             }
 
-    # 3) 浅任务硬门：有搜索标题但无正文 → 必须 web_fetch
+    if reason in {"search_hits_no_body", "need_more_bodies"}:
+        next_u = pick_fetch_url(facts, skip=skip)
+        if next_u:
+            return {
+                "tool": "web_fetch",
+                "args": {"url": next_u},
+                "think": f"继续抓取正文以充实材料（已有 {bodies}/{min_b if deep else 1}）",
+                "reason": reason,
+            }
+        reason = "search_for_more_sources"
+
+    if reason == "search_for_more_sources" and round_i < max_rounds - 2:
+        alts = alt_search_queries(goal, prior_search_queries(steps))
+        if alts:
+            return {
+                "tool": "web_search",
+                "args": {"query": alts[-1] if len(alts) > 1 else alts[0]},
+                "think": "正文不足，再搜补充来源",
+                "reason": "search_for_more_sources",
+            }
+
+    if deep and bodies < min_b:
+        next_u = pick_fetch_url(facts, skip=skip)
+        if next_u:
+            return {
+                "tool": "web_fetch",
+                "args": {"url": next_u},
+                "think": f"继续抓取正文以充实材料（已有 {bodies}/{min_b}）",
+                "reason": "need_more_bodies",
+            }
+
     if (
         not deep
         and has_search_hit_facts(facts)
@@ -249,28 +268,6 @@ def next_research_tool(
                 "think": "已有搜索结果，先打开正文再总结（禁止只交标题或让用户选编号）",
                 "reason": "search_hits_no_body",
             }
-
-    # 4) 有链接则继续抓正文，直到达到最小正文页数
-    need_bodies = min_b if deep else (1 if not has_substantive_content_facts(facts) else 0)
-    if bodies < need_bodies or (deep and bodies < min_b):
-        next_u = pick_fetch_url(facts, skip=skip)
-        if next_u:
-            return {
-                "tool": "web_fetch",
-                "args": {"url": next_u},
-                "think": f"继续抓取正文以充实材料（已有 {bodies}/{min_b if deep else 1}）",
-                "reason": "need_more_bodies",
-            }
-        # 无更多链接：再搜一轮找新源
-        if deep and searches < min_s + 1 and round_i < max_rounds - 2:
-            alts = alt_search_queries(goal, prior_search_queries(steps))
-            if alts:
-                return {
-                    "tool": "web_search",
-                    "args": {"query": alts[-1] if len(alts) > 1 else alts[0]},
-                    "think": "正文不足，再搜补充来源",
-                    "reason": "search_for_more_sources",
-                }
 
     return None
 

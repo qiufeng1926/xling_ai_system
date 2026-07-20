@@ -55,12 +55,24 @@ def _history(pairs: list[tuple[str, str]]) -> list[SimpleNamespace]:
 def test_substantive_draft() -> CaseResult:
     from agent.answer import is_substantive_draft
 
-    draft = (
+    # 充实说明才算可交；纯书名堆叠应被质量门拒绝
+    thin = (
         "以下是我为您推荐的7本经济类型的书籍：《穷查理宝典》、《国富论》、"
         "《资本论》、《经济学原理》、《投资最重要的事》、《金融的逻辑》、《债务危机》。"
     )
-    ok = is_substantive_draft(draft, "推荐7本经济类型的书籍给我")
-    return CaseResult("substantive_draft_7_books", ok, "draft should be substantive")
+    draft = (
+        "为您推荐几本经济入门书（供参考）：\n"
+        "1. **国富论**\n亚当·斯密著，讨论分工与市场如何促进财富增长，适合想了解古典经济学的读者。\n"
+        "2. **经济学原理**\n曼昆的通识教材，案例多、入门友好，适合零基础系统学习。\n"
+        "3. **投资最重要的事**\n霍华德·马克斯谈风险与周期，适合想建立投资思维框架的读者。"
+    )
+    ok_thin = not is_substantive_draft(thin, "推荐7本经济类型的书籍给我")
+    ok = is_substantive_draft(draft, "推荐经济类型的书籍给我")
+    return CaseResult(
+        "substantive_draft_7_books",
+        ok and ok_thin,
+        f"substantive={ok} thin_rejected={ok_thin}",
+    )
 
 
 async def test_finalize_keeps_draft_when_no_materials() -> CaseResult:
@@ -512,6 +524,97 @@ def test_run_code_sandbox() -> CaseResult:
     return CaseResult("run_code_sandbox", ok, f"ok={ok_run} bad={bad.get('error')}")
 
 
+def test_delivery_quality_gate() -> CaseResult:
+    """答题质量门控 + compose_gates 扩展点。"""
+    from agent.delivery_gate import (
+        AnswerQualityGate,
+        DeliveryVerdict,
+        compose_gates,
+        get_default_delivery_gate,
+        set_default_delivery_gate,
+    )
+    from agent.react import ReactScratchpad
+    from agent.research_policy import can_finish_research
+
+    gate = AnswerQualityGate()
+    facts = [
+        "搜索结果(bing):\n"
+        "1. 2026年aigc该怎么学，小白入行aigc学习指南 - 知乎 — 写在前面\n"
+        "链接: https://zhuanlan.zhihu.com/p/1\n"
+        "2. 普通人要怎么学习aigc？ - 知乎 — 感谢邀请\n"
+        "链接: https://www.zhihu.com/q/2\n"
+    ]
+    parrot = (
+        "根据搜索：\n"
+        "1. 2026年aigc该怎么学，小白入行aigc学习指南\n"
+        "2. 普通人要怎么学习aigc？\n"
+    )
+    v_draft = gate.check_draft(goal="如何学习AIGC", draft=parrot, facts=facts)
+    if v_draft.ok or v_draft.reason not in {"parrot_titles", "thin_list", "hollow"}:
+        return CaseResult("delivery_quality_gate", False, f"parrot not rejected: {v_draft}")
+
+    # 深任务：1 搜 0 正文有 URL → 禁止 finish
+    pad = ReactScratchpad()
+    pad.add_thought_action("搜", "web_search", {"query": "详细说说如何学习AIGC"}, 0)
+    ok1, r1 = can_finish_research(
+        goal="详细说说如何学习AIGC",
+        facts=facts,
+        steps=pad.steps,
+    )
+    if ok1 or r1 not in {"need_more_bodies", "need_alt_search", "search_hits_no_body"}:
+        return CaseResult("delivery_quality_gate", False, f"deep early finish: ok={ok1} r={r1}")
+
+    # 深任务：已搜够且无 URL → weak_materials 允许 finish
+    pad2 = ReactScratchpad()
+    pad2.add_thought_action("搜1", "web_search", {"query": "详细说说全球通史"}, 0)
+    pad2.add_thought_action("搜2", "web_search", {"query": "全球通史 章节"}, 1)
+    pad2.add_thought_action("搜3", "web_search", {"query": "全球通史 观点"}, 2)
+    ok2, r2 = can_finish_research(
+        goal="详细说说全球通史",
+        facts=["搜索结果:\n1. 介绍 — 摘要\n"],  # 无内容站 URL
+        steps=pad2.steps,
+    )
+    if not ok2 or r2 != "weak_materials":
+        return CaseResult("delivery_quality_gate", False, f"weak_materials expected: ok={ok2} r={r2}")
+
+    # compose_gates：假门控可拦截
+    class _BlockAll:
+        def check_research(self, **kw):
+            return DeliveryVerdict(False, "blocked_by_ext")
+
+        def check_draft(self, **kw):
+            return DeliveryVerdict(False, "blocked_by_ext")
+
+        def check_final(self, **kw):
+            return DeliveryVerdict(False, "blocked_by_ext")
+
+    composed = compose_gates(AnswerQualityGate(), _BlockAll())
+    prev = get_default_delivery_gate()
+    try:
+        set_default_delivery_gate(composed)
+        ok3, r3 = can_finish_research(
+            goal="一句话介绍 Python",
+            facts=[],
+            steps=[],
+        )
+        if ok3 or r3 != "blocked_by_ext":
+            return CaseResult("delivery_quality_gate", False, f"compose fail: {ok3} {r3}")
+    finally:
+        set_default_delivery_gate(prev)
+
+    good = (
+        "学习 AIGC 可按阶段推进：\n"
+        "1. **打基础**\n先熟悉大模型对话与提示词，用日常办公任务练手，建立反馈闭环。\n"
+        "2. **做作品**\n选图文或短视频一条产线，每周产出可复盘的样例并记录提示词模板。\n"
+        "3. **系统化**\n再补工具链、工作流与版权合规，形成可复用的个人方法论。"
+    )
+    v_ok = gate.check_final(goal="如何学习AIGC", answer=good, facts=facts)
+    if not v_ok.ok:
+        return CaseResult("delivery_quality_gate", False, f"good answer rejected: {v_ok}")
+
+    return CaseResult("delivery_quality_gate", True, f"parrot={v_draft.reason} weak={r2}")
+
+
 def test_safety_gate() -> CaseResult:
     from agent.safety import (
         SAFETY_REFUSAL,
@@ -570,6 +673,7 @@ async def run_all() -> list[CaseResult]:
         test_strip_pick_number,
         test_file_claim_recover,
         test_run_code_sandbox,
+        test_delivery_quality_gate,
         test_safety_gate,
     ]
     for fn in sync_tests:

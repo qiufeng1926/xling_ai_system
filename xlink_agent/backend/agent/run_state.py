@@ -35,6 +35,9 @@ class FinalizePath(str, Enum):
     ENTITY_SYNTHESIS = "entity_synthesis"
     ENTITY_LIST_RAW = "entity_list_raw"
     KNOWLEDGE_LAST_RESORT = "knowledge_last_resort"
+    QUALITY_FORCE_EXPAND = "quality_force_expand"
+    QUALITY_REJECT_PARROT = "quality_reject_parrot"
+    WEAK_MATERIALS = "weak_materials"
 
 
 @dataclass
