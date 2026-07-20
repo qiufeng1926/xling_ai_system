@@ -169,8 +169,18 @@ def summarize_tool_result(tool: str, result: dict[str, Any]) -> tuple[bool, str,
     if tool.startswith("file_write_"):
         name = str(result.get("name") or "")
         fid = result.get("file_id")
+        if result.get("ok") is False or (result.get("error") and not fid):
+            return False, f"{tool} 失败: {result.get('error') or '未落盘'}", {}
         note = f"已生成文件 {name}" + (f" (id={fid})" if fid else "")
         return True, note, {"artifact": name}
+
+    if tool == "run_code":
+        if result.get("ok") is False or result.get("error"):
+            return False, f"代码执行失败: {result.get('error') or 'unknown'}", {}
+        out = str(result.get("stdout") or "").strip()
+        if not out:
+            return True, "代码执行成功（无 stdout 输出）", {}
+        return True, f"代码输出: {out[:600]}", {}
 
     if tool == "file_list":
         files = result.get("files") or []

@@ -487,8 +487,12 @@ function handleAgentEvent(event: string, data: unknown) {
     }
   } else if (event === 'file.ready') {
     const item = { file_id: d.file_id, name: d.name }
-    readyFiles.value.unshift(item)
-    pendingFiles.value.push(item)
+    if (!readyFiles.value.some((f) => f.file_id === item.file_id)) {
+      readyFiles.value.unshift(item)
+    }
+    if (!pendingFiles.value.some((f) => f.file_id === item.file_id)) {
+      pendingFiles.value.push(item)
+    }
     scrollBottom()
   } else if (event === 'done') {
     if (d.paused) {

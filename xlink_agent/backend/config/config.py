@@ -59,6 +59,8 @@ glm_api_key = _env("GLM_API_KEY", "") or ""
 glm_model = _env("GLM_MODEL", "glm-4-flash") or "glm-4-flash"
 glm_embedding_model = _env("GLM_EMBEDDING_MODEL", "embedding-2") or "embedding-2"
 llm_temperature = float(_env("LLM_TEMPERATURE", "0.3") or "0.3")
+llm_max_retries = int(_env("LLM_MAX_RETRIES", "3") or "3")
+llm_retry_backoff_sec = float(_env("LLM_RETRY_BACKOFF_SEC", "1.5") or "1.5")
 
 workspace_root = Path(
     _env("WORKSPACE_ROOT", str(_project_root / "data" / "workspaces"))

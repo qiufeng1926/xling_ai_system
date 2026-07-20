@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from agent.answer import (
     answer_depth_score,
     answer_parrots_search_titles,
+    asks_user_to_pick_number,
     build_citations,
     enrich_finish_answer,
     expand_selection_followup,
@@ -27,6 +28,7 @@ from agent.answer import (
     pick_fetch_url,
     sanitize_public_answer,
     search_only_needs_fetch,
+    strip_pick_number_prompts,
     synthesize_public_answer,
     synthesize_rich_answer,
     tools_shallow_without_body,
@@ -52,7 +54,7 @@ from agent.memory_policy import (
     filter_long_term_memory_lines,
 )
 from agent.memory_service import build_memory_context, maybe_update_profile_from_dialog
-from agent.model_router import get_chat_model
+from agent.model_router import LLMCallError, get_chat_model
 from agent.run_state import AgentRunState, FinalizePath, RunPhase
 from agent.react import (
     REACT_SYSTEM_PROMPT,
@@ -62,7 +64,14 @@ from agent.react import (
     format_observation,
     parse_react_output,
 )
-from agent.research_policy import next_research_tool
+from agent.research_policy import can_finish_research, next_research_tool
+from agent.safety import (
+    SAFETY_POLICY_PROMPT,
+    SAFETY_REFUSAL,
+    enforce_safety_answer,
+    is_disallowed_request,
+    is_safety_refusal,
+)
 from agent.trajectory import (
     action_step,
     confirm_tool_label,
@@ -99,6 +108,7 @@ KNOWN_TOOLS = {
     "file_write_pptx",
     "file_write_pdf",
     "file_delete",
+    "run_code",
 }
 
 SYSTEM_PROMPT = REACT_SYSTEM_PROMPT
@@ -284,6 +294,7 @@ def _merge_tools(skills: list[Skill]) -> tuple[list[str], str]:
         "browser_type",
         "browser_screenshot",
         "http_request",
+        "run_code",
     ]:
         if base not in tools:
             tools.append(base)
@@ -332,6 +343,74 @@ def _shrink(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_shrink(x) for x in obj[:50]]
     return obj
+
+
+def _build_assistant_metadata(
+    *,
+    run_id: str,
+    think_parts: list[str],
+    scratchpad: ReactScratchpad,
+    trajectory_log: list[dict[str, Any]],
+    task_ctx: TaskContext,
+    run_state: AgentRunState,
+    file_meta: list[dict[str, Any]] | None = None,
+    citations: list[dict[str, Any]] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> str:
+    """压缩消息元数据，避免 MySQL TEXT/超大 JSON 写入失败。"""
+    # run_state 精简：不要塞满 transitions 明细
+    rs = run_state.to_dict()
+    rs.pop("transitions", None)
+    snaps = rs.get("answer_snapshots") or []
+    rs["answer_snapshots"] = snaps[-6:]
+
+    meta: dict[str, Any] = {
+        "run_id": run_id,
+        "architecture": "react",
+        "think": "".join(think_parts)[:2000],
+        "react_steps": [
+            {
+                "thought": (s.thought or "")[:240],
+                "action": s.action,
+                "observation": (s.observation or "")[:400],
+                "round": s.round_i,
+            }
+            for s in scratchpad.steps[-10:]
+        ],
+        "trajectory": [
+            {
+                "round": t.get("round"),
+                "kind": t.get("kind"),
+                "title": t.get("title"),
+                "detail": str(t.get("detail") or "")[:160],
+                "status": t.get("status"),
+                "reason": str(t.get("reason") or "")[:120],
+                "tool": t.get("tool"),
+            }
+            for t in (trajectory_log or [])[-24:]
+            if isinstance(t, dict)
+        ],
+        "citations": (citations or [])[:8],
+        "files": file_meta or [],
+        "task_context": {
+            "goal": (task_ctx.goal or "")[:300],
+            "browser_url": (task_ctx.browser_url or "")[:300],
+            "facts": [f[:240] for f in task_ctx.facts[-8:]],
+            "artifacts": list(task_ctx.artifacts)[:20],
+        },
+        "run_state": rs,
+    }
+    if extra:
+        meta.update(extra)
+    raw = json.dumps(meta, ensure_ascii=False)
+    # 硬上限：即使 LONGTEXT 也控制体积，防极端轮次
+    if len(raw) > 120_000:
+        meta["think"] = (meta.get("think") or "")[:800]
+        meta["react_steps"] = meta["react_steps"][-6:]
+        meta["trajectory"] = meta["trajectory"][-12:]
+        meta["task_context"]["facts"] = meta["task_context"]["facts"][-4:]
+        raw = json.dumps(meta, ensure_ascii=False)
+    return raw
 
 
 def _persist_run_state(
@@ -387,6 +466,32 @@ def _reject_internal_answer(text: str, goal: str = "") -> str:
     return t
 
 
+async def _answer_after_llm_failure(
+    model,
+    task_ctx: TaskContext,
+    *,
+    round_i: int,
+    run_state: Any | None = None,
+) -> str:
+    """模型重试耗尽后：尽量用已有材料收束，避免 ASGI/SSE 直接崩掉。"""
+    try:
+        text = await _finalize_user_answer(
+            model, task_ctx, "", round_i=round_i, thought="", run_state=run_state
+        )
+        text = _user_facing_text(text or "")
+        if text and not looks_like_internal(text):
+            return text
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("finalize after llm failure also failed: %s", exc)
+    offline = synthesize_public_answer(task_ctx)
+    if offline:
+        return enforce_safety_answer(goal=task_ctx.goal or "", answer=offline)
+    return (
+        "模型服务暂时不稳定（网络或 SSL 中断），请稍后再试。"
+        "若刚才已搜到结果，也可以换个说法继续问，我会优先基于已有材料作答。"
+    )
+
+
 async def _finalize_user_answer(
     model,
     task_ctx: TaskContext,
@@ -398,6 +503,14 @@ async def _finalize_user_answer(
 ) -> str:
     """交付：富文本总结为主；绝不把内部草稿/提示词给用户。"""
     goal = task_ctx.goal or ""
+    if is_disallowed_request(goal) or is_disallowed_request(content or ""):
+        if run_state is not None:
+            run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
+        return SAFETY_REFUSAL
+    if is_safety_refusal(content or ""):
+        if run_state is not None:
+            run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
+        return SAFETY_REFUSAL
     draft = enrich_finish_answer(
         content or "",
         thought=thought,
@@ -405,6 +518,7 @@ async def _finalize_user_answer(
         goal=goal,
     )
     draft = _reject_internal_answer(draft, goal)
+    draft = strip_pick_number_prompts(draft)
 
     has_materials = bool(extract_search_hit_cards(task_ctx.facts)) or has_substantive_content_facts(
         task_ctx.facts
@@ -412,6 +526,19 @@ async def _finalize_user_answer(
     fact_n = len(task_ctx.facts)
 
     def _track(path, text: str) -> str:
+        text = enforce_safety_answer(goal=goal, answer=text or "")
+        if is_safety_refusal(text):
+            if run_state is not None:
+                run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
+            return SAFETY_REFUSAL
+        text = strip_pick_number_prompts(_reject_internal_answer(text, goal) or text or "")
+        if asks_user_to_pick_number(text):
+            text = strip_pick_number_prompts(text)
+        text = enforce_safety_answer(goal=goal, answer=text)
+        if is_safety_refusal(text):
+            if run_state is not None:
+                run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
+            return SAFETY_REFUSAL
         if run_state is not None:
             run_state.record_finalize(path, text, round_i=round_i)
             run_state.snapshot_answer(
@@ -460,7 +587,7 @@ async def _finalize_user_answer(
     elif draft and not is_hollow_answer(draft):
         return _track(FinalizePath.DRAFT_NON_HOLLOW, draft)
 
-    # 无材料且草稿不足：常识兜底
+    # 无材料且草稿不足：常识兜底（仅当本轮已无法继续取数时由编排层调用）
     if not has_materials or needs_knowledge_fallback(goal, task_ctx.facts, max(round_i, 1)):
         if is_substantive_draft(draft, goal):
             return _track(FinalizePath.SUBSTANTIVE_BEFORE_FALLBACK, draft)
@@ -567,6 +694,7 @@ async def run_chat(
         "2. 仅当用户明确追问/续作（再来三本、为什么获取不了、详细讲《某书》）才使用最近同题上下文。\n"
         "3. finish 必须是用户可读终稿：总起 + 要点；禁止输出「线索/请核实/检索材料」等内部话术。\n"
         "4. 只读搜索/抓取无需用户确认；自行 web_fetch 后总结交付。\n"
+        f"\n\n{SAFETY_POLICY_PROMPT}\n"
     )
     logger.info(
         "======== system prompt preview run=%s len=%s ========\n%s",
@@ -593,6 +721,7 @@ async def run_chat(
     scratchpad = ReactScratchpad()
     paused_confirm_id: int | None = None
     trajectory_log: list[dict[str, Any]] = []
+    blocked_page_streak = 0
 
     def _emit_traj(step: dict[str, Any]) -> str:
         trajectory_log.append(step)
@@ -600,6 +729,46 @@ async def run_chat(
 
     yield sse("run.started", {"run_id": run_id, "architecture": "react"})
     yield sse("think.open", {"title": "ReAct 推理"})
+
+    # 安全硬拦截：违规问题不进工具链
+    if is_disallowed_request(user_text) or is_disallowed_request(effective_goal):
+        run_state.intercept("safety_block", round_i=0)
+        yield _emit_traj(intercept_step("safety_block", round_i=0))
+        async for chunk in _emit_think("安全策略：该问题属于禁止回答范围，直接拒答。\n"):
+            yield chunk
+            think_parts.append("safety_block")
+        content = SAFETY_REFUSAL
+        run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, content, round_i=0)
+        run_state.record_delivered(content)
+        run_state.complete()
+        yield _emit_traj(finish_step(round_i=0))
+        yield sse("react.finish", {"round": 0, "thought": "safety_block", "content": content})
+        async for chunk in _emit_answer(content):
+            yield chunk
+        yield sse("think.close", {})
+        _persist_run_state(db, user_id, conversation_id, run_id, run_state, milestone="safety_block")
+        db.add(
+            Message(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                role="assistant",
+                content=content,
+                metadata_json=_build_assistant_metadata(
+                    run_id=run_id,
+                    think_parts=think_parts,
+                    scratchpad=scratchpad,
+                    trajectory_log=trajectory_log,
+                    task_ctx=task_ctx,
+                    run_state=run_state,
+                    file_meta=file_meta,
+                    extra={"safety_block": True},
+                ),
+            )
+        )
+        db.commit()
+        yield sse("done", {"run_id": run_id, "finalize_path": FinalizePath.SAFETY_REFUSAL.value})
+        return
+
     if expanded:
         async for chunk in _emit_think(f"识别为编号续作，已展开目标：{effective_goal}\n"):
             yield chunk
@@ -626,7 +795,41 @@ async def run_chat(
             }
         )
 
-        raw = await model.chat(messages, temperature=0.2)
+        try:
+            raw = await model.chat(messages, temperature=0.2)
+        except (LLMCallError, Exception) as exc:
+            logger.warning("react llm failed round=%s: %s", round_i, exc)
+            run_state.intercept("llm_unavailable", round_i=round_i)
+            yield _emit_traj(intercept_step("llm_unavailable", round_i=round_i))
+            yield sse(
+                "error",
+                {
+                    "message": "模型连接暂时中断，正在基于已有结果收束…",
+                    "recoverable": True,
+                },
+            )
+            async for chunk in _emit_think(
+                f"模型调用失败（已重试）：{str(exc)[:120]}。改为基于已有 Observation 收束答案…\n"
+            ):
+                yield chunk
+                think_parts.append("llm_unavailable")
+            content = await _answer_after_llm_failure(
+                model, task_ctx, round_i=round_i, run_state=run_state
+            )
+            citations = build_citations(task_ctx.facts)
+            if citations:
+                yield sse("citations", {"items": citations})
+            yield _emit_traj(finish_step(round_i=round_i))
+            scratchpad.add_thought_action("模型不可用，材料收束", "finish", content, round_i)
+            run_state.record_delivered(content)
+            yield sse(
+                "react.finish",
+                {"round": round_i, "thought": "llm_unavailable", "content": content[:500]},
+            )
+            async for chunk in _emit_answer(content):
+                yield chunk
+            assistant_parts = [content]
+            break
         logger.info("react round=%s: %s", round_i, raw[:500])
         parsed = parse_agent_output(raw, tools)
         think = str(parsed.get("think") or "")
@@ -720,6 +923,34 @@ async def run_chat(
                         round_i=round_i,
                         max_rounds=agent_max_tool_rounds,
                     )
+                    # 硬门控：有 hits 无 body / 深度材料不足 → 禁止 finish
+                    if not more:
+                        ok_finish, block_reason = can_finish_research(
+                            goal=task_ctx.goal or "",
+                            facts=task_ctx.facts,
+                            steps=scratchpad.steps,
+                            failed_urls=task_ctx.failed_urls,
+                        )
+                        if not ok_finish and round_i < agent_max_tool_rounds - 1:
+                            more = next_research_tool(
+                                goal=task_ctx.goal or "",
+                                facts=task_ctx.facts,
+                                steps=scratchpad.steps,
+                                failed_urls=task_ctx.failed_urls,
+                                round_i=round_i,
+                                max_rounds=agent_max_tool_rounds,
+                            )
+                            if not more and block_reason == "search_hits_no_body":
+                                next_url = pick_fetch_url(
+                                    task_ctx.facts, skip=set(task_ctx.failed_urls)
+                                )
+                                if next_url:
+                                    more = {
+                                        "tool": "web_fetch",
+                                        "args": {"url": next_url},
+                                        "think": "有搜索结果但无正文，禁止直接 finish",
+                                        "reason": "search_hits_no_body",
+                                    }
                     # 兼容：仅有搜索标题时也要抓
                     if not more:
                         fetched_already = any(
@@ -807,6 +1038,28 @@ async def run_chat(
         if action == "tool":
             tool = str(parsed.get("tool") or "")
             args = parsed.get("args") if isinstance(parsed.get("args"), (dict, str)) else {}
+
+            # 工具参数若仍触及禁止主题，直接拒答（防模型绕过入口）
+            args_blob = (
+                json.dumps(args, ensure_ascii=False)
+                if isinstance(args, dict)
+                else str(args or "")
+            )
+            if is_disallowed_request(task_ctx.goal or "") or is_disallowed_request(args_blob):
+                run_state.intercept("safety_block", round_i=round_i)
+                yield _emit_traj(intercept_step("safety_block", round_i=round_i))
+                content = SAFETY_REFUSAL
+                run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, content, round_i=round_i)
+                run_state.record_delivered(content)
+                yield _emit_traj(finish_step(round_i=round_i))
+                yield sse(
+                    "react.finish",
+                    {"round": round_i, "thought": "safety_block", "content": content},
+                )
+                async for chunk in _emit_answer(content):
+                    yield chunk
+                assistant_parts = [content]
+                break
 
             # 写文件：先补全正文，避免生成空文件
             if tool.startswith("file_write_"):
@@ -1057,6 +1310,7 @@ async def run_chat(
                 and _is_blocked_page(result, cur_url)
                 and round_i < agent_max_tool_rounds - 1
             ):
+                blocked_page_streak += 1
                 if cur_url:
                     task_ctx.mark_failed_url(cur_url)
                 next_u = pick_fetch_url(task_ctx.facts, skip=set(task_ctx.failed_urls))
@@ -1064,6 +1318,22 @@ async def run_chat(
                 async for chunk in _emit_think(tip_block + "\n"):
                     yield chunk
                 scratchpad.set_observation(tip_block)
+                if blocked_page_streak >= 2 and not next_u:
+                    async for chunk in _emit_think(
+                        "连续多次页面被拦截且无更多来源，改为基于已有材料或常识总结…\n"
+                    ):
+                        yield chunk
+                    content = await _finalize_user_answer(
+                        model, task_ctx, "", round_i=round_i + 1, thought=think, run_state=run_state
+                    )
+                    scratchpad.add_thought_action("连续拦截后兜底", "finish", content, round_i)
+                    scratchpad.set_observation("（连续验证码/风控，已兜底）")
+                    run_state.record_delivered(content)
+                    yield sse("react.finish", {"round": round_i, "thought": "blocked_fallback", "content": content[:500]})
+                    async for chunk in _emit_answer(content):
+                        yield chunk
+                    assistant_parts = [content]
+                    break
                 if next_u:
                     async for chunk in _emit_think(f"自动改抓下一条: {next_u[:100]}\n"):
                         yield chunk
@@ -1085,6 +1355,12 @@ async def run_chat(
                     apply_result_to_context(task_ctx, tool, result, args=args)
                     if _is_blocked_page(result, next_u):
                         task_ctx.mark_failed_url(next_u)
+                        blocked_page_streak += 1
+                    else:
+                        blocked_page_streak = 0
+            elif tool in {"web_fetch", "browser_navigate", "http_request"} and isinstance(result, dict):
+                if not _is_blocked_page(result, cur_url) and task_ctx.last_ok:
+                    blocked_page_streak = 0
 
             if isinstance(result, dict) and result.get("frame"):
                 yield sse("browser.frame", {"url": result.get("url"), "frame": result["frame"]})
@@ -1092,6 +1368,16 @@ async def run_chat(
                 item = {"file_id": result["file_id"], "name": result.get("name")}
                 file_meta.append(item)
                 yield sse("file.ready", item)
+            elif (
+                isinstance(result, dict)
+                and tool.startswith("file_write_")
+                and (result.get("ok") is False or result.get("error"))
+            ):
+                # 写文件失败：明确 Observation，禁止后续空喊「已生成」
+                fail_msg = str(result.get("error") or "写文件失败，未落盘")
+                async for chunk in _emit_think(f"写文件未成功：{fail_msg}\n"):
+                    yield chunk
+                task_ctx.add_step(f"{tool} 失败: {fail_msg}")
 
             obs = format_observation(tool, result)
             scratchpad.set_observation(obs)
@@ -1165,8 +1451,61 @@ async def run_chat(
             async for chunk in _emit_think("ReAct：准备下一步 Thought…\n"):
                 yield chunk
 
-            # 多轮仍无与目标相关实质事实：通用常识兜底（不限业务场景）
+            # 多轮仍无与目标相关实质事实：先尝试继续取数，再知识兜底
             if needs_knowledge_fallback(task_ctx.goal, task_ctx.facts, round_i + 1):
+                more_fb = next_research_tool(
+                    goal=task_ctx.goal or "",
+                    facts=task_ctx.facts,
+                    steps=scratchpad.steps,
+                    failed_urls=task_ctx.failed_urls,
+                    round_i=round_i,
+                    max_rounds=agent_max_tool_rounds,
+                )
+                if more_fb and round_i < agent_max_tool_rounds - 1:
+                    tool_n = str(more_fb["tool"])
+                    args_n = more_fb.get("args") or {}
+                    reason = str(more_fb.get("reason") or "need_more_research")
+                    run_state.intercept(reason, round_i=round_i, tool=tool_n)
+                    yield _emit_traj(
+                        intercept_step(reason, round_i=round_i, detail=f"{tool_n}")
+                    )
+                    async for chunk in _emit_think(
+                        f"材料仍不足，继续取数后再答（{reason}）…\n"
+                    ):
+                        yield chunk
+                    # 直接执行下一步工具，避免空兜底
+                    parsed = {
+                        "action": "tool",
+                        "tool": tool_n,
+                        "args": args_n,
+                        "think": str(more_fb.get("think") or "继续调研"),
+                    }
+                    # 落入下方 tool 分支需 continue 到下一轮让模型走；此处手动跑一轮取数
+                    tip = f"Action: {tool_n} {json.dumps(args_n, ensure_ascii=False)}"
+                    async for chunk in _emit_think(tip + "\n"):
+                        yield chunk
+                    yield sse("tool.started", {"tool": tool_n, "args": args_n, "round": round_i})
+                    try:
+                        result_fb = await execute_tool(
+                            tool_n,
+                            args_n if isinstance(args_n, dict) else {},
+                            db=db,
+                            user_id=user_id,
+                            conversation_id=conversation_id,
+                        )
+                    except Exception as exc:
+                        result_fb = {"error": str(exc)}
+                    if not isinstance(result_fb, dict):
+                        result_fb = {"error": "bad result"}
+                    apply_result_to_context(task_ctx, tool_n, result_fb, args=args_n if isinstance(args_n, dict) else {})
+                    obs_fb = format_observation(tool_n, result_fb)
+                    scratchpad.add_thought_action(
+                        str(more_fb.get("think") or "继续调研"), tool_n, args_n, round_i
+                    )
+                    scratchpad.set_observation(obs_fb)
+                    yield sse("react.observation", {"round": round_i, "observation": obs_fb, "tool": tool_n})
+                    yield sse("tool.finished", {"tool": tool_n, "result": _shrink(result_fb)})
+                    continue
                 async for chunk in _emit_think(
                     "工具尚未形成足够 Observation，改用常识直接回答用户…\n"
                 ):
@@ -1213,33 +1552,15 @@ async def run_chat(
                 user_id=user_id,
                 role="assistant",
                 content=notice,
-                metadata_json=json.dumps(
-                    {
-                        "run_id": run_id,
-                        "architecture": "react",
-                        "paused": True,
-                        "confirmation_id": paused_confirm_id,
-                        "think": "".join(think_parts)[:4000],
-                        "react_steps": [
-                            {
-                                "thought": s.thought[:500],
-                                "action": s.action,
-                                "observation": (s.observation or "")[:1500],
-                                "round": s.round_i,
-                            }
-                            for s in scratchpad.steps[-12:]
-                        ],
-                        "trajectory": trajectory_log[-30:],
-                        "files": file_meta,
-                        "task_context": {
-                            "goal": task_ctx.goal,
-                            "browser_url": task_ctx.browser_url,
-                            "facts": task_ctx.facts[-10:],
-                            "artifacts": task_ctx.artifacts,
-                        },
-                        "run_state": run_state.to_dict(),
-                    },
-                    ensure_ascii=False,
+                metadata_json=_build_assistant_metadata(
+                    run_id=run_id,
+                    think_parts=think_parts,
+                    scratchpad=scratchpad,
+                    trajectory_log=trajectory_log,
+                    task_ctx=task_ctx,
+                    run_state=run_state,
+                    file_meta=file_meta,
+                    extra={"paused": True, "confirmation_id": paused_confirm_id},
                 ),
             )
         )
@@ -1262,6 +1583,28 @@ async def run_chat(
         final_text = await _finalize_user_answer(
             model, task_ctx, final_text, round_i=agent_max_tool_rounds, run_state=run_state
         )
+    final_text = strip_pick_number_prompts(final_text)
+    final_text = enforce_safety_answer(goal=task_ctx.goal or "", answer=final_text)
+    # 禁止空喊「已生成文件」：无产物则改口，有产物则附下载提示
+    if not is_safety_refusal(final_text) and _claims_file_without_artifact(final_text) and not task_ctx.artifacts:
+        final_text = strip_pick_number_prompts(
+            re.sub(
+                r"(已生成|生成了|写好了|文档已|文件已).{0,40}(文档|文件|docx|xlsx|pdf|pptx)[^\n]*",
+                "",
+                final_text,
+                flags=re.I,
+            ).strip()
+        )
+        if not final_text or is_hollow_answer(final_text):
+            final_text = (
+                "这一轮没能成功生成可下载文件（正文可能为空或写文件失败）。"
+                "请再说一次要生成的内容和格式，我会重新写入工作区。"
+            )
+        else:
+            final_text = (
+                final_text.rstrip()
+                + "\n\n（说明：本轮未能落盘生成文件，如需文档请明确格式后重试。）"
+            )
     run_state.record_delivered(final_text)
     run_state.complete()
     _persist_run_state(db, user_id, conversation_id, run_id, run_state, milestone="complete")
@@ -1280,32 +1623,15 @@ async def run_chat(
             user_id=user_id,
             role="assistant",
             content=final_text,
-            metadata_json=json.dumps(
-                {
-                    "run_id": run_id,
-                    "architecture": "react",
-                    "think": "".join(think_parts)[:4000],
-                    "react_steps": [
-                        {
-                            "thought": s.thought[:500],
-                            "action": s.action,
-                            "observation": (s.observation or "")[:1500],
-                            "round": s.round_i,
-                        }
-                        for s in scratchpad.steps[-12:]
-                    ],
-                    "trajectory": trajectory_log[-30:],
-                    "citations": citations,
-                    "files": file_meta,
-                    "task_context": {
-                        "goal": task_ctx.goal,
-                        "browser_url": task_ctx.browser_url,
-                        "facts": task_ctx.facts[-10:],
-                        "artifacts": task_ctx.artifacts,
-                    },
-                    "run_state": run_state.to_dict(),
-                },
-                ensure_ascii=False,
+            metadata_json=_build_assistant_metadata(
+                run_id=run_id,
+                think_parts=think_parts,
+                scratchpad=scratchpad,
+                trajectory_log=trajectory_log,
+                task_ctx=task_ctx,
+                run_state=run_state,
+                file_meta=file_meta,
+                citations=citations,
             ),
         )
     )
@@ -1454,6 +1780,7 @@ async def resume_chat_after_confirmation(
         "2. 仅当用户明确追问/续作才使用最近同题上下文。\n"
         "3. finish 必须是用户可读终稿。\n"
         "4. 只读搜索/抓取无需用户确认；自行 web_fetch 后总结交付。\n"
+        f"\n\n{SAFETY_POLICY_PROMPT}\n"
     )
 
     history = (
@@ -1537,7 +1864,41 @@ async def resume_chat_after_confirmation(
                 ),
             }
         )
-        raw = await model.chat(messages, temperature=0.2)
+        try:
+            raw = await model.chat(messages, temperature=0.2)
+        except (LLMCallError, Exception) as exc:
+            logger.warning("resume react llm failed round=%s: %s", round_i, exc)
+            run_state.intercept("llm_unavailable", round_i=round_i)
+            yield _emit_traj(intercept_step("llm_unavailable", round_i=round_i))
+            yield sse(
+                "error",
+                {
+                    "message": "模型连接暂时中断，正在基于已有结果收束…",
+                    "recoverable": True,
+                },
+            )
+            async for chunk in _emit_think(
+                f"模型调用失败（已重试）：{str(exc)[:120]}。改为基于已有 Observation 收束答案…\n"
+            ):
+                yield chunk
+                think_parts.append("llm_unavailable")
+            content = await _answer_after_llm_failure(
+                model, task_ctx, round_i=round_i, run_state=run_state
+            )
+            citations = build_citations(task_ctx.facts)
+            if citations:
+                yield sse("citations", {"items": citations})
+            yield _emit_traj(finish_step(round_i=round_i))
+            scratchpad.add_thought_action("模型不可用，材料收束", "finish", content, round_i)
+            run_state.record_delivered(content)
+            yield sse(
+                "react.finish",
+                {"round": round_i, "thought": "llm_unavailable", "content": content[:500]},
+            )
+            async for chunk in _emit_answer(content):
+                yield chunk
+            assistant_parts = [content]
+            break
         logger.info("resume react round=%s: %s", round_i, raw[:500])
         parsed = parse_agent_output(raw, tools)
         think = str(parsed.get("think") or "")
@@ -1642,6 +2003,7 @@ async def resume_chat_after_confirmation(
         final_text = await _finalize_user_answer(
             model, task_ctx, final_text, round_i=agent_max_tool_rounds, run_state=run_state
         )
+    final_text = enforce_safety_answer(goal=task_ctx.goal or "", answer=final_text)
     if task_ctx.artifacts and all(a not in final_text for a in task_ctx.artifacts):
         final_text = (
             final_text.rstrip()
@@ -1659,34 +2021,16 @@ async def resume_chat_after_confirmation(
             user_id=user_id,
             role="assistant",
             content=final_text,
-            metadata_json=json.dumps(
-                {
-                    "run_id": run_id,
-                    "architecture": "react",
-                    "resumed": True,
-                    "confirmation_id": confirmation_id,
-                    "think": "".join(think_parts)[:4000],
-                    "react_steps": [
-                        {
-                            "thought": s.thought[:500],
-                            "action": s.action,
-                            "observation": (s.observation or "")[:1500],
-                            "round": s.round_i,
-                        }
-                        for s in scratchpad.steps[-12:]
-                    ],
-                    "trajectory": trajectory_log[-30:],
-                    "citations": citations,
-                    "files": file_meta,
-                    "task_context": {
-                        "goal": task_ctx.goal,
-                        "browser_url": task_ctx.browser_url,
-                        "facts": task_ctx.facts[-10:],
-                        "artifacts": task_ctx.artifacts,
-                    },
-                    "run_state": run_state.to_dict(),
-                },
-                ensure_ascii=False,
+            metadata_json=_build_assistant_metadata(
+                run_id=run_id,
+                think_parts=think_parts,
+                scratchpad=scratchpad,
+                trajectory_log=trajectory_log,
+                task_ctx=task_ctx,
+                run_state=run_state,
+                file_meta=file_meta,
+                citations=citations,
+                extra={"resumed": True, "confirmation_id": confirmation_id},
             ),
         )
     )

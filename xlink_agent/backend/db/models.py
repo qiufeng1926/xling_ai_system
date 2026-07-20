@@ -13,11 +13,17 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
     pass
+
+
+def _long_text():
+    """MySQL 用 LONGTEXT，避免 UTF-8 轨迹/元数据撑爆 64KB TEXT。"""
+    return Text().with_variant(LONGTEXT(), "mysql")
 
 
 class Conversation(Base):
@@ -45,7 +51,7 @@ class Message(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     content: Mapped[str] = mapped_column(Text, default="")
-    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(_long_text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
@@ -59,7 +65,7 @@ class RunEvent(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
     run_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload_json: Mapped[str | None] = mapped_column(_long_text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -176,7 +182,7 @@ class Confirmation(Base):
     conversation_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
     run_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     action_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    payload_json: Mapped[str] = mapped_column(_long_text(), default="{}")
     status: Mapped[str] = mapped_column(String(32), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

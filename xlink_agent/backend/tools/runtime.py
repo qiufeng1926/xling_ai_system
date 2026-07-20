@@ -175,6 +175,12 @@ async def execute_tool(
         if path.exists():
             path.unlink()
         return {"deleted": name_}
+    if name == "run_code":
+        from tools.code_sandbox import run_python_sandbox
+
+        code = str(args.get("code") or args.get("source") or args.get("python") or "")
+        timeout = int(args.get("timeout") or 8)
+        return run_python_sandbox(code, workdir=user_workspace(user_id), timeout_sec=timeout)
     if name in {"feishu_search", "meeting_search"}:
         return {"error": "该连接器未启用（一期预留）"}
     return {"error": f"未知工具: {name}"}

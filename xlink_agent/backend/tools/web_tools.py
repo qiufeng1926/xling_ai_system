@@ -391,6 +391,11 @@ TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
         "input": {"filename": "x.md", "content": "完整 Markdown 正文"},
         "example": {"filename": "报告.md", "content": "# 标题\\n\\n正文……"},
     },
+    "run_code": {
+        "desc": "在服务端沙箱运行短 Python（算数/清洗/校验）。禁止网络与危险模块。",
+        "input": {"code": "print(1+1)"},
+        "example": {"code": "print(sum(range(1, 11)))"},
+    },
 }
 
 
@@ -483,6 +488,17 @@ def validate_and_normalize_args(tool: str, args: Any) -> tuple[dict[str, Any] | 
 
     if tool.startswith("file_write_"):
         return _normalize_file_write_args(tool, args)
+
+    if tool == "run_code":
+        code = str(args.get("code") or args.get("source") or args.get("python") or "").strip()
+        if not code:
+            return None, "run_code 需要 code（短 Python 源码）"
+        timeout = args.get("timeout")
+        try:
+            timeout_i = int(timeout) if timeout is not None else 8
+        except Exception:
+            timeout_i = 8
+        return {"code": code, "timeout": max(1, min(timeout_i, 30))}, None
 
     return args, None
 

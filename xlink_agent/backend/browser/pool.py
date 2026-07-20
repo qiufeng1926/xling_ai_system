@@ -96,19 +96,35 @@ class BrowserPool:
             url = assert_public_url(url)
         except Exception as exc:
             return {"error": str(exc), "url": url}
+        last_err = ""
         with self._lock:
             state = self._get_state_sync(user_id)
             assert state.page is not None
-            try:
-                state.page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                state.url = state.page.url
-                state.last_used = time.time()
-                frame = self._capture_sync(state)
-                return {"url": state.url, "title": state.page.title(), "frame": frame}
-            except Exception as exc:
-                msg = str(exc).split("\n")[0][:300]
-                logger.warning("navigate 失败 %s: %s", url, msg)
-                return {"error": f"无法打开页面: {msg}", "url": url, "failed_url": url}
+            for attempt in range(2):
+                try:
+                    wait = "domcontentloaded" if attempt == 0 else "load"
+                    state.page.goto(url, wait_until=wait, timeout=45000)
+                    state.url = state.page.url
+                    state.last_used = time.time()
+                    # 空页检测：body 几乎无文本
+                    try:
+                        body_len = len((state.page.inner_text("body", timeout=5000) or "").strip())
+                    except Exception:
+                        body_len = -1
+                    frame = self._capture_sync(state)
+                    if body_len == 0 and attempt == 0:
+                        last_err = "页面正文为空，重试中"
+                        continue
+                    out = {"url": state.url, "title": state.page.title(), "frame": frame}
+                    if body_len == 0:
+                        out["warning"] = "页面正文为空"
+                        out["ok"] = False
+                        out["error"] = "打开后页面无有效正文"
+                    return out
+                except Exception as exc:
+                    last_err = str(exc).split("\n")[0][:300]
+                    logger.warning("navigate 失败 attempt=%s %s: %s", attempt, url, last_err)
+            return {"error": f"无法打开页面: {last_err}", "url": url, "failed_url": url}
 
     def _click_sync(self, user_id: int, selector: str) -> dict:
         with self._lock:

@@ -157,8 +157,9 @@ def sanitize_public_answer(text: str) -> str:
             continue
         lines.append(ln)
     out = "\n".join(lines).strip()
-    # 压缩多余空行
+    # 压缩多余空行；去掉「请回复编号」类只读任务尾巴
     out = re.sub(r"\n{3,}", "\n\n", out)
+    out = strip_pick_number_prompts(out)
     return out
 
 
@@ -691,21 +692,54 @@ def materials_blob_for_synthesis(facts: list[str], *, max_chars: int = 10000) ->
 
 
 _SYNTH_SYSTEM = (
-    "你是通用信息整理编辑，最终答案质量对齐主流办公智能体（信息充分、结构清晰、可直接阅读）。\n"
+    "你是通用信息整理编辑，最终答案质量对齐豆包/主流办公智能体（信息充分、结构清晰、可直接阅读）。\n"
     "根据「用户目标」与「检索材料 / 模型草稿」撰写最终答复，规则：\n"
     "1. 开头 1～2 句总起（点明主题；若目标含条数/范围，写清楚；可加一句筛选标准）。\n"
-    "2. 用编号列表或分节交付；每条/每节必须包含实质说明：\n"
-    "   - 标题行（书籍可用《书名》，新闻/普通条目禁止乱加《》）；\n"
-    "   - 随后 3～5 句：背景/主体、核心内容、意义或适合谁；有数字/时间则写出。\n"
-    "3. 深度问题（详细/全书/结构/分析）：采用「概览 → 结构或阶段 → 核心观点 → 小结/启示」"
-    "分层展开，尽量写充分，不要三言两语交差。\n"
-    "4. 信息要充分：宁可写长一点写清楚，也不要只堆标题。\n"
-    "5. **禁止**把搜索引擎结果页标题、栏目名、合集名当成答案条目交差。\n"
-    "6. 严格遵守目标约束；实时精确数字核验不到不要编造。\n"
-    "7. 若检索材料为空但「模型草稿」已有条目：扩写成完整可读答复，可标「供参考」；"
+    "2. 简单题：总起 + 编号要点；每条至少 2～3 句实质说明，禁止只有标题。\n"
+    "3. 深度题（详细/全书/结构/分析）：总起 + 分节「概览 → 结构或阶段 → 核心观点 → 小结/启示」，"
+    "每节有实质段落，不要三言两语交差。\n"
+    "4. 编号条目：标题行（书籍可用《书名》，新闻/普通条目禁止乱加《》）+ 随后 3～5 句"
+    "（背景/主体、核心内容、意义或适合谁；有数字/时间则写出）。\n"
+    "5. 信息要充分：宁可写长一点写清楚，也不要只堆标题。\n"
+    "6. **禁止**把搜索引擎结果页标题、栏目名、合集名当成答案条目交差。\n"
+    "7. **禁止**让用户在只读任务里「回复编号 / 告诉我第几条 / 选一条再展开」；自行写完完整答案。\n"
+    "8. 严格遵守目标约束；实时精确数字核验不到不要编造，可写「供参考」或说明无法核验。\n"
+    "9. 若检索材料为空但「模型草稿」已有条目：扩写成完整可读答复，可标「供参考」；"
     "**禁止**只说「没有材料无法推荐」或「检索材料有限」作为主要内容。\n"
-    "8. 只输出给用户的中文正文，禁止 JSON / 工具名 / 内部步骤。"
+    "10. 只输出给用户的中文正文，禁止 JSON / 工具名 / 内部步骤 / Thought/Observation。"
 )
+
+_PICK_NUMBER_RE = re.compile(
+    r"(回复|告诉我|请选|选择|选一个|选一条|发我).{0,12}(编号|第?\s*\d+\s*[条项个]|哪一[条项])|"
+    r"(如需|若要|想看).{0,20}(详细|展开).{0,16}(编号|回复|告诉我)|"
+    r"请(回复|告诉我)编号",
+    re.I,
+)
+
+
+def asks_user_to_pick_number(text: str) -> bool:
+    """只读交付不应让用户再选编号。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_PICK_NUMBER_RE.search(t))
+
+
+def strip_pick_number_prompts(text: str) -> str:
+    """去掉「请回复编号」类尾巴，保留正文。"""
+    t = (text or "").strip()
+    if not t:
+        return t
+    lines = []
+    for ln in t.splitlines():
+        if _PICK_NUMBER_RE.search(ln) and len(ln) < 80:
+            continue
+        if re.search(r"如需某一条的详细|告诉我编号|回复编号即可", ln):
+            continue
+        lines.append(ln)
+    out = "\n".join(lines).strip()
+    out = re.sub(r"\n*如需某一条的详细内容[^\n]*\n?", "\n", out).strip()
+    return out
 
 
 async def synthesize_rich_answer(
@@ -776,26 +810,32 @@ async def synthesize_rich_answer(
     except Exception:
         return draft_clean if is_substantive_draft(draft_clean, goal) else ""
     out = sanitize_public_answer(text or "")
+    out = strip_pick_number_prompts(out)
     if (
         not out
         or is_hollow_answer(out)
         or looks_like_internal(out)
+        or asks_user_to_pick_number(out)
         or any(x in out for x in ("没有材料无法", "无法根据检索材料", "目前没有提供具体"))
     ):
         if is_substantive_draft(draft_clean, goal):
-            return draft_clean
+            return strip_pick_number_prompts(draft_clean)
         return ""
     if answer_parrots_search_titles(out, facts):
         if is_substantive_draft(draft_clean, goal):
-            return draft_clean
+            return strip_pick_number_prompts(draft_clean)
         return ""
     # 扩写后若反而更薄，回退草稿
     if draft_clean and answer_depth_score(out) + 8 < answer_depth_score(draft_clean):
-        return draft_clean
+        return strip_pick_number_prompts(draft_clean)
     # 明显滥用书名号套新闻：再压一次简单清洗
     if out.count("《") >= 3 and not any(k in goal for k in ("书", "小说", "阅读", "著作", "经济")):
         out2 = re.sub(r"《([^》]+)》", r"\1", out)
         out = sanitize_public_answer(out2)
+    # 薄清单且有材料：视为失败，交给上层再扩或回退
+    if materials and is_thin_list_draft(out) and is_substantive_draft(draft_clean, goal):
+        if answer_depth_score(draft_clean) >= answer_depth_score(out):
+            return strip_pick_number_prompts(draft_clean)
     return out
 
 
@@ -1015,16 +1055,32 @@ def expand_selection_followup(user_text: str, history: list[Any]) -> str | None:
     )
 
 
+# 易 403/验证码的内容站：有替代源时后取，避免首条就卡住
+_FETCH_DEPRIORITIZE_HOSTS = (
+    "zhihu.com",
+    "zhuanlan.zhihu.com",
+    "xiaohongshu.com",
+    "weixin.qq.com",
+    "mp.weixin.qq.com",
+)
+
+
 def pick_fetch_url(facts: list[str], *, skip: set[str] | None = None) -> str | None:
-    """取下一条可抓取内容 URL（跳过已失败/验证码页）。"""
+    """取下一条可抓取内容 URL（跳过已失败/验证码页；易墙站点后置）。"""
     skip = skip or set()
+    preferred: list[str] = []
+    deferred: list[str] = []
     for u in first_content_urls_from_facts(facts, limit=8):
         if u in skip:
             continue
         if any(x in u for x in ("unhuman", "captcha", "challenge", "verify")):
             continue
-        return u
-    return None
+        if any(h in u for h in _FETCH_DEPRIORITIZE_HOSTS):
+            deferred.append(u)
+        else:
+            preferred.append(u)
+    ordered = preferred + deferred
+    return ordered[0] if ordered else None
 
 
 def enrich_finish_answer(

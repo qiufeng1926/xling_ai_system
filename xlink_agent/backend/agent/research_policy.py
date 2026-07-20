@@ -152,6 +152,49 @@ def prior_search_queries(steps: list[Any]) -> list[str]:
     return qs
 
 
+def has_search_hit_facts(facts: list[str]) -> bool:
+    return any((f or "").startswith("搜索结果") for f in (facts or []))
+
+
+def can_finish_research(
+    *,
+    goal: str,
+    facts: list[str],
+    steps: list[Any],
+    failed_urls: list[str] | None = None,
+) -> tuple[bool, str]:
+    """finish 前硬门控：(是否允许交付, 拦截 reason)。
+
+    - 深度任务：须达到最小搜索次数与正文页数
+    - 浅任务：若已有搜索命中但尚无正文且还有可抓链接 → 禁止 finish
+    """
+    deep = is_deep_research_goal(goal)
+    searches = count_search_steps(steps)
+    bodies = count_body_facts(facts)
+    min_s = min_searches_for_goal(goal)
+    min_b = min_bodies_for_goal(goal)
+    skip = set(failed_urls or [])
+
+    if deep:
+        if searches < min_s:
+            return False, "need_alt_search"
+        if bodies < min_b:
+            next_u = pick_fetch_url(facts, skip=skip)
+            if next_u or searches < min_s + 1:
+                return False, "need_more_bodies"
+        return True, ""
+
+    # 浅任务：有 hits 无 body → 必须先抓（禁止只交标题清单 / 让用户选编号）
+    if (
+        has_search_hit_facts(facts)
+        and bodies < 1
+        and not has_substantive_content_facts(facts)
+        and pick_fetch_url(facts, skip=skip)
+    ):
+        return False, "search_hits_no_body"
+    return True, ""
+
+
 def next_research_tool(
     *,
     goal: str,
@@ -191,7 +234,23 @@ def next_research_tool(
                 "reason": "need_alt_search",
             }
 
-    # 3) 有链接则继续抓正文，直到达到最小正文页数
+    # 3) 浅任务硬门：有搜索标题但无正文 → 必须 web_fetch
+    if (
+        not deep
+        and has_search_hit_facts(facts)
+        and bodies < 1
+        and not has_substantive_content_facts(facts)
+    ):
+        next_u = pick_fetch_url(facts, skip=skip)
+        if next_u:
+            return {
+                "tool": "web_fetch",
+                "args": {"url": next_u},
+                "think": "已有搜索结果，先打开正文再总结（禁止只交标题或让用户选编号）",
+                "reason": "search_hits_no_body",
+            }
+
+    # 4) 有链接则继续抓正文，直到达到最小正文页数
     need_bodies = min_b if deep else (1 if not has_substantive_content_facts(facts) else 0)
     if bodies < need_bodies or (deep and bodies < min_b):
         next_u = pick_fetch_url(facts, skip=skip)
@@ -222,8 +281,9 @@ def research_status_line(goal: str, facts: list[str], steps: list[Any]) -> str:
     searches = count_search_steps(steps)
     min_s = min_searches_for_goal(goal)
     min_b = min_bodies_for_goal(goal)
-    enough = (not deep and (bodies >= 1 or searches >= 1)) or (deep and searches >= min_s and bodies >= min_b)
-    tip = "材料可尝试总结交付" if enough else "材料仍偏少，请先继续取数再 finish"
+    ok, reason = can_finish_research(goal=goal, facts=facts, steps=steps)
+    enough = ok
+    tip = "材料可尝试总结交付" if enough else f"材料仍偏少（{reason or '需继续取数'}），请先取数再 finish"
     extra = (
         f"（深度任务建议 ≥{min_s} 次搜索、≥{min_b} 篇正文）" if deep else ""
     )

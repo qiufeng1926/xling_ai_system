@@ -1,15 +1,31 @@
-"""多模型路由：一期 GLM，预留切换接口"""
+"""多模型路由：一期 GLM，预留切换接口；对瞬态网络/SSL 错误自动重试。"""
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable, TypeVar
 
-from config.config import glm_api_key, glm_embedding_model, glm_model, llm_provider, llm_temperature
+from config.config import (
+    glm_api_key,
+    glm_embedding_model,
+    glm_model,
+    llm_max_retries,
+    llm_provider,
+    llm_retry_backoff_sec,
+    llm_temperature,
+)
 from utils.logger import get_logger
 
 logger = get_logger("model_router")
+
+T = TypeVar("T")
+
+
+class LLMCallError(RuntimeError):
+    """模型调用在重试耗尽后仍失败。"""
 
 
 def _log_messages(messages: list[dict[str, str]], *, tag: str) -> None:
@@ -20,6 +36,65 @@ def _log_messages(messages: list[dict[str, str]], *, tag: str) -> None:
         content = m.get("content") or ""
         logger.info("--- prompt[%s] #%s role=%s len=%s ---\n%s", tag, i, role, len(content), content)
     logger.info("======== LLM prompt end tag=%s ========", tag)
+
+
+def _is_retryable_llm_error(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    msg = str(exc).lower()
+    retry_names = (
+        "APIConnectionError",
+        "ConnectError",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "WriteTimeout",
+        "TimeoutException",
+        "RemoteProtocolError",
+        "NetworkError",
+        "SSLError",
+    )
+    if any(n in name for n in retry_names):
+        return True
+    markers = (
+        "ssl",
+        "eof",
+        "connection",
+        "timeout",
+        "temporarily",
+        "broken pipe",
+        "reset by peer",
+        "429",
+        "502",
+        "503",
+        "504",
+        "gateway",
+        "unavailable",
+    )
+    return any(m in msg for m in markers)
+
+
+def _call_with_retries(fn: Callable[[], T], *, tag: str) -> T:
+    """同步调用 + 指数退避重试（在线程池内执行）。"""
+    attempts = max(1, int(llm_max_retries) + 1)
+    last: BaseException | None = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except BaseException as exc:  # noqa: BLE001 — 需识别 SDK 各类连接错误
+            last = exc
+            if i >= attempts - 1 or not _is_retryable_llm_error(exc):
+                break
+            delay = float(llm_retry_backoff_sec) * (i + 1)
+            logger.warning(
+                "LLM retry tag=%s attempt=%s/%s err=%s sleep=%.1fs",
+                tag,
+                i + 1,
+                attempts,
+                exc,
+                delay,
+            )
+            time.sleep(delay)
+    assert last is not None
+    raise LLMCallError(f"模型调用失败（已重试）: {last}") from last
 
 
 class BaseChatModel(ABC):
@@ -62,27 +137,29 @@ class GLMChatModel(BaseChatModel):
         *,
         temperature: float | None = None,
     ) -> AsyncIterator[str]:
-        import asyncio
-
         _log_messages(messages, tag=f"glm.stream/{self.model}")
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
+        temp = temperature if temperature is not None else llm_temperature
 
         def _run() -> list[str]:
-            chunks: list[str] = []
-            stream = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature if temperature is not None else llm_temperature,
-                stream=True,
-            )
-            for event in stream:
-                try:
-                    delta = event.choices[0].delta.content
-                except Exception:
-                    delta = None
-                if delta:
-                    chunks.append(delta)
-            return chunks
+            def _once() -> list[str]:
+                chunks: list[str] = []
+                stream = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temp,
+                    stream=True,
+                )
+                for event in stream:
+                    try:
+                        delta = event.choices[0].delta.content
+                    except Exception:
+                        delta = None
+                    if delta:
+                        chunks.append(delta)
+                return chunks
+
+            return _call_with_retries(_once, tag=f"glm.stream/{self.model}")
 
         parts = await loop.run_in_executor(None, _run)
         for p in parts:
@@ -94,29 +171,32 @@ class GLMChatModel(BaseChatModel):
         *,
         temperature: float | None = None,
     ) -> str:
-        import asyncio
-
         _log_messages(messages, tag=f"glm.chat/{self.model}")
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
+        temp = temperature if temperature is not None else llm_temperature
 
         def _run() -> str:
-            resp = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature if temperature is not None else llm_temperature,
-            )
-            return resp.choices[0].message.content or ""
+            def _once() -> str:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temp,
+                )
+                return resp.choices[0].message.content or ""
+
+            return _call_with_retries(_once, tag=f"glm.chat/{self.model}")
 
         return await loop.run_in_executor(None, _run)
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        import asyncio
-
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _run() -> list[list[float]]:
-            resp = self.client.embeddings.create(model=self.embedding_model, input=texts)
-            return [item.embedding for item in resp.data]
+            def _once() -> list[list[float]]:
+                resp = self.client.embeddings.create(model=self.embedding_model, input=texts)
+                return [item.embedding for item in resp.data]
+
+            return _call_with_retries(_once, tag=f"glm.embed/{self.embedding_model}")
 
         return await loop.run_in_executor(None, _run)
 
@@ -148,7 +228,6 @@ class EchoChatModel(BaseChatModel):
         return "".join(parts)
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        # 固定维度伪向量，仅用于本地无 Key 时入库联调
         out: list[list[float]] = []
         for t in texts:
             vec = [0.0] * 64
@@ -169,13 +248,12 @@ def get_chat_model() -> BaseChatModel:
     if provider == "glm":
         try:
             _model = GLMChatModel()
-            logger.info("LLM provider=glm model=%s", glm_model)
+            logger.info("LLM provider=glm model=%s retries=%s", glm_model, llm_max_retries)
             return _model
         except Exception as exc:
             logger.warning("GLM 初始化失败，降级演示模式: %s", exc)
             _model = EchoChatModel()
             return _model
-    # 预留：deepseek / openai
     logger.warning("未知 LLM_PROVIDER=%s，使用演示模式", provider)
     _model = EchoChatModel()
     return _model
