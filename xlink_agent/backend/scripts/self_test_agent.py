@@ -615,6 +615,303 @@ def test_delivery_quality_gate() -> CaseResult:
     return CaseResult("delivery_quality_gate", True, f"parrot={v_draft.reason} weak={r2}")
 
 
+def test_task_binding() -> CaseResult:
+    """TaskID：首问新建、追问续绑、换题切断。"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from agent.task_binding import (
+        BIND_CONTINUE,
+        BIND_NEW,
+        BIND_SWITCH,
+        extract_constraints,
+        resolve_task_binding,
+        update_task_after_turn,
+    )
+    from db.models import Base, ConversationTask
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    hist1 = [SimpleNamespace(role="user", content="推荐5本经济类书籍")]
+    t1 = resolve_task_binding(
+        db,
+        user_id=1,
+        conversation_id=9,
+        user_text="推荐5本经济类书籍",
+        history=hist1,
+        effective_goal="推荐5本经济类书籍",
+    )
+    if t1.bind_mode != BIND_NEW or not t1.task_id:
+        return CaseResult("task_binding", False, f"new failed: {t1}")
+    if "数量约 5本" not in t1.constraints:
+        return CaseResult("task_binding", False, f"constraints={t1.constraints}")
+
+    update_task_after_turn(
+        db,
+        task_id=t1.task_id,
+        user_id=1,
+        run_id="r1",
+        artifacts=["经济书单.docx"],
+        answer_preview="1. 国富论 …",
+    )
+
+    hist2 = [
+        SimpleNamespace(role="user", content="推荐5本经济类书籍"),
+        SimpleNamespace(role="assistant", content="1. 国富论\n2. 经济学原理"),
+        SimpleNamespace(role="user", content="再来三本"),
+    ]
+    t2 = resolve_task_binding(
+        db,
+        user_id=1,
+        conversation_id=9,
+        user_text="再来三本",
+        history=hist2,
+        effective_goal="再来三本",
+        forced_followup=True,
+    )
+    if t2.bind_mode != BIND_CONTINUE or t2.task_id != t1.task_id:
+        return CaseResult("task_binding", False, f"continue failed: {t2}")
+    if "经济书单.docx" not in t2.artifacts:
+        return CaseResult("task_binding", False, f"artifacts lost: {t2.artifacts}")
+
+    inj = t2.render_injection()
+    if "TaskID" not in inj or "续作" not in inj:
+        return CaseResult("task_binding", False, f"inject weak: {inj[:120]}")
+
+    hist3 = [
+        SimpleNamespace(role="user", content="推荐5本经济类书籍"),
+        SimpleNamespace(role="assistant", content="1. 国富论"),
+        SimpleNamespace(role="user", content="再来三本"),
+        SimpleNamespace(role="assistant", content="补充三本…"),
+        SimpleNamespace(role="user", content="深圳今天天气怎么样"),
+    ]
+    t3 = resolve_task_binding(
+        db,
+        user_id=1,
+        conversation_id=9,
+        user_text="深圳今天天气怎么样",
+        history=hist3,
+        effective_goal="深圳今天天气怎么样",
+    )
+    if t3.bind_mode != BIND_SWITCH or t3.task_id == t1.task_id:
+        return CaseResult("task_binding", False, f"switch failed: {t3}")
+    if t3.previous_task_id != t1.task_id:
+        return CaseResult("task_binding", False, f"prev id missing: {t3.previous_task_id}")
+
+    old = db.query(ConversationTask).filter(ConversationTask.task_id == t1.task_id).first()
+    if not old or old.status not in {"abandoned", "completed"}:
+        return CaseResult("task_binding", False, f"old status={getattr(old, 'status', None)}")
+
+    if not extract_constraints("请生成一份 Word 报告，只要中文"):
+        return CaseResult("task_binding", False, "extract_constraints empty")
+
+    db.close()
+    return CaseResult(
+        "task_binding",
+        True,
+        f"new={t1.task_id[:8]} cont={t2.task_id[:8]} switch={t3.task_id[:8]}",
+    )
+
+
+def test_entity_match() -> CaseResult:
+    """实体精确匹配：文件名、单据号、刚才那个文件指代。"""
+    from agent.entity_match import (
+        expand_goal_with_entities,
+        extract_query_entities,
+        match_entities,
+    )
+
+    ents = extract_query_entities("请打开 销售周报.docx，单号 PO-2026001")
+    if "销售周报.docx" not in ents or "PO-2026001" not in ents:
+        return CaseResult("entity_match", False, f"extract={ents}")
+
+    hist = [
+        SimpleNamespace(
+            role="assistant",
+            content="已生成 销售周报.docx",
+            metadata_json='{"files":[{"name":"销售周报.docx","file_id":42}]}',
+        ),
+        SimpleNamespace(role="user", content="把刚才那个文件发给我"),
+    ]
+    r = match_entities(
+        None,
+        user_id=1,
+        conversation_id=1,
+        user_text="把刚才那个文件发给我",
+        task_artifacts=["销售周报.docx", "备份.md"],
+        history=hist,
+    )
+    if not r.deictic_resolved or "销售周报.docx" not in r.top_values():
+        return CaseResult("entity_match", False, f"deictic={r.to_dict()}")
+
+    r2 = match_entities(
+        None,
+        user_id=1,
+        conversation_id=1,
+        user_text="润色一下销售周报.docx",
+        task_artifacts=["销售周报.docx"],
+        history=hist,
+    )
+    if not r2.ok or r2.hits[0].value != "销售周报.docx":
+        return CaseResult("entity_match", False, f"literal={r2.to_dict()}")
+
+    # 无关提问不应乱命中
+    r3 = match_entities(
+        None,
+        user_id=1,
+        conversation_id=1,
+        user_text="今天深圳天气怎么样",
+        task_artifacts=["销售周报.docx"],
+        history=hist,
+    )
+    if r3.ok and not r3.deictic_resolved:
+        # 无字面实体、无指代 → 应无命中
+        return CaseResult("entity_match", False, f"false positive={r3.to_dict()}")
+
+    goal = expand_goal_with_entities("发给我", r)
+    if "销售周报.docx" not in goal:
+        return CaseResult("entity_match", False, f"expand={goal}")
+
+    inj = r.render_injection()
+    if "实体精确匹配" not in inj or "销售周报" not in inj:
+        return CaseResult("entity_match", False, f"inject={inj[:100]}")
+
+    return CaseResult(
+        "entity_match",
+        True,
+        f"deictic={r.top_values()} literal={r2.top_values()}",
+    )
+
+
+def test_session_memory() -> CaseResult:
+    """长会话压缩摘要 + memory_recall 可逆召回。"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from agent.session_memory import (
+        filter_history_for_window,
+        maybe_compact_conversation,
+        prepare_session_window,
+        recall_session_memory,
+        render_summary_injection,
+    )
+    from db.models import Base, Conversation, ConversationSummary, Message
+    from tools.web_tools import validate_and_normalize_args
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    uid = 1
+    conv = Conversation(id=42, user_id=uid, title="session_memory_test")
+    db.add(conv)
+    db.flush()
+    cid = 42
+    hist: list[Message] = []
+    mid = 1
+    for i in range(1, 6):
+        u = Message(
+            id=mid,
+            conversation_id=cid,
+            user_id=uid,
+            role="user",
+            content=f"第{i}轮：请写销售周报要点，关键词 UNIQUE_TOKEN_{i}",
+        )
+        mid += 1
+        db.add(u)
+        db.flush()
+        a = Message(
+            id=mid,
+            conversation_id=cid,
+            user_id=uid,
+            role="assistant",
+            content=f"第{i}轮答复：已整理 UNIQUE_TOKEN_{i}，文件 周报{i}.docx",
+            metadata_json=f'{{"files":[{{"name":"周报{i}.docx"}}]}}',
+        )
+        mid += 1
+        db.add(a)
+        db.flush()
+        hist.extend([u, a])
+    db.commit()
+
+    created = maybe_compact_conversation(
+        db,
+        user_id=uid,
+        conversation_id=cid,
+        history=hist,
+        task_id="task_demo",
+        keep_user_turns=3,
+        trigger_user_turns=5,
+    )
+    if len(created) < 2:
+        return CaseResult("session_memory", False, f"compact count={len(created)}")
+
+    rows = db.query(ConversationSummary).filter(ConversationSummary.conversation_id == cid).all()
+    if len(rows) < 2:
+        return CaseResult("session_memory", False, f"db rows={len(rows)}")
+    if not any("UNIQUE_TOKEN_1" in (r.raw_excerpt or "") for r in rows):
+        return CaseResult("session_memory", False, "raw_excerpt missing token")
+
+    covered = set()
+    for r in rows:
+        covered.update(range(int(r.message_id_from), int(r.message_id_to) + 1))
+    windowed = filter_history_for_window(hist, covered_ids=covered, keep_user_turns=3)
+    if len(windowed) >= len(hist):
+        return CaseResult("session_memory", False, f"window not shrunk {len(windowed)}/{len(hist)}")
+
+    _, inj, views = prepare_session_window(
+        db, user_id=uid, conversation_id=cid, history=hist, task_id="task_demo"
+    )
+    if "会话压缩摘要" not in inj or not views:
+        return CaseResult("session_memory", False, f"inject={inj[:120]}")
+    if "memory_recall" not in render_summary_injection(views):
+        return CaseResult("session_memory", False, "inject missing recall hint")
+
+    sid = rows[0].summary_id
+    by_id = recall_session_memory(
+        db, user_id=uid, conversation_id=cid, summary_id=sid[:8]
+    )
+    if not by_id.get("ok") or not by_id.get("items"):
+        return CaseResult("session_memory", False, f"recall by id={by_id}")
+
+    by_q = recall_session_memory(
+        db, user_id=uid, conversation_id=cid, query="UNIQUE_TOKEN_2"
+    )
+    if not by_q.get("ok") or not by_q.get("items"):
+        return CaseResult("session_memory", False, f"recall by query={by_q}")
+
+    args, err = validate_and_normalize_args("memory_recall", {"query": "周报"})
+    if err or not args or args.get("query") != "周报":
+        return CaseResult("session_memory", False, f"validate={args} err={err}")
+    bad, err2 = validate_and_normalize_args("memory_recall", {})
+    if not err2:
+        return CaseResult("session_memory", False, "validate should reject empty")
+
+    # 再次 compact 应幂等（不重复写）
+    again = maybe_compact_conversation(
+        db,
+        user_id=uid,
+        conversation_id=cid,
+        history=hist,
+        task_id="task_demo",
+        keep_user_turns=3,
+        trigger_user_turns=5,
+    )
+    if again:
+        return CaseResult("session_memory", False, f"not idempotent +{len(again)}")
+
+    db.close()
+    return CaseResult(
+        "session_memory",
+        True,
+        f"compacted={len(rows)} window={len(windowed)}/{len(hist)} recall_ok",
+    )
+
+
 def test_safety_gate() -> CaseResult:
     from agent.safety import (
         SAFETY_REFUSAL,
@@ -674,6 +971,9 @@ async def run_all() -> list[CaseResult]:
         test_file_claim_recover,
         test_run_code_sandbox,
         test_delivery_quality_gate,
+        test_task_binding,
+        test_entity_match,
+        test_session_memory,
         test_safety_gate,
     ]
     for fn in sync_tests:

@@ -22,6 +22,8 @@ class TaskContext:
     last_tool: str = ""
     last_ok: bool = True
     last_error: str = ""
+    task_id: str = ""
+    task_bind_mode: str = ""
 
     def add_step(self, text: str) -> None:
         text = (text or "").strip()
@@ -68,8 +70,12 @@ class TaskContext:
         lines = [
             "# 当前任务工作记忆（仅服务「这一句」用户目标，禁止沿用其它话题）",
             f"- 用户目标: {self.goal}",
-            f"- 本轮浏览器 URL: {self.browser_url or 'about:blank'}（若与目标无关请重新 navigate，勿沿用旧页面）",
         ]
+        if self.task_id:
+            lines.append(f"- TaskID: {self.task_id}（绑定={self.task_bind_mode or 'n/a'}）")
+        lines.append(
+            f"- 本轮浏览器 URL: {self.browser_url or 'about:blank'}（若与目标无关请重新 navigate，勿沿用旧页面）"
+        )
         if self.browser_title:
             lines.append(f"- 页面标题: {self.browser_title}")
         if self.failed_urls:

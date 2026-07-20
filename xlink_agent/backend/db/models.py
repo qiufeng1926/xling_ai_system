@@ -186,3 +186,42 @@ class Confirmation(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ConversationTask(Base):
+    """会话内办公任务链（TaskID）：追问续绑、换题切断。"""
+
+    __tablename__ = "conversation_tasks"
+
+    task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    conversation_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    goal: Mapped[str] = mapped_column(Text, default="")
+    constraints_json: Mapped[str] = mapped_column(Text, default="[]")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    artifacts_json: Mapped[str] = mapped_column(Text, default="[]")
+    last_run_id: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ConversationSummary(Base):
+    """长会话可逆压缩：移出窗口的轮次结构化摘要，可按 id/关键词召回。"""
+
+    __tablename__ = "conversation_summaries"
+
+    summary_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    conversation_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    message_id_from: Mapped[int] = mapped_column(BigInteger, default=0)
+    message_id_to: Mapped[int] = mapped_column(BigInteger, default=0)
+    scene: Mapped[str] = mapped_column(String(120), default="")
+    core_need: Mapped[str] = mapped_column(Text, default="")
+    key_data: Mapped[str] = mapped_column(Text, default="")
+    raw_excerpt: Mapped[str] = mapped_column(_long_text(), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+

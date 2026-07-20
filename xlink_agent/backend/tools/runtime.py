@@ -181,6 +181,16 @@ async def execute_tool(
         code = str(args.get("code") or args.get("source") or args.get("python") or "")
         timeout = int(args.get("timeout") or 8)
         return run_python_sandbox(code, workdir=user_workspace(user_id), timeout_sec=timeout)
+    if name == "memory_recall":
+        from agent.session_memory import recall_session_memory
+
+        return recall_session_memory(
+            db,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            summary_id=str(args.get("summary_id") or ""),
+            query=str(args.get("query") or ""),
+        )
     if name in {"feishu_search", "meeting_search"}:
         return {"error": "该连接器未启用（一期预留）"}
     return {"error": f"未知工具: {name}"}

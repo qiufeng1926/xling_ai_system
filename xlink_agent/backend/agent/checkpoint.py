@@ -22,6 +22,8 @@ def serialize_task_context(ctx: TaskContext) -> dict[str, Any]:
         "last_tool": ctx.last_tool,
         "last_ok": ctx.last_ok,
         "last_error": ctx.last_error,
+        "task_id": ctx.task_id,
+        "task_bind_mode": ctx.task_bind_mode,
     }
 
 
@@ -38,6 +40,8 @@ def restore_task_context(data: dict[str, Any] | None) -> TaskContext:
     ctx.last_tool = str(d.get("last_tool") or "")
     ctx.last_ok = bool(d.get("last_ok", True))
     ctx.last_error = str(d.get("last_error") or "")
+    ctx.task_id = str(d.get("task_id") or "")
+    ctx.task_bind_mode = str(d.get("task_bind_mode") or "")
     return ctx
 
 

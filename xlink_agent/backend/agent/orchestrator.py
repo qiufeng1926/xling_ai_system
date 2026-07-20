@@ -73,6 +73,20 @@ from agent.safety import (
     is_disallowed_request,
     is_safety_refusal,
 )
+from agent.entity_match import (
+    expand_goal_with_entities,
+    match_entities,
+    merge_entity_hits_into_task_artifacts,
+)
+from agent.session_memory import (
+    maybe_compact_conversation,
+    prepare_session_window,
+)
+from agent.task_binding import (
+    expand_goal_with_task,
+    resolve_task_binding,
+    update_task_after_turn,
+)
 from agent.trajectory import (
     action_step,
     confirm_tool_label,
@@ -110,6 +124,7 @@ KNOWN_TOOLS = {
     "file_write_pdf",
     "file_delete",
     "run_code",
+    "memory_recall",
 }
 
 SYSTEM_PROMPT = REACT_SYSTEM_PROMPT
@@ -335,10 +350,40 @@ def _merge_tools(skills: list[Skill]) -> tuple[list[str], str]:
         "browser_screenshot",
         "http_request",
         "run_code",
+        "memory_recall",
     ]:
         if base not in tools:
             tools.append(base)
     return tools, "\n\n".join(bodies)
+
+
+def _compact_session_after_turn(
+    db: Session,
+    *,
+    user_id: int,
+    conversation_id: int,
+    task_id: str = "",
+) -> None:
+    """轮次落库后：溢出轮次写成可逆结构化摘要。"""
+    try:
+        hist = (
+            db.query(Message)
+            .filter(Message.conversation_id == conversation_id)
+            .order_by(Message.id.asc())
+            .limit(80)
+            .all()
+        )
+        maybe_compact_conversation(
+            db,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            history=hist,
+            task_id=task_id or "",
+        )
+    except Exception:
+        logger.exception(
+            "session compact failed conv=%s uid=%s", conversation_id, user_id
+        )
 
 
 def _save_event(db: Session, user_id: int, conversation_id: int, run_id: str, event_type: str, payload: Any) -> None:
@@ -437,6 +482,8 @@ def _build_assistant_metadata(
             "browser_url": (task_ctx.browser_url or "")[:300],
             "facts": [f[:240] for f in task_ctx.facts[-8:]],
             "artifacts": list(task_ctx.artifacts)[:20],
+            "task_id": task_ctx.task_id,
+            "task_bind_mode": task_ctx.task_bind_mode,
         },
         "run_state": rs,
     }
@@ -789,6 +836,42 @@ async def run_chat(
     if expanded:
         logger.info("followup expanded: %r -> %r", user_text[:40], effective_goal[:160])
 
+    # TaskID 强绑定：追问续绑 / 换题切断（方案第一步）
+    active_task = resolve_task_binding(
+        db,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        user_text=user_text,
+        history=history,
+        effective_goal=effective_goal,
+        forced_followup=bool(expanded),
+    )
+    effective_goal = expand_goal_with_task(effective_goal, active_task)
+
+    # 实体精确匹配：文件名/单据号/「刚才那个文件」指代
+    entity_result = match_entities(
+        db,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        user_text=user_text,
+        task_artifacts=active_task.artifacts,
+        history=history,
+    )
+    effective_goal = expand_goal_with_entities(effective_goal, entity_result)
+    if entity_result.ok:
+        active_task.artifacts = merge_entity_hits_into_task_artifacts(
+            active_task.artifacts, entity_result
+        )
+
+    # 长会话：已压缩轮次用摘要注入，原文移出窗口
+    window_history, summary_block, summary_views = prepare_session_window(
+        db,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        history=history,
+        task_id=active_task.task_id,
+    )
+
     skills = _active_skills(db, user_id)
     tools, skill_body = _merge_tools(skills)
     memory_raw = build_memory_context(db, user_id)
@@ -798,6 +881,8 @@ async def run_chat(
     task_ctx = TaskContext(
         goal=effective_goal,
         browser_url="about:blank",
+        task_id=active_task.task_id,
+        task_bind_mode=active_task.bind_mode,
     )
     run_state = AgentRunState(run_id=run_id, goal=effective_goal)
     run_state.transition(RunPhase.INIT, reason="task_context_ready")
@@ -806,12 +891,21 @@ async def run_chat(
     system += render_tool_contracts(tools) + "\n\n" + skill_body
     if memory_ctx:
         system += f"\n\n# 长期用户记忆（已按当前目标过滤）\n{memory_ctx}"
+    system += "\n\n" + active_task.render_injection() + "\n"
+    entity_block = entity_result.render_injection()
+    if entity_block:
+        system += "\n\n" + entity_block + "\n"
+    if summary_block:
+        system += "\n\n" + summary_block + "\n"
     system += (
         "\n\n# 记忆纪律\n"
         "1. 独立新问题与上一轮硬隔离：禁止联想/提及上一轮书名、新闻或结论。\n"
         "2. 仅当用户明确追问/续作（再来三本、为什么获取不了、详细讲《某书》）才使用最近同题上下文。\n"
         "3. finish 必须是用户可读终稿：总起 + 要点；禁止输出「线索/请核实/检索材料」等内部话术。\n"
         "4. 只读搜索/抓取无需用户确认；自行 web_fetch 后总结交付。\n"
+        "5. 若系统注入了活动 TaskID，必须沿用该任务目标与约束，禁止无故另起炉灶。\n"
+        "6. 若系统注入了实体精确匹配（文件名/单据号/刚才那个文件），必须优先使用命中项。\n"
+        "7. 若注入了会话压缩摘要：摘要仅供线索；用户追问旧细节时先 memory_recall 再作答。\n"
         f"\n\n{SAFETY_POLICY_PROMPT}\n"
     )
     logger.info(
@@ -824,7 +918,7 @@ async def run_chat(
     base_messages: list[dict[str, str]] = [{"role": "system", "content": system}]
     base_messages.extend(
         build_dialog_messages(
-            history,
+            window_history,
             current_goal=effective_goal,
             sanitize_fn=sanitize_public_answer,
             looks_internal_fn=looks_like_internal,
@@ -845,8 +939,31 @@ async def run_chat(
         trajectory_log.append(step)
         return sse("trajectory.step", step)
 
-    yield sse("run.started", {"run_id": run_id, "architecture": "react"})
+    yield sse(
+        "run.started",
+        {
+            "run_id": run_id,
+            "architecture": "react",
+            "task_id": active_task.task_id,
+            "task_bind_mode": active_task.bind_mode,
+            "entity_hits": [h.to_dict() for h in entity_result.hits[:6]],
+            "session_summaries": len(summary_views),
+        },
+    )
     yield sse("think.open", {"title": "ReAct 推理"})
+    async for chunk in _emit_think(
+        f"任务绑定 TaskID={active_task.task_id[:8]}… 模式={active_task.bind_mode}\n"
+    ):
+        yield chunk
+        think_parts.append(f"task:{active_task.bind_mode}")
+    if entity_result.ok:
+        async for chunk in _emit_think(
+            "实体匹配命中: "
+            + "、".join(entity_result.top_values(limit=3))
+            + ("（指代已解析）\n" if entity_result.deictic_resolved else "\n")
+        ):
+            yield chunk
+            think_parts.append("entity_match")
 
     # 安全硬拦截：违规问题不进工具链
     if is_disallowed_request(user_text) or is_disallowed_request(effective_goal):
@@ -884,7 +1001,28 @@ async def run_chat(
             )
         )
         db.commit()
-        yield sse("done", {"run_id": run_id, "finalize_path": FinalizePath.SAFETY_REFUSAL.value})
+        if task_ctx.task_id:
+            update_task_after_turn(
+                db,
+                task_id=task_ctx.task_id,
+                user_id=user_id,
+                run_id=run_id,
+                answer_preview=content,
+            )
+        _compact_session_after_turn(
+            db,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            task_id=task_ctx.task_id,
+        )
+        yield sse(
+            "done",
+            {
+                "run_id": run_id,
+                "finalize_path": FinalizePath.SAFETY_REFUSAL.value,
+                "task_id": task_ctx.task_id,
+            },
+        )
         return
 
     if expanded:
@@ -1771,11 +1909,36 @@ async def run_chat(
                 run_state=run_state,
                 file_meta=file_meta,
                 citations=citations,
+                extra={"entity_hits": [h.to_dict() for h in entity_result.hits[:6]]},
             ),
         )
     )
     db.commit()
-    yield sse("done", {"run_id": run_id, "finalize_path": run_state.finalize_path})
+    if task_ctx.task_id:
+        update_task_after_turn(
+            db,
+            task_id=task_ctx.task_id,
+            user_id=user_id,
+            run_id=run_id,
+            artifacts=list(task_ctx.artifacts),
+            answer_preview=final_text[:500],
+        )
+    _compact_session_after_turn(
+        db,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        task_id=task_ctx.task_id,
+    )
+    yield sse(
+        "done",
+        {
+            "run_id": run_id,
+            "finalize_path": run_state.finalize_path,
+            "task_id": task_ctx.task_id,
+            "task_bind_mode": task_ctx.task_bind_mode,
+            "entity_hits": [h.to_dict() for h in entity_result.hits[:6]],
+        },
+    )
 
 
 async def resume_after_confirmation(

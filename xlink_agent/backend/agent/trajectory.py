@@ -116,6 +116,8 @@ INTERCEPT_TITLE: dict[str, str] = {
     "parrot_titles": "拒绝标题清单交差",
     "thin_list": "条目过薄，继续扩写",
     "quality_force_expand": "质量门控强制扩写",
+    "task_continue": "续作同一任务",
+    "task_switch": "换题，开启新任务",
 }
 
 _FAIL_SHORT: tuple[tuple[str, str], ...] = (

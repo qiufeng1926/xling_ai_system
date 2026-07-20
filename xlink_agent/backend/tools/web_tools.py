@@ -396,6 +396,11 @@ TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
         "input": {"code": "print(1+1)"},
         "example": {"code": "print(sum(range(1, 11)))"},
     },
+    "memory_recall": {
+        "desc": "召回本会话已压缩的历史摘要原文。用户追问旧轮细节时用；优先 summary_id，其次 query。",
+        "input": {"summary_id": "可选，摘要ID或前8位", "query": "可选，关键词"},
+        "example": {"summary_id": "a1b2c3d4"},
+    },
 }
 
 
@@ -486,9 +491,6 @@ def validate_and_normalize_args(tool: str, args: Any) -> tuple[dict[str, Any] | 
             return None, "kb_search 需要 query"
         return {"query": q}, None
 
-    if tool.startswith("file_write_"):
-        return _normalize_file_write_args(tool, args)
-
     if tool == "run_code":
         code = str(args.get("code") or args.get("source") or args.get("python") or "").strip()
         if not code:
@@ -499,6 +501,21 @@ def validate_and_normalize_args(tool: str, args: Any) -> tuple[dict[str, Any] | 
         except Exception:
             timeout_i = 8
         return {"code": code, "timeout": max(1, min(timeout_i, 30))}, None
+
+    if tool == "memory_recall":
+        sid = str(args.get("summary_id") or args.get("id") or "").strip()
+        q = str(args.get("query") or args.get("q") or args.get("keyword") or "").strip()
+        if not sid and not q:
+            return None, "memory_recall 需要 summary_id 或 query"
+        out: dict[str, Any] = {}
+        if sid:
+            out["summary_id"] = sid
+        if q:
+            out["query"] = q
+        return out, None
+
+    if tool.startswith("file_write_"):
+        return _normalize_file_write_args(tool, args)
 
     return args, None
 
