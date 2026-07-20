@@ -86,3 +86,5 @@ Information_Aggregation/backend/exports
 .cache/
 tmp/
 temp/
+
+xlink_agent/backend/data/workspaces/*
