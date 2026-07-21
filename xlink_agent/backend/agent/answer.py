@@ -386,32 +386,71 @@ def is_thin_list_draft(text: str) -> bool:
     t = sanitize_public_answer(text or "").strip()
     if not t:
         return True
-    # 已有多行说明段落，不算薄
+
+    numbered = [ln for ln in t.splitlines() if re.match(r"^\s*\d+[\.、．]", ln.strip())]
     explain_lines = [
         ln.strip()
         for ln in t.splitlines()
         if ln.strip()
         and not re.match(r"^\s*\d+[\.、．]", ln)
-        and not re.match(r"^以下|^为您|^推荐|^供参考", ln)
+        and not re.match(
+            r"^(以下|为您|推荐|供参考|根据公开|根据本轮|根据检索|整理如下)", ln
+        )
         and len(re.sub(r"[《》\*\#\s]", "", ln)) >= 18
     ]
-    if len(explain_lines) >= 2 and len(t) >= 160:
-        return False
-    if answer_depth_score(t) >= 40:
-        return False
+
+    # 编号行全是短标签（来源名/站点名）→ 一律视为薄清单（优先于 depth_score）
+    if len(numbered) >= 2 and len(explain_lines) < 2:
+        short_n = sum(1 for ln in numbered if len(re.sub(r"^\s*\d+[\.、．]\s*", "", ln.strip())) <= 16)
+        if short_n >= max(2, (len(numbered) + 1) // 2):
+            return True
+        if all(len(ln.strip()) < 40 for ln in numbered) and len(t) < 220:
+            return True
 
     items = extract_answer_items(t)
-    if len(items) >= 2:
+    if len(items) >= 2 and len(explain_lines) < 2:
         cleaned = [re.sub(r"[《》\*\s]", "", i) for i in items]
         avg = sum(len(x) for x in cleaned) / max(len(cleaned), 1)
-        if avg <= 18 and len(t) < 420 and len(explain_lines) < 2:
+        if avg <= 18 and len(t) < 420:
             return True
-        numbered = [ln for ln in t.splitlines() if re.match(r"^\s*\d+[\.、．]", ln.strip())]
-        if len(numbered) >= 3 and all(len(ln.strip()) < 40 for ln in numbered) and len(explain_lines) < 2:
+        # 站点/频道名冒充答案
+        site_hits = sum(1 for i in cleaned if _is_site_or_channel_label(i))
+        if site_hits >= max(2, len(cleaned) // 2):
             return True
+
+    # 已有多行说明段落，不算薄
+    if len(explain_lines) >= 2 and len(t) >= 160:
+        return False
+    if answer_depth_score(t) >= 40 and len(explain_lines) >= 1:
+        return False
+
     if t.count("《") >= 3 and len(t) < 280 and len(explain_lines) < 2:
         return True
     return False
+
+
+_SITE_LABELS = (
+    "维基百科",
+    "百度百科",
+    "知乎",
+    "豆瓣",
+    "搜狗",
+    "必应",
+    "谷歌",
+    "wikipedia",
+    "baike",
+    "zhihu",
+    "douban",
+)
+
+
+def _is_site_or_channel_label(name: str) -> bool:
+    n = (name or "").strip().lower()
+    if not n or len(n) <= 2:
+        return True  # zh / en 等语言码
+    if n in {"zh", "en", "cn", "www", "http", "https"}:
+        return True
+    return any(s.lower() == n or s.lower() in n for s in _SITE_LABELS)
 
 
 def answer_depth_score(text: str) -> int:
@@ -499,7 +538,12 @@ def extract_grounded_entities_from_facts(facts: list[str]) -> list[str]:
         name = (name or "").strip().strip("《》").strip()
         if not (2 <= len(name) <= 40):
             return
+        if _is_site_or_channel_label(name):
+            return
         if is_likely_source_title(name, titles):
+            return
+        # 纯站点后缀 / 百科噪声
+        if re.search(r"(百科|专栏|首页|登录|目录|编辑|维基)", name):
             return
         if name in entities:
             return
@@ -674,21 +718,33 @@ def materials_blob_for_synthesis(facts: list[str], *, max_chars: int = 10000) ->
     bodies = [
         f
         for f in (facts or [])
-        if f.startswith("网页正文摘要")
-        or f.startswith("网页内容摘要")
-        or f.startswith("页面内容摘要")
-        or "正文条目线索" in f[:20]
-        or f.startswith("网页摘录")
+        if (
+            f.startswith("网页正文摘要")
+            or f.startswith("网页内容摘要")
+            or f.startswith("页面内容摘要")
+            or "正文条目线索" in f[:20]
+            or f.startswith("网页摘录")
+        )
+        and not is_nav_chrome_body(f)
     ]
     if bodies:
         parts.append("## 网页正文摘录")
         for b in bodies[-6:]:
             parts.append(b[:1800])
+    elif cards:
+        # 正文是导航壳时，明确提示模型优先用搜索摘要扩写，勿复读站点名
+        parts.append(
+            "## 说明\n抓取页多为导航壳，请优先依据上方「搜索命中」摘要扩写成完整中文答复，"
+            "禁止只输出维基百科/知乎/百度百科等来源名列表。"
+        )
     # 其它与目标相关的事实也带上
     extras = [
         f
         for f in (facts or [])
-        if f not in bodies and not f.startswith("搜索结果") and len(f) >= 20
+        if f not in bodies
+        and not f.startswith("搜索结果")
+        and len(f) >= 20
+        and not is_nav_chrome_body(f)
     ]
     if extras:
         parts.append("## 其它本轮有效信息")
@@ -971,10 +1027,49 @@ async def verify_final_answer(
     if not out or is_hollow_answer(out) or looks_like_internal(out):
         return sanitize_public_answer(draft or "")
     if answer_parrots_search_titles(out, facts):
-        return sanitize_public_answer(format_entity_list_answer(goal, entities)) if entities else ""
+        # 禁止回退成「来源名清单」；有实质草稿则保留草稿
+        if is_substantive_draft(draft, goal, facts=facts):
+            return sanitize_public_answer(draft or "")
+        return ""
     if out.count("《") >= 3 and not any(k in goal for k in ("书", "小说", "阅读", "著作")):
         out = sanitize_public_answer(re.sub(r"《([^》]+)》", r"\1", out))
     return out
+
+
+def is_nav_chrome_body(text: str) -> bool:
+    """维基/百科等抓到的主要是导航壳，不是可用正文。
+
+    短文本不算 chrome（可能是可用摘要片段）；是否计入「正文篇数」由调用方再做长度门槛。
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    chrome_hits = sum(
+        1
+        for k in (
+            "跳转到内容",
+            "移至侧栏",
+            "创建账号",
+            "个人工具",
+            "开关成书子章节",
+            "开关目录",
+            "编辑链接",
+            "不转换",
+            "大陆简体",
+            "香港繁體",
+            "維基共享资源",
+            "维基共享资源",
+            "主菜单",
+            "特殊页面",
+        )
+        if k in t
+    )
+    # 导航词密集 + 缺少叙述句 → 视为空壳正文
+    if chrome_hits >= 3:
+        return True
+    if chrome_hits >= 2 and not re.search(r"[。；][^。；]{20,}", t):
+        return True
+    return False
 
 
 def has_substantive_content_facts(facts: list[str]) -> bool:
@@ -990,11 +1085,20 @@ def has_substantive_content_facts(facts: list[str]) -> bool:
     )
     for f in facts or []:
         if any(f.startswith(m) or m in f[:24] for m in markers):
-            return True
+            if is_nav_chrome_body(f):
+                continue
+            # 真正有叙述内容
+            if len(re.sub(r"\s+", "", f)) >= 120 and (
+                "。" in f or "；" in f or len(f) >= 280
+            ):
+                return True
+            if len(f) >= 200 and not is_nav_chrome_body(f):
+                return True
+            continue
         if f.startswith("搜索结果"):
             continue
         # 其它较长事实也视为已有实质内容
-        if len(f) >= 100 and not f.startswith("页面拦截"):
+        if len(f) >= 100 and not f.startswith("页面拦截") and not is_nav_chrome_body(f):
             return True
     return False
 
@@ -1140,7 +1244,7 @@ def enrich_finish_answer(
         return candidate
 
     from_entities = format_entity_list_answer(goal, extract_grounded_entities_from_facts(facts))
-    if from_entities:
+    if from_entities and not is_thin_list_draft(from_entities):
         v = get_default_delivery_gate().check_draft(goal=goal, draft=from_entities, facts=facts)
         if not v.ok:
             return ""

@@ -69,6 +69,7 @@ from agent.delivery_gate import get_default_delivery_gate
 from agent.safety import (
     SAFETY_POLICY_PROMPT,
     SAFETY_REFUSAL,
+    answer_contains_prohibited_detail,
     enforce_safety_answer,
     is_disallowed_request,
     is_safety_refusal,
@@ -625,7 +626,7 @@ async def _finalize_user_answer(
     """交付：富文本总结为主；经 AnswerQualityGate 收口，禁止标题清单交差。"""
     goal = task_ctx.goal or ""
     gate = get_default_delivery_gate()
-    if is_disallowed_request(goal) or is_disallowed_request(content or ""):
+    if is_disallowed_request(goal):
         if run_state is not None:
             run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
         return SAFETY_REFUSAL
@@ -633,8 +634,23 @@ async def _finalize_user_answer(
         if run_state is not None:
             run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
         return SAFETY_REFUSAL
+    # 终稿仅查「泄漏禁止细节」，不用提问级规则扫全文（防「色情监管」误杀）
+    if answer_contains_prohibited_detail(content or ""):
+        if run_state is not None:
+            run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
+        return SAFETY_REFUSAL
+    # 若本轮曾有更好的 finish 草稿（调研拦截后丢失），优先作扩写种子
+    seed_content = content or ""
+    if run_state is not None:
+        saved = getattr(run_state, "react_finish_draft", "") or ""
+        if saved and (
+            is_hollow_answer(seed_content)
+            or is_thin_list_draft(seed_content)
+            or answer_depth_score(saved) > answer_depth_score(seed_content) + 8
+        ):
+            seed_content = saved
     draft = enrich_finish_answer(
-        content or "",
+        seed_content,
         thought=thought,
         facts=task_ctx.facts,
         goal=goal,
@@ -1266,6 +1282,13 @@ async def run_chat(
                         tool_n = str(more["tool"])
                         args_n = more.get("args") or {}
                         reason = str(more.get("reason") or "need_more_research")
+                        # 保留已写出的实质 finish，避免后续空壳/来源清单覆盖
+                        if content and is_substantive_draft(
+                            content, task_ctx.goal or "", facts=task_ctx.facts
+                        ):
+                            prev = getattr(run_state, "react_finish_draft", "") or ""
+                            if answer_depth_score(content) >= answer_depth_score(prev):
+                                run_state.react_finish_draft = content
                         run_state.intercept(reason, round_i=round_i, tool=tool_n)
                         yield _emit_traj(
                             intercept_step(
@@ -1338,13 +1361,8 @@ async def run_chat(
             tool = str(parsed.get("tool") or "")
             args = parsed.get("args") if isinstance(parsed.get("args"), (dict, str)) else {}
 
-            # 工具参数若仍触及禁止主题，直接拒答（防模型绕过入口）
-            args_blob = (
-                json.dumps(args, ensure_ascii=False)
-                if isinstance(args, dict)
-                else str(args or "")
-            )
-            if is_disallowed_request(task_ctx.goal or "") or is_disallowed_request(args_blob):
+            # 仅拦截：用户目标违规，或搜索类 query 本身违规（勿扫 file_write/长正文）
+            if is_disallowed_request(task_ctx.goal or ""):
                 run_state.intercept("safety_block", round_i=round_i)
                 yield _emit_traj(intercept_step("safety_block", round_i=round_i))
                 content = SAFETY_REFUSAL
@@ -1359,6 +1377,27 @@ async def run_chat(
                     yield chunk
                 assistant_parts = [content]
                 break
+            if tool in {"web_search", "kb_search", "web_fetch", "browser_navigate"}:
+                q_check = ""
+                if isinstance(args, dict):
+                    q_check = str(args.get("query") or args.get("url") or "")
+                elif isinstance(args, str):
+                    q_check = args
+                if q_check and is_disallowed_request(q_check):
+                    run_state.intercept("safety_block", round_i=round_i)
+                    yield _emit_traj(intercept_step("safety_block", round_i=round_i))
+                    content = SAFETY_REFUSAL
+                    run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, content, round_i=round_i)
+                    run_state.record_delivered(content)
+                    yield _emit_traj(finish_step(round_i=round_i))
+                    yield sse(
+                        "react.finish",
+                        {"round": round_i, "thought": "safety_block", "content": content},
+                    )
+                    async for chunk in _emit_answer(content):
+                        yield chunk
+                    assistant_parts = [content]
+                    break
 
             # 写文件：先补全正文，避免生成空文件
             if tool.startswith("file_write_"):

@@ -85,12 +85,14 @@ def count_fetch_steps(steps: list[Any]) -> int:
 
 
 def count_body_facts(facts: list[str]) -> int:
+    from agent.answer import is_nav_chrome_body
+
     n = 0
     for f in facts or []:
         if f.startswith(
             ("网页正文摘要", "网页内容摘要", "页面内容摘要", "网页摘录")
         ) or "正文条目线索" in f[:24]:
-            if len(f) >= 80:
+            if len(f) >= 80 and not is_nav_chrome_body(f):
                 n += 1
     return n
 

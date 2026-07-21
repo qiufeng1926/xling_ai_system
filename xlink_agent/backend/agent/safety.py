@@ -209,8 +209,12 @@ def answer_contains_prohibited_detail(text: str) -> bool:
 
 
 def enforce_safety_answer(*, goal: str = "", answer: str = "") -> str:
-    """若目标或答案违规，强制替换为统一拒答。"""
-    if is_disallowed_request(goal) or is_disallowed_request(answer):
+    """若用户目标违规，或终稿泄漏禁止细节，强制替换为统一拒答。
+
+    注意：不得对终稿套用 is_disallowed_request——行业报告常出现
+    「色情/暴力内容监管」等合规表述，会误杀正常办公写作。
+    """
+    if is_disallowed_request(goal):
         return SAFETY_REFUSAL
     if answer_contains_prohibited_detail(answer):
         return SAFETY_REFUSAL
