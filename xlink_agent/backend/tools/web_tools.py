@@ -397,9 +397,13 @@ TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
         "example": {"code": "print(sum(range(1, 11)))"},
     },
     "memory_recall": {
-        "desc": "召回本会话已压缩的历史摘要原文。用户追问旧轮细节时用；优先 summary_id，其次 query。",
-        "input": {"summary_id": "可选，摘要ID或前8位", "query": "可选，关键词"},
-        "example": {"summary_id": "a1b2c3d4"},
+        "desc": "召回本会话已压缩的历史摘要。优先 summary_id；query 支持关键词，不足时自动向量模糊召回。",
+        "input": {
+            "summary_id": "可选，摘要ID或前8位",
+            "query": "可选，关键词或自然语言追问",
+            "mode": "可选 auto|keyword|vector，默认 auto",
+        },
+        "example": {"query": "上次那个销售周报结论", "mode": "auto"},
     },
 }
 
@@ -505,9 +509,12 @@ def validate_and_normalize_args(tool: str, args: Any) -> tuple[dict[str, Any] | 
     if tool == "memory_recall":
         sid = str(args.get("summary_id") or args.get("id") or "").strip()
         q = str(args.get("query") or args.get("q") or args.get("keyword") or "").strip()
+        mode = str(args.get("mode") or "auto").strip().lower() or "auto"
+        if mode not in {"auto", "keyword", "vector"}:
+            mode = "auto"
         if not sid and not q:
             return None, "memory_recall 需要 summary_id 或 query"
-        out: dict[str, Any] = {}
+        out: dict[str, Any] = {"mode": mode}
         if sid:
             out["summary_id"] = sid
         if q:

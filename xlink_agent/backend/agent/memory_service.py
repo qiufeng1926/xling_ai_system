@@ -42,17 +42,28 @@ def build_memory_context(db: Session, user_id: int, limit: int = 8) -> str:
 
 
 def maybe_update_profile_from_dialog(db: Session, user_id: int, user_text: str) -> None:
-    """轻量写入：把用户明确偏好记入 memory_items。"""
+    """轻量写入：把用户明确偏好记入 memory_items，并同步长期向量。"""
     keywords = ("我喜欢", "请记住", "以后都", "我的偏好", "我叫")
     if not any(k in user_text for k in keywords):
         return
-    db.add(
-        MemoryItem(
-            user_id=user_id,
-            kind="preference",
-            content=user_text[:1000],
-            source_ref="dialog",
-            score=1,
-        )
+    row = MemoryItem(
+        user_id=user_id,
+        kind="preference",
+        content=user_text[:1000],
+        source_ref="dialog",
+        score=1,
     )
+    db.add(row)
     db.commit()
+    db.refresh(row)
+    try:
+        from agent.vector_memory import index_user_memory_item_sync
+
+        index_user_memory_item_sync(
+            user_id=user_id,
+            item_id=row.id or user_text[:32],
+            content=row.content,
+            kind=row.kind or "preference",
+        )
+    except Exception:
+        pass

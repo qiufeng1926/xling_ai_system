@@ -126,17 +126,92 @@ async def save_meeting_to_db_async(meeting_data: dict) -> None:
 
 def save_meeting_to_db(meeting_data: dict) -> Meeting:
     """
-    保存会议记录到数据库
-    
-    Args:
-        meeting_data: 会议数据字典
-        
-    Returns:
-        Meeting: 保存的会议记录对象
+    保存会议记录到数据库。
+
+    同一 file_id 已存在时改为更新（断线重连续写场景，避免插入多条记录）。
     """
     with get_db_session() as session:
+        file_id = meeting_data['file_id']
+        meeting = session.query(Meeting).filter(Meeting.file_id == file_id).first()
+        transcript = meeting_data.get('transcript') or ''
+        summary = meeting_data.get('summary')
+
+        if meeting is not None:
+            # 断线重连竞态：旧连接晚到时勿用更短转写覆盖新连接已写入内容
+            incoming_len = len(transcript)
+            existing_len = len(meeting.transcript or '')
+            if incoming_len >= existing_len or not meeting.transcript:
+                meeting.transcript = transcript
+                meeting.transcript_length = meeting_data.get(
+                    'transcript_length', incoming_len
+                )
+            if meeting_data.get('user_id') is not None:
+                meeting.user_id = meeting_data.get('user_id')
+            if meeting_data.get('meeting_name'):
+                meeting.meeting_name = meeting_data.get('meeting_name')
+            if meeting_data.get('original_filename'):
+                meeting.original_filename = meeting_data.get('original_filename')
+            if meeting_data.get('meeting_type'):
+                meeting.meeting_type = meeting_data.get('meeting_type')
+            if meeting_data.get('audio_file_path') is not None:
+                meeting.audio_file_path = meeting_data.get('audio_file_path')
+            if meeting_data.get('transcript_file_path'):
+                meeting.transcript_file_path = meeting_data['transcript_file_path']
+            if meeting_data.get('summary_file_path') is not None:
+                meeting.summary_file_path = meeting_data.get('summary_file_path')
+            if summary is not None:
+                meeting.summary = summary
+                meeting.summary_length = meeting_data.get(
+                    'summary_length',
+                    len(summary) if summary else 0,
+                )
+            if meeting_data.get('summary_visual') is not None:
+                meeting.summary_visual = meeting_data.get('summary_visual')
+            if meeting_data.get('summary_visual_status') is not None:
+                meeting.summary_visual_status = meeting_data.get('summary_visual_status')
+            if meeting_data.get('tingwu_task_id') is not None:
+                meeting.tingwu_task_id = meeting_data.get('tingwu_task_id')
+            if meeting_data.get('tingwu_summarization') is not None:
+                meeting.tingwu_summarization = meeting_data.get('tingwu_summarization')
+            if meeting_data.get('tingwu_summarization_status') is not None:
+                meeting.tingwu_summarization_status = meeting_data.get(
+                    'tingwu_summarization_status'
+                )
+            if meeting_data.get('tingwu_summarization_file_path') is not None:
+                meeting.tingwu_summarization_file_path = meeting_data.get(
+                    'tingwu_summarization_file_path'
+                )
+            if meeting_data.get('audio_duration') is not None:
+                meeting.audio_duration = meeting_data.get('audio_duration')
+            if meeting_data.get('asr_duration_ms') is not None:
+                meeting.asr_duration_ms = meeting_data.get('asr_duration_ms')
+            if meeting_data.get('llm_duration_ms') is not None:
+                meeting.llm_duration_ms = meeting_data.get('llm_duration_ms')
+            if meeting_data.get('total_duration_ms') is not None:
+                meeting.total_duration_ms = meeting_data.get('total_duration_ms')
+            if meeting_data.get('status') is not None:
+                # 已进入 completed/processing 的记录，勿被 interrupted 等备份状态回退
+                incoming_status = meeting_data.get('status')
+                if meeting.status in ('completed', 'processing') and incoming_status in (
+                    'interrupted',
+                    'failed',
+                ):
+                    pass
+                else:
+                    meeting.status = incoming_status
+            if 'error_message' in meeting_data:
+                meeting.error_message = meeting_data.get('error_message')
+            if meeting_data.get('is_collaborative') is not None:
+                meeting.is_collaborative = meeting_data.get('is_collaborative', False)
+            if meeting_data.get('room_code') is not None:
+                meeting.room_code = meeting_data.get('room_code')
+            if meeting_data.get('host_username') is not None:
+                meeting.host_username = meeting_data.get('host_username')
+            logger.info(f"会议记录已更新: file_id={file_id}")
+            return meeting
+
         meeting = Meeting(
-            file_id=meeting_data['file_id'],
+            file_id=file_id,
             user_id=meeting_data.get('user_id'),
             meeting_name=meeting_data.get('meeting_name'),
             original_filename=meeting_data.get('original_filename'),
@@ -144,16 +219,19 @@ def save_meeting_to_db(meeting_data: dict) -> Meeting:
             audio_file_path=meeting_data.get('audio_file_path'),
             transcript_file_path=meeting_data['transcript_file_path'],
             summary_file_path=meeting_data.get('summary_file_path'),
-            transcript=meeting_data['transcript'],
-            summary=meeting_data.get('summary'),
+            transcript=transcript,
+            summary=summary,
             summary_visual=meeting_data.get('summary_visual'),
             summary_visual_status=meeting_data.get('summary_visual_status'),
             tingwu_task_id=meeting_data.get('tingwu_task_id'),
             tingwu_summarization=meeting_data.get('tingwu_summarization'),
             tingwu_summarization_status=meeting_data.get('tingwu_summarization_status'),
             tingwu_summarization_file_path=meeting_data.get('tingwu_summarization_file_path'),
-            transcript_length=meeting_data.get('transcript_length', len(meeting_data['transcript'])),
-            summary_length=meeting_data.get('summary_length', len(meeting_data.get('summary', '')) if meeting_data.get('summary') else 0),
+            transcript_length=meeting_data.get('transcript_length', len(transcript)),
+            summary_length=meeting_data.get(
+                'summary_length',
+                len(summary) if summary else 0,
+            ),
             audio_duration=meeting_data.get('audio_duration'),
             asr_duration_ms=meeting_data.get('asr_duration_ms'),
             llm_duration_ms=meeting_data.get('llm_duration_ms'),
@@ -165,7 +243,7 @@ def save_meeting_to_db(meeting_data: dict) -> Meeting:
             host_username=meeting_data.get('host_username'),
         )
         session.add(meeting)
-        logger.info(f"会议记录已保存到数据库: file_id={meeting_data['file_id']}")
+        logger.info(f"会议记录已保存到数据库: file_id={file_id}")
         return meeting
 
 
@@ -201,8 +279,10 @@ def update_meeting_transcript(
         if not meeting:
             logger.warning(f"未找到会议记录: file_id={file_id}")
             return False
-        meeting.transcript = transcript
-        meeting.transcript_length = len(transcript)
+        # 断线重连竞态：勿用更短文本覆盖已续写内容
+        if len(transcript or "") >= len(meeting.transcript or ""):
+            meeting.transcript = transcript
+            meeting.transcript_length = len(transcript or "")
         if transcript_file_path is not None:
             meeting.transcript_file_path = transcript_file_path
         if tingwu_task_id is not None:

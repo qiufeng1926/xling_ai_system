@@ -53,6 +53,27 @@ qdrant_path = Path(
     or str(_project_root / "data" / "qdrant")
 )
 qdrant_collection = _env("QDRANT_COLLECTION", "kb_chunks") or "kb_chunks"
+# 会话摘要向量（与知识库隔离）
+qdrant_session_collection = (
+    _env("QDRANT_SESSION_COLLECTION", "session_memory") or "session_memory"
+)
+qdrant_user_memory_collection = (
+    _env("QDRANT_USER_MEMORY_COLLECTION", "user_memory") or "user_memory"
+)
+# 方案默认相似度阈值 0.65；TopK 夹在 3–8
+session_memory_score_threshold = float(
+    _env("SESSION_MEMORY_SCORE_THRESHOLD", "0.65") or "0.65"
+)
+_raw_top_k = int(_env("SESSION_MEMORY_TOP_K", "6") or "6")
+session_memory_top_k = max(3, min(8, _raw_top_k))
+# 窗口内保留最近用户轮数（方案瞬时上下文 ~5 轮）
+session_keep_user_turns = int(_env("SESSION_KEEP_USER_TURNS", "5") or "5")
+# 权重系数（方案 §3.5）
+memory_weight_same_task = float(_env("MEMORY_WEIGHT_SAME_TASK", "2.0") or "2.0")
+memory_weight_recent = float(_env("MEMORY_WEIGHT_RECENT", "1.5") or "1.5")
+memory_weight_long_term = float(_env("MEMORY_WEIGHT_LONG_TERM", "1.3") or "1.3")
+memory_weight_chitchat = float(_env("MEMORY_WEIGHT_CHITCHAT", "0.5") or "0.5")
+memory_weight_entity_boost = float(_env("MEMORY_WEIGHT_ENTITY_BOOST", "1.2") or "1.2")
 
 llm_provider = (_env("LLM_PROVIDER", "glm") or "glm").strip().lower()
 glm_api_key = _env("GLM_API_KEY", "") or ""

@@ -96,11 +96,26 @@ def _save_resume_snapshot(session_info: dict) -> str | None:
         return None
 
     existing = _recording_resume_store.get(recording_id)
-    # 旧连接 finally 晚于新连接启动时，禁止用更短文本覆盖新会话已续写内容
+    # 旧连接 finally 晚于新连接启动时：可补充更长文本，但不得抢回 connection 所有权
     if existing and existing.get("connection_id") not in (None, session_info.get("connection_id")):
-        if len(total_text) < len((existing.get("total_text") or "").strip()):
+        existing_text = (existing.get("total_text") or "").strip()
+        if len(total_text) <= len(existing_text):
             existing["expires_at"] = time.time() + _RESUME_TTL_SECONDS
+            if session_info.get("file_id") and not existing.get("file_id"):
+                existing["file_id"] = session_info["file_id"]
             return recording_id
+        existing["total_text"] = total_text
+        existing["file_id"] = session_info.get("file_id") or existing.get("file_id")
+        existing["transcript_path"] = (
+            session_info.get("transcript_path") or existing.get("transcript_path")
+        )
+        existing["audio_chunks"] = max(
+            int(session_info.get("audio_chunks") or 0),
+            int(existing.get("audio_chunks") or 0),
+        )
+        existing["saved"] = bool(session_info.get("saved") or existing.get("saved"))
+        existing["expires_at"] = time.time() + _RESUME_TTL_SECONDS
+        return recording_id
 
     _recording_resume_store[recording_id] = {
         "user_id": session_info.get("user_id"),
@@ -115,6 +130,7 @@ def _save_resume_snapshot(session_info: dict) -> str | None:
             int(session_info.get("audio_chunks") or 0),
             int((existing or {}).get("audio_chunks") or 0),
         ),
+        "saved": bool(session_info.get("saved") or (existing or {}).get("saved")),
         "connection_id": session_info.get("connection_id"),
         "expires_at": time.time() + _RESUME_TTL_SECONDS,
     }
@@ -536,6 +552,26 @@ async def _process_realtime_session_background(
             notify_meeting_realtime_complete(user_id, file_id)
 
 
+def _snapshot_taken_over(session_info: dict, total_text: str) -> bool:
+    """旧连接 finally 晚于重连时，若快照已被新连接接管且文本更长，则跳过落库。"""
+    recording_id = (session_info.get("recording_id") or "").strip()
+    if not recording_id:
+        return False
+    existing = _recording_resume_store.get(recording_id)
+    if not existing:
+        return False
+    if existing.get("connection_id") in (None, session_info.get("connection_id")):
+        return False
+    if len(total_text) < len((existing.get("total_text") or "").strip()):
+        # 同步新连接已持有的 file_id，避免旧连接另起一条
+        if existing.get("file_id"):
+            session_info["file_id"] = existing["file_id"]
+        if existing.get("transcript_path"):
+            session_info["transcript_path"] = existing["transcript_path"]
+        return True
+    return False
+
+
 async def _persist_realtime_session_emergency(
     session_info: dict,
     connection_id: str,
@@ -543,7 +579,10 @@ async def _persist_realtime_session_emergency(
     *,
     reason: str = "interrupted",
 ) -> str | None:
-    """WebSocket 异常断开时保存转写，避免长时间录音数据丢失；并写入可续写快照。"""
+    """WebSocket 异常断开时保存转写，避免长时间录音数据丢失；并写入可续写快照。
+
+    同一 recording_id / file_id 全程复用，upsert 到同一条会议记录。
+    """
     if session_info.get("normal_end") or session_info.get("background_processing"):
         return session_info.get("file_id")
 
@@ -558,6 +597,19 @@ async def _persist_realtime_session_emergency(
         _save_resume_snapshot(session_info)
         return session_info.get("file_id")
 
+    if _snapshot_taken_over(session_info, total_text):
+        logger.info(
+            "跳过应急落库：录音已被新连接接管",
+            extra={
+                "request_id": connection_id,
+                "output_params": {
+                    "recording_id": session_info.get("recording_id"),
+                    "file_id": session_info.get("file_id"),
+                },
+            },
+        )
+        return session_info.get("file_id")
+
     recording_started = session_info.get("recording_started_at") or start_time
     try:
         duration_base = float(recording_started)
@@ -565,65 +617,43 @@ async def _persist_realtime_session_emergency(
         duration_base = start_time
     total_duration_ms = (time.time() - duration_base) * 1000
 
-    existing_file_id = session_info.get("file_id")
+    # 优先复用快照中的 file_id，保证断线重连始终指向同一会议
+    recording_id = (session_info.get("recording_id") or "").strip()
+    if recording_id:
+        snap = _recording_resume_store.get(recording_id)
+        if snap and snap.get("file_id") and not session_info.get("file_id"):
+            session_info["file_id"] = snap["file_id"]
+        if snap and snap.get("transcript_path") and not session_info.get("transcript_path"):
+            session_info["transcript_path"] = snap["transcript_path"]
+
+    file_id = session_info.get("file_id") or str(uuid.uuid4())
+    session_info["file_id"] = file_id
     transcript_path = session_info.get("transcript_path")
 
-    # 续写场景：已有备份会议，更新同一条记录
-    if existing_file_id and session_info.get("saved"):
-        if not transcript_path:
-            transcript_path, _ = _find_transcript_by_file_id(
-                os.path.join(output_dir, "transcripts"), existing_file_id
-            )
-        if transcript_path:
-            await run_io(Path(transcript_path).write_text, total_text, encoding="utf-8")
-            session_info["transcript_path"] = transcript_path
-        await update_meeting_transcript_async(
-            existing_file_id,
-            transcript=total_text,
-            transcript_file_path=transcript_path,
+    if not transcript_path:
+        transcript_path, _ = _find_transcript_by_file_id(
+            os.path.join(output_dir, "transcripts"), file_id
         )
-        await update_meeting_status_async(
-            existing_file_id,
-            reason,
-            "连接中断，已自动备份转写；若客户端重连将继续续写",
+    if not transcript_path:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_name = safe_filename_prefix(user_meeting_name or None).rstrip("_")
+        transcript_filename = (
+            f"{safe_name}_{file_id}_{timestamp}_realtime.txt"
+            if safe_name
+            else f"{file_id}_{timestamp}_realtime.txt"
         )
-        _save_resume_snapshot(session_info)
-        logger.info(
-            "实时会议转写已更新备份（连接中断，可续写）",
-            extra={
-                "request_id": connection_id,
-                "output_params": {
-                    "file_id": existing_file_id,
-                    "recording_id": session_info.get("recording_id"),
-                    "reason": reason,
-                    "text_length": len(total_text),
-                },
-            },
-        )
-        return existing_file_id
+        transcript_path = os.path.join(output_dir, "transcripts", transcript_filename)
+    else:
+        transcript_filename = os.path.basename(transcript_path)
 
-    if session_info.get("saved"):
-        return session_info.get("file_id")
-
-    file_id = existing_file_id or str(uuid.uuid4())
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    session_info["file_id"] = file_id
+    await run_io(Path(transcript_path).write_text, total_text, encoding="utf-8")
+    session_info["transcript_path"] = transcript_path
     session_info["saved"] = True
 
     meeting_name = resolve_meeting_name(
         user_meeting_name or None,
         at=session_info.get("start_time"),
     )
-
-    safe_name = safe_filename_prefix(user_meeting_name or None).rstrip("_")
-    transcript_filename = (
-        f"{safe_name}_{file_id}_{timestamp}_realtime.txt"
-        if safe_name
-        else f"{file_id}_{timestamp}_realtime.txt"
-    )
-    transcript_path = os.path.join(output_dir, "transcripts", transcript_filename)
-    await run_io(Path(transcript_path).write_text, total_text, encoding="utf-8")
-    session_info["transcript_path"] = transcript_path
 
     meeting_data = {
         "file_id": file_id,
@@ -873,29 +903,46 @@ async def websocket_transcribe(
                     if mn:
                         session_info["meeting_name"] = mn
 
-                    resume_id = (message.get("resume_recording_id") or "").strip()
+                    # 客户端应尽早携带 recording_id；resume_recording_id 兼容旧字段
+                    client_rid = (
+                        (message.get("resume_recording_id") or "").strip()
+                        or (message.get("recording_id") or "").strip()
+                    )
                     client_transcript = (message.get("client_transcript") or "").strip()
-                    if resume_id:
-                        snap = _load_resume_snapshot(resume_id, current_user.id)
+                    snap = (
+                        _load_resume_snapshot(client_rid, current_user.id)
+                        if client_rid
+                        else None
+                    )
+
+                    if snap or (
+                        client_rid
+                        and message.get("resume_recording_id")
+                    ):
+                        # 断线重连 / 客户端声明续写
+                        resume_id = client_rid or str(uuid.uuid4())
+                        session_info["recording_id"] = resume_id
+                        session_info["resumed"] = True
                         seeded_text = ""
                         if snap:
-                            session_info["recording_id"] = resume_id
-                            session_info["resumed"] = True
-                            session_info["file_id"] = snap.get("file_id") or session_info.get("file_id")
+                            session_info["file_id"] = (
+                                snap.get("file_id") or session_info.get("file_id")
+                            )
                             session_info["transcript_path"] = (
-                                snap.get("transcript_path") or session_info.get("transcript_path")
+                                snap.get("transcript_path")
+                                or session_info.get("transcript_path")
                             )
                             if snap.get("meeting_name") and not session_info.get("meeting_name"):
                                 session_info["meeting_name"] = snap.get("meeting_name")
                             session_info["recording_started_at"] = (
-                                snap.get("recording_started_at") or session_info.get("start_time")
+                                snap.get("recording_started_at")
+                                or session_info.get("start_time")
                             )
                             session_info["audio_chunks"] = int(snap.get("audio_chunks") or 0)
-                            session_info["saved"] = bool(snap.get("file_id"))
+                            session_info["saved"] = bool(snap.get("saved"))
                             seeded_text = (snap.get("total_text") or "").strip()
-                        else:
-                            session_info["recording_id"] = resume_id
-                            session_info["resumed"] = True
+                        if not session_info.get("file_id"):
+                            session_info["file_id"] = str(uuid.uuid4())
                         if client_transcript and len(client_transcript) > len(seeded_text):
                             seeded_text = client_transcript
                         if seeded_text:
@@ -917,12 +964,24 @@ async def websocket_transcribe(
                             },
                         )
                     else:
-                        if not session_info.get("recording_id"):
+                        # 首次开始：立即固定 recording_id + file_id，后续断线只更新同一条会议
+                        if client_rid:
+                            session_info["recording_id"] = client_rid
+                        elif not session_info.get("recording_id"):
                             session_info["recording_id"] = str(uuid.uuid4())
+                        if not session_info.get("file_id"):
+                            session_info["file_id"] = str(uuid.uuid4())
                         session_info["recording_started_at"] = time.time()
                         session_info["resumed"] = False
                         _save_resume_snapshot(session_info)
 
+                    await manager.send_json(connection_id, {
+                        "type": "recording_started",
+                        "recording_id": session_info.get("recording_id"),
+                        "file_id": session_info.get("file_id"),
+                        "resumed": bool(session_info.get("resumed")),
+                        "total_text": session_info.get("total_text") or "",
+                    })
                     await ensure_tingwu_started()
                     continue
 
@@ -1002,33 +1061,26 @@ async def websocket_transcribe(
                     except (TypeError, ValueError):
                         duration_ms = (time.time() - start_time) * 1000
 
-                    if session_info.get("saved") and session_info.get("file_id"):
-                        await update_meeting_transcript_async(
-                            file_id,
-                            transcript=total_text,
-                            transcript_file_path=transcript_path,
-                            tingwu_task_id=getattr(transcriber_ref, "task_id", None),
-                        )
-                        await update_meeting_status_async(file_id, "processing", None)
-                    else:
-                        meeting_data = {
-                            "file_id": file_id,
-                            "user_id": session_info["user_id"],
-                            "meeting_name": meeting_name,
-                            "original_filename": transcript_filename,
-                            "meeting_type": "realtime",
-                            "audio_file_path": None,
-                            "transcript_file_path": transcript_path,
-                            "summary_file_path": None,
-                            "transcript": total_text,
-                            "summary": None,
-                            "transcript_length": len(total_text),
-                            "summary_length": 0,
-                            "total_duration_ms": round(duration_ms, 2),
-                            "status": "processing",
-                            "tingwu_task_id": getattr(transcriber_ref, "task_id", None),
-                        }
-                        await save_meeting_to_db_async(meeting_data)
+                    # 始终 upsert：断线备份与正常结束共用同一 file_id
+                    meeting_data = {
+                        "file_id": file_id,
+                        "user_id": session_info["user_id"],
+                        "meeting_name": meeting_name,
+                        "original_filename": transcript_filename,
+                        "meeting_type": "realtime",
+                        "audio_file_path": None,
+                        "transcript_file_path": transcript_path,
+                        "summary_file_path": None,
+                        "transcript": total_text,
+                        "summary": None,
+                        "transcript_length": len(total_text),
+                        "summary_length": 0,
+                        "total_duration_ms": round(duration_ms, 2),
+                        "status": "processing",
+                        "error_message": None,
+                        "tingwu_task_id": getattr(transcriber_ref, "task_id", None),
+                    }
+                    await save_meeting_to_db_async(meeting_data)
 
                     session_info["saved"] = True
                     session_info["background_processing"] = True
@@ -1149,8 +1201,12 @@ async def websocket_transcribe(
 
         if (
             not session_info.get("background_processing")
-            and not session_info.get("saved")
-            and session_info.get("audio_chunks", 0) > 0
+            and not session_info.get("normal_end")
+            and (
+                session_info.get("audio_chunks", 0) > 0
+                or bool((session_info.get("total_text") or "").strip())
+                or bool(session_info.get("recording_id"))
+            )
         ):
             try:
                 await _persist_realtime_session_emergency(

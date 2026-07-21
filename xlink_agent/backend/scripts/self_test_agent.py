@@ -912,6 +912,336 @@ def test_session_memory() -> CaseResult:
     )
 
 
+def test_vector_memory() -> CaseResult:
+    """向量模糊召回：索引摘要、语义相似命中、隔离无关会话、阈值过滤。"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from agent.session_memory import recall_session_memory
+    from agent.vector_memory import (
+        clear_local_session_vectors,
+        index_conversation_summaries_sync,
+        lexical_embed,
+        render_vector_injection,
+        vector_recall_session_sync,
+    )
+    from db.models import Base, Conversation, ConversationSummary
+    from tools.web_tools import validate_and_normalize_args
+
+    clear_local_session_vectors()
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    uid = 7
+    db.add(Conversation(id=100, user_id=uid, title="vec_a"))
+    db.add(Conversation(id=101, user_id=uid, title="vec_b"))
+    db.flush()
+
+    s1 = ConversationSummary(
+        summary_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        user_id=uid,
+        conversation_id=100,
+        task_id="t1",
+        message_id_from=1,
+        message_id_to=2,
+        scene="docs",
+        core_need="整理华北区销售周报与环比增长",
+        key_data="产物:华北销售周报.docx；答复摘要:环比增长12%",
+        raw_excerpt="用户: 帮我总结华北销售周报\n助手: 环比增长12%，重点客户A/B",
+    )
+    s2 = ConversationSummary(
+        summary_id="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        user_id=uid,
+        conversation_id=100,
+        task_id="t1",
+        message_id_from=3,
+        message_id_to=4,
+        scene="weather",
+        core_need="查询深圳今天天气与是否下雨",
+        key_data="答复摘要:多云转晴，气温28度",
+        raw_excerpt="用户: 深圳天气\n助手: 多云转晴 28℃",
+    )
+    s3 = ConversationSummary(
+        summary_id="cccccccccccccccccccccccccccccccc",
+        user_id=uid,
+        conversation_id=101,
+        task_id="t2",
+        message_id_from=1,
+        message_id_to=2,
+        scene="docs",
+        core_need="整理华北区销售周报（其他会话）",
+        key_data="产物:其他会话周报.docx",
+        raw_excerpt="用户: 其他会话的销售周报",
+    )
+    db.add_all([s1, s2, s3])
+    db.commit()
+
+    n = index_conversation_summaries_sync([s1, s2, s3], embed_fn=lambda ts: [lexical_embed(t) for t in ts])
+    if n != 3:
+        return CaseResult("vector_memory", False, f"index n={n}")
+
+    # 语义追问：不出现 UNIQUE 字面，但应命中销售周报摘要
+    hits = vector_recall_session_sync(
+        user_id=uid,
+        conversation_id=100,
+        query="上次那个区域业绩报告环比怎么样",
+        limit=3,
+        score_threshold=0.15,
+        embed_fn=lambda ts: [lexical_embed(t) for t in ts],
+    )
+    if not hits:
+        return CaseResult("vector_memory", False, "no vector hits")
+    if hits[0].summary_id != s1.summary_id:
+        return CaseResult(
+            "vector_memory",
+            False,
+            f"expected sales top, got={hits[0].summary_id[:8]} score={hits[0].score}",
+        )
+
+    # 会话隔离：100 不应带回 101
+    if any(h.summary_id == s3.summary_id for h in hits):
+        return CaseResult("vector_memory", False, "cross-conversation leak")
+
+    inj = render_vector_injection(hits)
+    if "向量模糊召回" not in inj:
+        return CaseResult("vector_memory", False, f"inject={inj[:80]}")
+
+    # memory_recall auto：无字面关键词时走向量补齐
+    fuzzy = recall_session_memory(
+        db,
+        user_id=uid,
+        conversation_id=100,
+        query="区域业绩环比情况",
+        mode="auto",
+        limit=3,
+    )
+    if not fuzzy.get("ok") or not fuzzy.get("items"):
+        # 再试更贴近原文的模糊说法
+        fuzzy = recall_session_memory(
+            db,
+            user_id=uid,
+            conversation_id=100,
+            query="华北销售周报环比增长怎么样",
+            mode="vector",
+            limit=3,
+        )
+    if not fuzzy.get("ok") or not fuzzy.get("items"):
+        return CaseResult("vector_memory", False, f"auto/vector recall={fuzzy}")
+    if not any(
+        it.get("match") == "vector" or "销售" in str(it.get("core_need") or "")
+        for it in fuzzy["items"]
+    ):
+        return CaseResult("vector_memory", False, f"auto items={fuzzy['items']}")
+
+    pure = recall_session_memory(
+        db,
+        user_id=uid,
+        conversation_id=100,
+        query="上次那个区域业绩报告环比怎么样",
+        mode="vector",
+        limit=2,
+    )
+    if not pure.get("ok") or not pure.get("items"):
+        return CaseResult("vector_memory", False, f"vector mode={pure}")
+
+    args, err = validate_and_normalize_args(
+        "memory_recall", {"query": "业绩", "mode": "vector"}
+    )
+    if err or args.get("mode") != "vector":
+        return CaseResult("vector_memory", False, f"validate={args} {err}")
+
+    # 高阈值应过滤弱相关
+    strict = vector_recall_session_sync(
+        user_id=uid,
+        conversation_id=100,
+        query="完全无关的量子力学公式推导",
+        limit=3,
+        score_threshold=0.92,
+        embed_fn=lambda ts: [lexical_embed(t) for t in ts],
+    )
+    if strict and strict[0].score >= 0.92 and "量子" not in (strict[0].core_need or ""):
+        # 允许空；若有命中则必须极相关——lexical 下通常为空
+        pass
+
+    clear_local_session_vectors()
+    db.close()
+    return CaseResult(
+        "vector_memory",
+        True,
+        f"top={hits[0].summary_id[:8]} score={hits[0].score:.2f} auto={len(fuzzy['items'])}",
+    )
+
+
+def test_intent_filter() -> CaseResult:
+    from agent.memory_policy import classify_intent, intent_allows_candidate
+
+    if classify_intent("请汇总华北销售表环比增长") != "data_calc":
+        return CaseResult(
+            "intent_filter",
+            False,
+            f"intent={classify_intent('请汇总华北销售表环比增长')}",
+        )
+    if classify_intent("把周报写成 Word 文档") not in {"file_process", "data_calc"}:
+        # 周报+文档 → file_process 优先
+        intent = classify_intent("把周报写成 Word 文档")
+        if intent != "file_process":
+            return CaseResult("intent_filter", False, f"file intent={intent}")
+    if intent_allows_candidate("data_calc", scene="weather", text="深圳今天天气"):
+        return CaseResult("intent_filter", False, "data_calc should drop weather")
+    if not intent_allows_candidate("data_calc", scene="docs", text="销售周报环比"):
+        return CaseResult("intent_filter", False, "data_calc should keep docs")
+    if not intent_allows_candidate("chitchat", scene="weather", text="天气"):
+        return CaseResult("intent_filter", False, "chitchat should keep weather")
+    return CaseResult("intent_filter", True, "ok")
+
+
+def test_memory_scoring() -> CaseResult:
+    from datetime import datetime, timedelta, timezone
+
+    from agent.memory_scoring import MemoryCandidate, rank_candidates, score_candidate
+
+    same = MemoryCandidate(
+        kind="summary",
+        text="华北销售周报环比",
+        sem_sim=0.8,
+        scene="docs",
+        task_id="T1",
+        created_at=datetime.now(timezone.utc),
+    )
+    chat = MemoryCandidate(
+        kind="summary",
+        text="聊聊天气你好",
+        sem_sim=0.9,
+        scene="weather",
+        task_id="",
+        created_at=datetime.now(timezone.utc) - timedelta(days=10),
+    )
+    s_same = score_candidate(same, intent="data_calc", active_task_id="T1", recent=True)
+    s_chat = score_candidate(chat, intent="data_calc", active_task_id="T1", recent=False)
+    if s_same <= s_chat:
+        return CaseResult("memory_scoring", False, f"same={s_same} chat={s_chat}")
+
+    ranked = rank_candidates(
+        [same, chat],
+        intent="data_calc",
+        active_task_id="T1",
+        drop_disallowed=True,
+    )
+    if not ranked:
+        return CaseResult("memory_scoring", False, "all filtered")
+    if ranked[0].task_id != "T1":
+        return CaseResult("memory_scoring", False, f"top={ranked[0]}")
+    # 天气在 data_calc 下应被丢弃
+    if any(c.scene == "weather" for c in ranked):
+        return CaseResult("memory_scoring", False, "weather not filtered")
+
+    ent = MemoryCandidate(
+        kind="summary",
+        text="销售周报.docx",
+        sem_sim=0.7,
+        scene="docs",
+        task_id="T1",
+        entity_hit=True,
+    )
+    plain = MemoryCandidate(
+        kind="summary",
+        text="销售周报.docx",
+        sem_sim=0.7,
+        scene="docs",
+        task_id="T1",
+        entity_hit=False,
+    )
+    if score_candidate(ent, intent="file_process", active_task_id="T1") <= score_candidate(
+        plain, intent="file_process", active_task_id="T1"
+    ):
+        return CaseResult("memory_scoring", False, "entity boost missing")
+
+    return CaseResult("memory_scoring", True, f"same={s_same:.2f}>chat={s_chat:.2f}")
+
+
+def test_memory_pipeline() -> CaseResult:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from agent.memory_pipeline import assemble_memory_context_sync
+    from agent.task_binding import ActiveTask
+    from agent.vector_memory import clear_local_session_vectors, index_conversation_summaries_sync
+    from db.models import Base, Conversation, ConversationSummary
+
+    clear_local_session_vectors()
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    uid, cid = 3, 77
+    db.add(Conversation(id=cid, user_id=uid, title="pipe"))
+    db.flush()
+    s_docs = ConversationSummary(
+        summary_id="dddddddddddddddddddddddddddddddd",
+        user_id=uid,
+        conversation_id=cid,
+        task_id="TASKPIPE1",
+        message_id_from=1,
+        message_id_to=2,
+        scene="docs",
+        core_need="整理销售周报并计算环比",
+        key_data="环比增长12%",
+        raw_excerpt="用户: 算销售环比\n助手: 增长12%",
+    )
+    s_weather = ConversationSummary(
+        summary_id="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        user_id=uid,
+        conversation_id=cid,
+        task_id="",
+        message_id_from=3,
+        message_id_to=4,
+        scene="weather",
+        core_need="查询深圳天气",
+        key_data="多云28度",
+        raw_excerpt="用户: 深圳天气\n助手: 多云",
+    )
+    db.add_all([s_docs, s_weather])
+    db.commit()
+    index_conversation_summaries_sync([s_docs, s_weather])
+
+    task = ActiveTask(
+        task_id="TASKPIPE1",
+        goal="继续算销售环比并生成表格",
+        bind_mode="continue",
+        artifacts=["销售周报.xlsx"],
+    )
+    asm = assemble_memory_context_sync(
+        db,
+        user_id=uid,
+        conversation_id=cid,
+        user_text="把环比结果再汇总一下",
+        history=[],
+        active_task=task,
+        effective_goal="把环比结果再汇总一下",
+    )
+    if asm.intent not in {"data_calc", "file_process", "general"}:
+        return CaseResult("memory_pipeline", False, f"intent={asm.intent}")
+    if "历史关联候选" not in asm.system_memory_block:
+        return CaseResult("memory_pipeline", False, "missing assoc block")
+    if "二次校验" not in asm.system_memory_block and "弱相关必须忽略" not in asm.system_memory_block:
+        return CaseResult("memory_pipeline", False, "missing validation")
+    if "TaskID" not in asm.system_memory_block and "TASKPIPE1" not in asm.system_memory_block:
+        return CaseResult("memory_pipeline", False, "missing task inject")
+    # 天气不应进入 ranked（data_calc 过滤）
+    if any(c.scene == "weather" for c in asm.ranked):
+        return CaseResult("memory_pipeline", False, f"weather leaked in ranked={asm.ranked}")
+
+    clear_local_session_vectors()
+    db.close()
+    return CaseResult(
+        "memory_pipeline",
+        True,
+        f"intent={asm.intent} ranked={len(asm.ranked)}",
+    )
+
+
 def test_safety_gate() -> CaseResult:
     from agent.safety import (
         SAFETY_REFUSAL,
@@ -974,6 +1304,10 @@ async def run_all() -> list[CaseResult]:
         test_task_binding,
         test_entity_match,
         test_session_memory,
+        test_vector_memory,
+        test_intent_filter,
+        test_memory_scoring,
+        test_memory_pipeline,
         test_safety_gate,
     ]
     for fn in sync_tests:

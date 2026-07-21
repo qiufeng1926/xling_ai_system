@@ -44,35 +44,43 @@ def get_qdrant():
         return None
 
 
-def ensure_collection(vector_size: int) -> bool:
+def _default_collection() -> str:
+    from config.config import qdrant_collection
+
+    return qdrant_collection
+
+
+def ensure_collection(vector_size: int, collection: str | None = None) -> bool:
     client = get_qdrant()
     if client is None:
         return False
     from qdrant_client.http import models as qm
 
-    from config.config import qdrant_collection
-
+    name = collection or _default_collection()
     names = [c.name for c in client.get_collections().collections]
-    if qdrant_collection not in names:
+    if name not in names:
         client.create_collection(
-            collection_name=qdrant_collection,
+            collection_name=name,
             vectors_config=qm.VectorParams(size=vector_size, distance=qm.Distance.COSINE),
         )
     return True
 
 
-def upsert_chunks(points: list[dict[str, Any]], vector_size: int) -> bool:
+def upsert_chunks(
+    points: list[dict[str, Any]],
+    vector_size: int,
+    collection: str | None = None,
+) -> bool:
     client = get_qdrant()
     if client is None:
         return False
-    if not ensure_collection(vector_size):
+    name = collection or _default_collection()
+    if not ensure_collection(vector_size, collection=name):
         return False
     from qdrant_client.http import models as qm
 
-    from config.config import qdrant_collection
-
     client.upsert(
-        collection_name=qdrant_collection,
+        collection_name=name,
         points=[
             qm.PointStruct(id=p["id"], vector=p["vector"], payload=p["payload"])
             for p in points
@@ -82,13 +90,13 @@ def upsert_chunks(points: list[dict[str, Any]], vector_size: int) -> bool:
 
 
 def search_vectors(vector: list[float], *, user_id: int, top_k: int = 5) -> list[dict]:
+    """知识库检索：global 或本人 private。"""
     client = get_qdrant()
     if client is None:
         return []
     from qdrant_client.http import models as qm
 
-    from config.config import qdrant_collection
-
+    name = _default_collection()
     try:
         flt = qm.Filter(
             should=[
@@ -97,7 +105,7 @@ def search_vectors(vector: list[float], *, user_id: int, top_k: int = 5) -> list
             ]
         )
         hits = client.search(
-            collection_name=qdrant_collection,
+            collection_name=name,
             query_vector=vector,
             query_filter=flt,
             limit=top_k,
@@ -114,4 +122,43 @@ def search_vectors(vector: list[float], *, user_id: int, top_k: int = 5) -> list
         ]
     except Exception as exc:
         logger.warning("向量检索失败: %s", exc)
+        return []
+
+
+def search_vectors_filtered(
+    vector: list[float],
+    *,
+    collection: str,
+    must: list[tuple[str, Any]],
+    top_k: int = 5,
+    score_threshold: float | None = None,
+) -> list[dict[str, Any]]:
+    """通用过滤检索：must 为 (field, value) 精确匹配。"""
+    client = get_qdrant()
+    if client is None:
+        return []
+    from qdrant_client.http import models as qm
+
+    try:
+        conditions = [
+            qm.FieldCondition(key=k, match=qm.MatchValue(value=v)) for k, v in must
+        ]
+        flt = qm.Filter(must=conditions) if conditions else None
+        kwargs: dict[str, Any] = {
+            "collection_name": collection,
+            "query_vector": vector,
+            "query_filter": flt,
+            "limit": top_k,
+        }
+        if score_threshold is not None:
+            kwargs["score_threshold"] = float(score_threshold)
+        hits = client.search(**kwargs)
+        out: list[dict[str, Any]] = []
+        for h in hits:
+            pl = dict(h.payload or {})
+            pl["score"] = float(h.score or 0)
+            out.append(pl)
+        return out
+    except Exception as exc:
+        logger.warning("过滤向量检索失败 collection=%s: %s", collection, exc)
         return []

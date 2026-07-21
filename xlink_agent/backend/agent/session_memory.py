@@ -23,10 +23,19 @@ from utils.logger import get_logger
 
 logger = get_logger("session_memory")
 
-# 保留最近若干「用户轮」完整进窗口；更早的做摘要
-DEFAULT_KEEP_USER_TURNS = 3
+# 保留最近若干「用户轮」完整进窗口；更早的做摘要（方案瞬时 ~5 轮）
+DEFAULT_KEEP_USER_TURNS = 5
 # 超过该用户轮数才触发压缩
-COMPACT_TRIGGER_USER_TURNS = 5
+COMPACT_TRIGGER_USER_TURNS = 7
+
+
+def _keep_user_turns() -> int:
+    try:
+        from config.config import session_keep_user_turns
+
+        return max(1, int(session_keep_user_turns))
+    except Exception:
+        return DEFAULT_KEEP_USER_TURNS
 
 
 @dataclass
@@ -164,17 +173,21 @@ def maybe_compact_conversation(
     conversation_id: int,
     history: list[Any],
     task_id: str = "",
-    keep_user_turns: int = DEFAULT_KEEP_USER_TURNS,
-    trigger_user_turns: int = COMPACT_TRIGGER_USER_TURNS,
+    keep_user_turns: int | None = None,
+    trigger_user_turns: int | None = None,
 ) -> list[ConversationSummary]:
     """若会话足够长，把窗口外未覆盖轮次写成结构化摘要。"""
+    keep = _keep_user_turns() if keep_user_turns is None else keep_user_turns
+    trigger = COMPACT_TRIGGER_USER_TURNS if trigger_user_turns is None else trigger_user_turns
+    if trigger < keep + 1:
+        trigger = keep + 2
     turns = _pair_turns(history)
-    if len(turns) < trigger_user_turns:
+    if len(turns) < trigger:
         return []
 
     covered = _covered_message_ids(db, conversation_id, user_id)
-    # 保留最近 keep_user_turns；压缩更早的
-    to_compact = turns[:-keep_user_turns] if keep_user_turns > 0 else turns
+    # 保留最近 keep；压缩更早的
+    to_compact = turns[:-keep] if keep > 0 else turns
     created: list[ConversationSummary] = []
     for turn in to_compact:
         ids = [_msg_fields(x)[0] for x in turn if _msg_fields(x)[0]]
@@ -277,10 +290,18 @@ def recall_session_memory(
     summary_id: str = "",
     query: str = "",
     limit: int = 5,
+    mode: str = "auto",
 ) -> dict[str, Any]:
-    """按 summary_id 精确取回，或按关键词匹配 core_need/key_data/raw_excerpt。"""
+    """按 summary_id 精确取回，或按关键词/向量模糊匹配。
+
+    mode: auto | keyword | vector
+    - auto: 先关键词，不足再用向量补齐
+    - keyword: 仅字面
+    - vector: 仅向量
+    """
     sid = (summary_id or "").strip()
     q = (query or "").strip()
+    mode_n = (mode or "auto").strip().lower()
     if sid:
         row = (
             db.query(ConversationSummary)
@@ -315,6 +336,7 @@ def recall_session_memory(
                     "message_id_from": row.message_id_from,
                     "message_id_to": row.message_id_to,
                     "task_id": row.task_id,
+                    "match": "exact",
                 }
             ],
         }
@@ -322,44 +344,72 @@ def recall_session_memory(
     if not q:
         return {"ok": False, "error": "memory_recall 需要 summary_id 或 query"}
 
-    rows = (
-        db.query(ConversationSummary)
-        .filter(
-            ConversationSummary.user_id == user_id,
-            ConversationSummary.conversation_id == conversation_id,
+    items: list[dict[str, Any]] = []
+    if mode_n in {"auto", "keyword"}:
+        rows = (
+            db.query(ConversationSummary)
+            .filter(
+                ConversationSummary.user_id == user_id,
+                ConversationSummary.conversation_id == conversation_id,
+            )
+            .order_by(ConversationSummary.created_at.desc())
+            .limit(40)
+            .all()
         )
-        .order_by(ConversationSummary.created_at.desc())
-        .limit(40)
-        .all()
-    )
-    qn = q.lower()
-    scored: list[tuple[int, ConversationSummary]] = []
-    for r in rows:
-        blob = f"{r.scene}\n{r.core_need}\n{r.key_data}\n{r.raw_excerpt}".lower()
-        score = 0
-        if qn in blob:
-            score += 5
-        for tok in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9_\-.]{3,}", q):
-            if tok.lower() in blob:
-                score += 1
-        if score:
-            scored.append((score, r))
-    scored.sort(key=lambda x: -x[0])
-    items = []
-    for _, r in scored[:limit]:
-        items.append(
-            {
-                "summary_id": r.summary_id,
-                "scene": r.scene,
-                "core_need": r.core_need,
-                "key_data": r.key_data,
-                "raw_excerpt": (r.raw_excerpt or "")[:2000],
-                "message_id_from": r.message_id_from,
-                "message_id_to": r.message_id_to,
-                "task_id": r.task_id,
-            }
-        )
-    return {"ok": True, "items": items, "query": q}
+        qn = q.lower()
+        scored: list[tuple[int, ConversationSummary]] = []
+        for r in rows:
+            blob = f"{r.scene}\n{r.core_need}\n{r.key_data}\n{r.raw_excerpt}".lower()
+            score = 0
+            if qn in blob:
+                score += 5
+            for tok in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9_\-.]{3,}", q):
+                if tok.lower() in blob:
+                    score += 1
+            if score:
+                scored.append((score, r))
+        scored.sort(key=lambda x: -x[0])
+        for _, r in scored[:limit]:
+            items.append(
+                {
+                    "summary_id": r.summary_id,
+                    "scene": r.scene,
+                    "core_need": r.core_need,
+                    "key_data": r.key_data,
+                    "raw_excerpt": (r.raw_excerpt or "")[:2000],
+                    "message_id_from": r.message_id_from,
+                    "message_id_to": r.message_id_to,
+                    "task_id": r.task_id,
+                    "match": "keyword",
+                }
+            )
+
+    if mode_n == "vector" or (mode_n == "auto" and len(items) < limit):
+        try:
+            from agent.vector_memory import enrich_recall_with_vectors
+
+            if mode_n == "vector":
+                items = enrich_recall_with_vectors(
+                    db,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    query=q,
+                    existing_items=[],
+                    limit=limit,
+                )
+            else:
+                items = enrich_recall_with_vectors(
+                    db,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    query=q,
+                    existing_items=items,
+                    limit=limit,
+                )
+        except Exception:
+            logger.exception("vector recall failed conv=%s", conversation_id)
+
+    return {"ok": True, "items": items, "query": q, "mode": mode_n}
 
 
 class SessionSummaryRecall(MemoryRecallPort):
@@ -426,9 +476,10 @@ def prepare_session_window(
     conversation_id: int,
     history: list[Any],
     task_id: str = "",
-    keep_user_turns: int = DEFAULT_KEEP_USER_TURNS,
+    keep_user_turns: int | None = None,
 ) -> tuple[list[Any], str, list[StructuredSummaryView]]:
     """组装：窗口内原文 + 摘要注入块。"""
+    keep = _keep_user_turns() if keep_user_turns is None else keep_user_turns
     views = list_recent_summaries(
         db,
         user_id=user_id,
@@ -437,7 +488,7 @@ def prepare_session_window(
     )
     covered = _covered_message_ids(db, conversation_id, user_id)
     windowed = filter_history_for_window(
-        history, covered_ids=covered, keep_user_turns=keep_user_turns
+        history, covered_ids=covered, keep_user_turns=keep
     )
     return windowed, render_summary_injection(views), views
 

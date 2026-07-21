@@ -190,6 +190,7 @@ async def execute_tool(
             conversation_id=conversation_id,
             summary_id=str(args.get("summary_id") or ""),
             query=str(args.get("query") or ""),
+            mode=str(args.get("mode") or "auto"),
         )
     if name in {"feishu_search", "meeting_search"}:
         return {"error": "该连接器未启用（一期预留）"}

@@ -2787,6 +2787,13 @@
         let wsReconnectAttempts = 0;
         let wsReconnectTimer = null;
 
+        function newRecordingId() {
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+                return crypto.randomUUID();
+            }
+            return 'rec-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+        }
+
         function classifyWsCloseCode(code) {
             const labels = {
                 1000: 'normal_closure',
@@ -3338,7 +3345,12 @@
                 meeting_name: meetingName,
                 client_transcript: lastKnownTranscript || '',
             };
-            if (!isCollabMode && activeRecordingId) {
+            // 始终携带同一 recording_id，服务端据此复用同一条会议记录
+            if (!isCollabMode) {
+                if (!activeRecordingId) {
+                    activeRecordingId = newRecordingId();
+                }
+                payload.recording_id = activeRecordingId;
                 payload.resume_recording_id = activeRecordingId;
             }
             ws.send(JSON.stringify(payload));
@@ -4214,6 +4226,23 @@
                     setRealtimeTranscriptStatus('会议已开始，可点击开始录音');
                     if (collabRole !== 'viewer') startBtn.disabled = false;
                 }
+            } else if (data.type === 'recording_started') {
+                console.log('录音会话已绑定', {
+                    recording_id: data.recording_id,
+                    file_id: data.file_id,
+                    resumed: data.resumed,
+                });
+                if (data.recording_id) {
+                    activeRecordingId = data.recording_id;
+                }
+                if (data.file_id) {
+                    pendingFileId = data.file_id;
+                    lastRealtimeFileId = data.file_id;
+                }
+                if (data.total_text) {
+                    lastKnownTranscript = data.total_text;
+                    renderRealtimeTranscript(data.total_text);
+                }
             } else if (data.type === 'tingwu_ready') {
                 console.log('听悟通道就绪', {
                     recording_id: data.recording_id,
@@ -4313,7 +4342,8 @@
                 clearReconnectTimer();
                 wsReconnecting = false;
                 wsReconnectAttempts = 0;
-                activeRecordingId = null;
+                // 客户端先生成 recording_id，断线重连时无需等 tingwu_ready
+                activeRecordingId = isCollabMode ? null : newRecordingId();
                 lastKnownTranscript = '';
                 if (pollFallbackTimer) {
                     clearTimeout(pollFallbackTimer);
@@ -4368,10 +4398,14 @@
 
                 setRealtimeTranscriptStatus('正在启动转写通道…');
                 const tingwuReadyWait = waitForTingwuReady();
-                ws.send(JSON.stringify({
+                const startPayload = {
                     type: 'record_start',
                     meeting_name: document.getElementById('meetingNameInput').value.trim(),
-                }));
+                };
+                if (!isCollabMode && activeRecordingId) {
+                    startPayload.recording_id = activeRecordingId;
+                }
+                ws.send(JSON.stringify(startPayload));
                 await tingwuReadyWait;
 
                 // 使用设备实际采样率，由服务端重采样到 16kHz

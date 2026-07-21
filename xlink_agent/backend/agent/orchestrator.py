@@ -75,13 +75,10 @@ from agent.safety import (
 )
 from agent.entity_match import (
     expand_goal_with_entities,
-    match_entities,
     merge_entity_hits_into_task_artifacts,
 )
-from agent.session_memory import (
-    maybe_compact_conversation,
-    prepare_session_window,
-)
+from agent.memory_pipeline import assemble_memory_context
+from agent.session_memory import maybe_compact_conversation
 from agent.task_binding import (
     expand_goal_with_task,
     resolve_task_binding,
@@ -357,14 +354,14 @@ def _merge_tools(skills: list[Skill]) -> tuple[list[str], str]:
     return tools, "\n\n".join(bodies)
 
 
-def _compact_session_after_turn(
+async def _compact_session_after_turn(
     db: Session,
     *,
     user_id: int,
     conversation_id: int,
     task_id: str = "",
 ) -> None:
-    """轮次落库后：溢出轮次写成可逆结构化摘要。"""
+    """轮次落库后：溢出轮次写成可逆结构化摘要，并写入向量索引。"""
     try:
         hist = (
             db.query(Message)
@@ -373,17 +370,54 @@ def _compact_session_after_turn(
             .limit(80)
             .all()
         )
-        maybe_compact_conversation(
+        created = maybe_compact_conversation(
             db,
             user_id=user_id,
             conversation_id=conversation_id,
             history=hist,
             task_id=task_id or "",
         )
+        if created:
+            from agent.vector_memory import index_conversation_summaries
+
+            await index_conversation_summaries(created)
     except Exception:
         logger.exception(
             "session compact failed conv=%s uid=%s", conversation_id, user_id
         )
+
+
+async def _maybe_index_tool_observation(
+    *,
+    user_id: int,
+    conversation_id: int,
+    task_id: str,
+    tool: str,
+    result: dict[str, Any],
+    run_id: str = "",
+) -> None:
+    """成功工具 Observation 写入短期向量分块（方案细粒度）。"""
+    if not isinstance(result, dict) or result.get("error"):
+        return
+    # 跳过过重/无信息结果
+    if tool in {"browser_screenshot", "memory_recall"}:
+        return
+    try:
+        from agent.vector_memory import index_tool_step
+
+        blob = json.dumps(result, ensure_ascii=False)[:1500]
+        if len(blob) < 12:
+            return
+        await index_tool_step(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            task_id=task_id or "",
+            tool=tool,
+            observation=blob,
+            run_id=run_id,
+        )
+    except Exception:
+        logger.exception("tool_step index failed tool=%s", tool)
 
 
 def _save_event(db: Session, user_id: int, conversation_id: int, run_id: str, event_type: str, payload: Any) -> None:
@@ -848,29 +882,26 @@ async def run_chat(
     )
     effective_goal = expand_goal_with_task(effective_goal, active_task)
 
-    # 实体精确匹配：文件名/单据号/「刚才那个文件」指代
-    entity_result = match_entities(
+    # 五级记忆调度：意图 → 实体 → Task → 向量 → 权重注入
+    memory_asm = await assemble_memory_context(
         db,
         user_id=user_id,
         conversation_id=conversation_id,
         user_text=user_text,
-        task_artifacts=active_task.artifacts,
         history=history,
+        active_task=active_task,
+        effective_goal=effective_goal,
     )
+    entity_result = memory_asm.entity_result
     effective_goal = expand_goal_with_entities(effective_goal, entity_result)
     if entity_result.ok:
         active_task.artifacts = merge_entity_hits_into_task_artifacts(
             active_task.artifacts, entity_result
         )
-
-    # 长会话：已压缩轮次用摘要注入，原文移出窗口
-    window_history, summary_block, summary_views = prepare_session_window(
-        db,
-        user_id=user_id,
-        conversation_id=conversation_id,
-        history=history,
-        task_id=active_task.task_id,
-    )
+        # 实体合并后刷新任务注入（pipeline 已渲染旧 artifacts；约束仍以 active_task 为准）
+    window_history = memory_asm.window_history
+    summary_views = memory_asm.summary_views
+    vector_hit_count = int(memory_asm.debug.get("vector_hits") or 0)
 
     skills = _active_skills(db, user_id)
     tools, skill_body = _merge_tools(skills)
@@ -891,23 +922,8 @@ async def run_chat(
     system += render_tool_contracts(tools) + "\n\n" + skill_body
     if memory_ctx:
         system += f"\n\n# 长期用户记忆（已按当前目标过滤）\n{memory_ctx}"
-    system += "\n\n" + active_task.render_injection() + "\n"
-    entity_block = entity_result.render_injection()
-    if entity_block:
-        system += "\n\n" + entity_block + "\n"
-    if summary_block:
-        system += "\n\n" + summary_block + "\n"
-    system += (
-        "\n\n# 记忆纪律\n"
-        "1. 独立新问题与上一轮硬隔离：禁止联想/提及上一轮书名、新闻或结论。\n"
-        "2. 仅当用户明确追问/续作（再来三本、为什么获取不了、详细讲《某书》）才使用最近同题上下文。\n"
-        "3. finish 必须是用户可读终稿：总起 + 要点；禁止输出「线索/请核实/检索材料」等内部话术。\n"
-        "4. 只读搜索/抓取无需用户确认；自行 web_fetch 后总结交付。\n"
-        "5. 若系统注入了活动 TaskID，必须沿用该任务目标与约束，禁止无故另起炉灶。\n"
-        "6. 若系统注入了实体精确匹配（文件名/单据号/刚才那个文件），必须优先使用命中项。\n"
-        "7. 若注入了会话压缩摘要：摘要仅供线索；用户追问旧细节时先 memory_recall 再作答。\n"
-        f"\n\n{SAFETY_POLICY_PROMPT}\n"
-    )
+    system += "\n\n" + memory_asm.system_memory_block + "\n"
+    system += f"\n\n{SAFETY_POLICY_PROMPT}\n"
     logger.info(
         "======== system prompt preview run=%s len=%s ========\n%s",
         run_id[:8],
@@ -948,14 +964,18 @@ async def run_chat(
             "task_bind_mode": active_task.bind_mode,
             "entity_hits": [h.to_dict() for h in entity_result.hits[:6]],
             "session_summaries": len(summary_views),
+            "vector_hits": vector_hit_count,
+            "memory_debug": memory_asm.debug,
         },
     )
     yield sse("think.open", {"title": "ReAct 推理"})
     async for chunk in _emit_think(
-        f"任务绑定 TaskID={active_task.task_id[:8]}… 模式={active_task.bind_mode}\n"
+        f"任务绑定 TaskID={active_task.task_id[:8]}… 模式={active_task.bind_mode} "
+        f"意图={memory_asm.intent}\n"
     ):
         yield chunk
         think_parts.append(f"task:{active_task.bind_mode}")
+        think_parts.append(f"intent:{memory_asm.intent}")
     if entity_result.ok:
         async for chunk in _emit_think(
             "实体匹配命中: "
@@ -964,6 +984,13 @@ async def run_chat(
         ):
             yield chunk
             think_parts.append("entity_match")
+    if memory_asm.ranked:
+        async for chunk in _emit_think(
+            f"记忆候选 Top{len(memory_asm.ranked)} "
+            f"(intent={memory_asm.intent})\n"
+        ):
+            yield chunk
+            think_parts.append("memory_pipeline")
 
     # 安全硬拦截：违规问题不进工具链
     if is_disallowed_request(user_text) or is_disallowed_request(effective_goal):
@@ -1009,7 +1036,7 @@ async def run_chat(
                 run_id=run_id,
                 answer_preview=content,
             )
-        _compact_session_after_turn(
+        await _compact_session_after_turn(
             db,
             user_id=user_id,
             conversation_id=conversation_id,
@@ -1578,6 +1605,15 @@ async def run_chat(
                 result if isinstance(result, dict) else {"error": "bad result"},
                 args=args,
             )
+            if isinstance(result, dict):
+                await _maybe_index_tool_observation(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    task_id=task_ctx.task_id,
+                    tool=tool,
+                    result=result,
+                    run_id=run_id,
+                )
 
             # 验证码/风控：立刻换下一条内容链接 web_fetch（不问用户选编号）
             cur_url = str((args or {}).get("url") or (result.get("url") if isinstance(result, dict) else "") or "")
@@ -1923,7 +1959,7 @@ async def run_chat(
             artifacts=list(task_ctx.artifacts),
             answer_preview=final_text[:500],
         )
-    _compact_session_after_turn(
+    await _compact_session_after_turn(
         db,
         user_id=user_id,
         conversation_id=conversation_id,

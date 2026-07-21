@@ -31,6 +31,42 @@ TOPIC_BAGS: dict[str, tuple[str, ...]] = {
     "browse": ("打开网页", "浏览", "搜索网页", "帮我查一下网站"),
 }
 
+# 办公意图（方案 §3.1 规则版，不调 LLM）
+INTENT_BAGS: dict[str, tuple[str, ...]] = {
+    "file_process": (
+        "文件", "文档", "docx", "xlsx", "pdf", "pptx", "上传", "导出", "生成文件",
+        "写一份", "日报", "周报", "表格", "润色", "改写",
+    ),
+    "data_calc": (
+        "计算", "求和", "统计", "环比", "同比", "占比", "公式", "算一下", "汇总",
+        "平均", "增长率", "run_code", "数据清洗",
+    ),
+    "schedule_mail": (
+        "邮件", "日程", "会议", "预约", "提醒", "日历", "发信", "抄送", "开会",
+    ),
+    "approval": (
+        "审批", "报销", "请假", "工单", "流程", "签字", "盖章", "单据", "合同审批",
+    ),
+    "research": (
+        "搜索", "检索", "调研", "查一下", "了解", "推荐", "新闻", "资料", "分析",
+        "详细讲", "介绍一下",
+    ),
+    "chitchat": (
+        "天气", "你好", "谢谢", "哈哈", "聊聊", "闲聊", "早上好", "晚上好",
+    ),
+}
+
+# 意图 → 允许保留的候选 scene/topic（硬冲突则丢弃）
+INTENT_SCENE_ALLOW: dict[str, set[str]] = {
+    "file_process": {"docs", "kb", "general", "file_process", "data_calc"},
+    "data_calc": {"docs", "data_calc", "general", "kb", "file_process"},
+    "schedule_mail": {"schedule_mail", "general", "approval"},
+    "approval": {"approval", "docs", "general", "schedule_mail"},
+    "research": {"news", "books", "browse", "kb", "research", "general", "docs"},
+    "chitchat": {"weather", "chitchat", "general"},
+    "general": set(),  # 空集表示不按 scene 硬过滤
+}
+
 _NOISE_FACTS = (
     "知识库未命中",
     "未命中相关内容",
@@ -49,6 +85,61 @@ def classify_topics(text: str) -> set[str]:
     t = text or ""
     hits = {name for name, kws in TOPIC_BAGS.items() if any(k in t for k in kws)}
     return hits or {"general"}
+
+
+def classify_intent(text: str) -> str:
+    """规则办公意图分类（方案 §3.1 轻量版）。"""
+    t = (text or "").strip()
+    if not t:
+        return "general"
+    scores: list[tuple[int, str]] = []
+    for name, kws in INTENT_BAGS.items():
+        n = sum(1 for k in kws if k in t)
+        if n:
+            scores.append((n, name))
+    if not scores:
+        return "general"
+    scores.sort(key=lambda x: (-x[0], x[1]))
+    return scores[0][1]
+
+
+def candidate_scene_tags(scene: str, text: str = "") -> set[str]:
+    """把摘要 scene / 正文映射为可过滤标签。"""
+    tags: set[str] = set()
+    for part in re.split(r"[、,，/|\s]+", scene or ""):
+        p = part.strip().lower()
+        if p:
+            tags.add(p)
+    tags |= classify_topics(text or scene or "")
+    intent_from_text = classify_intent(f"{scene} {text}")
+    if intent_from_text != "general":
+        tags.add(intent_from_text)
+    return tags or {"general"}
+
+
+def intent_allows_candidate(intent: str, *, scene: str = "", text: str = "") -> bool:
+    """当前意图是否允许保留该候选（硬冲突 → False）。"""
+    intent_n = (intent or "general").strip() or "general"
+    allow = INTENT_SCENE_ALLOW.get(intent_n)
+    if allow is None or not allow:
+        return True
+    tags = candidate_scene_tags(scene, text)
+    concrete = tags - {"general"}
+    if not concrete:
+        return True
+    # 有具体标签时必须与允许集合有交集
+    if concrete & allow:
+        return True
+    # 纯闲聊/天气在非 chitchat 意图下剔除
+    if concrete <= {"weather", "chitchat", "news"} and intent_n not in {
+        "chitchat",
+        "research",
+        "general",
+    }:
+        return False
+    if concrete <= {"weather", "chitchat"} and intent_n != "chitchat":
+        return False
+    return bool(concrete & allow)
 
 
 def topics_related(a: Iterable[str], b: Iterable[str]) -> bool:
