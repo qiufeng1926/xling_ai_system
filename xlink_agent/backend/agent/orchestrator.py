@@ -16,16 +16,25 @@ from agent.answer import (
     asks_user_to_pick_number,
     build_citations,
     enrich_finish_answer,
+    ensure_knowledge_disclaimer,
     expand_selection_followup,
     extract_grounded_entities_from_facts,
     extract_search_hit_cards,
     format_entity_list_answer,
+    format_title_marks_as_list,
     has_substantive_content_facts,
+    honest_grounded_list_answer,
+    is_count_list_goal,
+    is_honest_shortfall_answer,
     is_hollow_answer,
+    is_poorly_grounded,
     is_substantive_draft,
     is_thin_list_draft,
     looks_like_internal,
+    materials_usable_for_goal,
     pick_fetch_url,
+    rescue_count_list_answer,
+    sanitize_hallucinated_list_answer,
     sanitize_public_answer,
     search_only_needs_fetch,
     strip_pick_number_prompts,
@@ -64,7 +73,13 @@ from agent.react import (
     format_observation,
     parse_react_output,
 )
-from agent.research_policy import can_finish_research, next_research_tool
+from agent.research_policy import (
+    can_finish_research,
+    count_search_steps,
+    has_search_hit_facts,
+    is_near_duplicate_search_query,
+    next_research_tool,
+)
 from agent.delivery_gate import get_default_delivery_gate
 from agent.safety import (
     SAFETY_POLICY_PROMPT,
@@ -185,7 +200,7 @@ def _fill_file_write_args(
     # 再用本轮 facts / 材料
     from agent.answer import materials_blob_for_synthesis
 
-    blob = materials_blob_for_synthesis(facts or [])
+    blob = materials_blob_for_synthesis(facts or [], goal=goal or "")
     if blob and len(blob) >= 40:
         parts.append(blob)
     elif facts:
@@ -658,9 +673,7 @@ async def _finalize_user_answer(
     draft = _reject_internal_answer(draft, goal)
     draft = strip_pick_number_prompts(draft)
 
-    has_materials = bool(extract_search_hit_cards(task_ctx.facts)) or has_substantive_content_facts(
-        task_ctx.facts
-    )
+    has_materials = materials_usable_for_goal(task_ctx.facts, goal)
     fact_n = len(task_ctx.facts)
 
     def _track(path, text: str) -> str:
@@ -672,17 +685,47 @@ async def _finalize_user_answer(
         text = strip_pick_number_prompts(_reject_internal_answer(text, goal) or text or "")
         if asks_user_to_pick_number(text):
             text = strip_pick_number_prompts(text)
+        # 计数清单：若清洗后条目骤减，从清洗前文本抢救（避免把 finish 书单冲成 facts 里的规划名）
+        before_san = text
+        text = sanitize_hallucinated_list_answer(text, goal=goal, facts=task_ctx.facts)
+        if (
+            is_count_list_goal(goal)
+            and before_san.count("《") >= 5
+            and (text or "").count("《") < 3
+        ):
+            text = rescue_count_list_answer(before_san, goal=goal, facts=task_ctx.facts)
         text = enforce_safety_answer(goal=goal, answer=text)
         if is_safety_refusal(text):
             if run_state is not None:
                 run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
             return SAFETY_REFUSAL
-        # 质量门：不合格不得交付
+        # 质量门：不合格不得交付；有材料却几乎不接地也拒
         verdict = gate.check_final(goal=goal, answer=text, facts=task_ctx.facts)
         if text and not verdict.ok:
-            if run_state is not None:
-                run_state.intercept(verdict.reason or "quality_reject", round_i=round_i)
-            return ""
+            # 已整理的书名清单 / 诚实短答：允许薄列表交付
+            allow_list = (
+                verdict.reason in {"thin_list", "poor_grounding"}
+                and (
+                    is_honest_shortfall_answer(text)
+                    or (
+                        is_count_list_goal(goal)
+                        and text.count("《") >= 3
+                        and "推荐如下" in text
+                    )
+                )
+            )
+            if not allow_list:
+                if run_state is not None:
+                    run_state.intercept(verdict.reason or "quality_reject", round_i=round_i)
+                return ""
+        if text and has_materials and is_poorly_grounded(text, task_ctx.facts, goal=goal):
+            if not (
+                is_honest_shortfall_answer(text)
+                or (is_count_list_goal(goal) and text.count("《") >= 3)
+            ):
+                if run_state is not None:
+                    run_state.intercept("poor_grounding", round_i=round_i)
+                return ""
         if run_state is not None:
             run_state.record_finalize(path, text, round_i=round_i)
             run_state.snapshot_answer(
@@ -693,15 +736,31 @@ async def _finalize_user_answer(
                 has_materials=has_materials,
                 fact_count=fact_n,
             )
+            logger.info(
+                "deliver[%s] path=%s chars=%s preview=%s",
+                run_state.run_id[:8],
+                path.value if hasattr(path, "value") else path,
+                len(text or ""),
+                re.sub(r"\s+", " ", (text or ""))[:160],
+            )
         return text
 
     async def _force_quality_deliver(preferred_path, seed: str) -> str:
-        """不合格草稿：强制扩写 → 知识兜底；禁止交标题清单。"""
+        """不合格草稿：接地扩写 → 抢救 finish 清单；禁止用跑题 facts 顶替已总结条目。"""
+        seed_text = seed or draft or ""
+        # 计数清单且草稿已有大量书名：直接抢救交付，不再走「facts 诚实短答」把书单冲掉
+        if is_count_list_goal(goal) and seed_text.count("《") >= 3:
+            rescued = rescue_count_list_answer(seed_text, goal=goal, facts=task_ctx.facts)
+            out = _track(FinalizePath.DRAFT_DIRECT_NO_MATERIALS, rescued)
+            if out:
+                return out
+            return enforce_safety_answer(goal=goal, answer=rescued)
+
         rich = await synthesize_rich_answer(
             model,
             goal=goal,
             facts=task_ctx.facts,
-            draft=seed or draft or "",
+            draft=seed_text,
             thought=thought,
             force_expand=True,
         )
@@ -711,41 +770,60 @@ async def _finalize_user_answer(
             return out
         # 扩写结果本身合格但 _track 因 path 标记：优先 DRAFT_EXPANDED
         if final and gate.check_final(goal=goal, answer=final, facts=task_ctx.facts).ok:
-            out = _track(FinalizePath.DRAFT_EXPANDED, final)
+            if not (has_materials and is_poorly_grounded(final, task_ctx.facts, goal=goal)):
+                out = _track(FinalizePath.DRAFT_EXPANDED, final)
+                if out:
+                    return out
+        if is_substantive_draft(seed_text, goal, facts=task_ctx.facts):
+            out = _track(preferred_path, seed_text)
             if out:
                 return out
-        if is_substantive_draft(seed or draft or "", goal, facts=task_ctx.facts):
-            out = _track(preferred_path, seed or draft)
+        if is_count_list_goal(goal):
+            fallback = rescue_count_list_answer(seed_text, goal=goal, facts=task_ctx.facts)
+            out = _track(FinalizePath.KNOWLEDGE_FALLBACK, fallback)
             if out:
                 return out
-        fb = await knowledge_fallback_answer(model, goal)
+            if run_state is not None:
+                run_state.record_finalize(FinalizePath.KNOWLEDGE_LAST_RESORT, fallback, round_i=round_i)
+            return enforce_safety_answer(goal=goal, answer=fallback)
+        fb = await knowledge_fallback_answer(model, goal, facts=task_ctx.facts)
         final = _reject_internal_answer(fb or "", goal)
         out = _track(FinalizePath.KNOWLEDGE_FALLBACK, final or "")
         if out:
             return out
-        # 最后兜底：仍可能被 gate 拒，给一句可读提示（非材料不足套话）
-        fallback = sanitize_public_answer(fb or "") or (
-            "我根据现有信息整理如下，供参考；若需要更细的出处，请换个更具体的问法再试一次。"
+        offline = synthesize_public_answer(task_ctx)
+        fallback = sanitize_hallucinated_list_answer(
+            sanitize_public_answer(fb or offline or ""),
+            goal=goal,
+            facts=task_ctx.facts,
+        ) or (
+            f"关于「{goal[:60]}」，本轮未能从公开来源整理出足够可核验材料，"
+            "暂不给出可能不准确的细节。请换个更具体的问法，或稍后再试。"
         )
-        # 绕过 thin 检测的最短充实答复：加长说明
-        if not gate.check_final(goal=goal, answer=fallback, facts=task_ctx.facts).ok:
-            fallback = (
-                f"关于「{goal[:40]}」，这一轮检索到的可公开正文有限。"
-                "下面按通行知识给出可直接阅读的要点（供参考），建议你结合权威来源核对：\n"
-                f"1. 先明确你的目标与基础（为何学、现有基础）。\n"
-                f"2. 选一条主线工具或课程，先做出最小作品。\n"
-                f"3. 用作品反馈迭代提示词与工作流，再扩展到更多场景。\n"
-                f"4. 关注版权与合规，避免直接照搬受保护素材。"
-            )
+        if not any(k in fallback[:60] for k in ("未充分", "未能", "无法核验", "仅供")):
+            fallback = ensure_knowledge_disclaimer(fallback)
         if run_state is not None:
             run_state.record_finalize(FinalizePath.KNOWLEDGE_LAST_RESORT, fallback, round_i=round_i)
         return enforce_safety_answer(goal=goal, answer=fallback)
 
-    # 无材料 + 薄清单/门控不合格：优先强制扩写（对齐豆包充实交付）
+    # 硬优先：finish/草稿已列出足够《条目》→ 直接抢救交付，禁止 rich_synthesis 用单条实体冲掉
+    if is_count_list_goal(goal) and (draft or "").count("《") >= 5:
+        rescued = rescue_count_list_answer(draft, goal=goal, facts=task_ctx.facts)
+        if (rescued or "").count("《") >= 5:
+            out = _track(FinalizePath.DRAFT_DIRECT_NO_MATERIALS, rescued)
+            if out:
+                return out
+
+    # 无材料 + 薄清单/门控不合格：有书名号则先抢救；否则再扩写
     if not has_materials and draft and (
         is_thin_list_draft(draft)
         or not gate.check_draft(goal=goal, draft=draft, facts=task_ctx.facts).ok
     ):
+        if is_count_list_goal(goal) and (draft or "").count("《") >= 3:
+            rescued = rescue_count_list_answer(draft, goal=goal, facts=task_ctx.facts)
+            out = _track(FinalizePath.DRAFT_DIRECT_NO_MATERIALS, rescued)
+            if out:
+                return out
         rich = await synthesize_rich_answer(
             model,
             goal=goal,
@@ -761,9 +839,17 @@ async def _finalize_user_answer(
                 return out
         return await _force_quality_deliver(FinalizePath.DRAFT_EXPANDED, draft)
 
-    # 有实质性草稿但无检索材料：充实草稿可直接交
+    # 有实质性草稿但无可用检索材料：可交，但必须标明未充分核实
     if is_substantive_draft(draft, goal, facts=task_ctx.facts) and not has_materials:
-        out = _track(FinalizePath.DRAFT_DIRECT_NO_MATERIALS, draft)
+        body = draft
+        if is_count_list_goal(goal) and (draft or "").count("《") >= 3:
+            formatted = format_title_marks_as_list(draft, goal=goal)
+            if formatted.count("《") >= 3:
+                body = formatted
+        out = _track(
+            FinalizePath.DRAFT_DIRECT_NO_MATERIALS,
+            ensure_knowledge_disclaimer(body),
+        )
         if out:
             return out
         return await _force_quality_deliver(FinalizePath.DRAFT_DIRECT_NO_MATERIALS, draft)
@@ -802,7 +888,13 @@ async def _finalize_user_answer(
             out = _track(FinalizePath.SUBSTANTIVE_BEFORE_FALLBACK, draft)
             if out:
                 return out
-        fb = await knowledge_fallback_answer(model, goal)
+        if is_count_list_goal(goal):
+            rescued = rescue_count_list_answer(draft or "", goal=goal, facts=task_ctx.facts)
+            out = _track(FinalizePath.KNOWLEDGE_FALLBACK, rescued)
+            if out:
+                return out
+            return enforce_safety_answer(goal=goal, answer=rescued)
+        fb = await knowledge_fallback_answer(model, goal, facts=task_ctx.facts)
         final = _reject_internal_answer(fb or "", goal)
         out = _track(FinalizePath.KNOWLEDGE_FALLBACK, final or "")
         if out:
@@ -822,7 +914,7 @@ async def _finalize_user_answer(
         if out:
             return out
 
-    entities = extract_grounded_entities_from_facts(task_ctx.facts)
+    entities = extract_grounded_entities_from_facts(task_ctx.facts, goal=goal)
     if entities:
         rich2 = await synthesize_rich_answer(
             model,
@@ -1218,7 +1310,7 @@ async def run_chat(
                         goal=task_ctx.goal or "",
                         facts=task_ctx.facts,
                         steps=scratchpad.steps,
-                        failed_urls=task_ctx.failed_urls,
+                        failed_urls=list(task_ctx.urls_to_skip()),
                         round_i=round_i,
                         max_rounds=agent_max_tool_rounds,
                     )
@@ -1228,21 +1320,19 @@ async def run_chat(
                             goal=task_ctx.goal or "",
                             facts=task_ctx.facts,
                             steps=scratchpad.steps,
-                            failed_urls=task_ctx.failed_urls,
+                            failed_urls=list(task_ctx.urls_to_skip()),
                         )
                         if not ok_finish and round_i < agent_max_tool_rounds - 1:
                             more = next_research_tool(
                                 goal=task_ctx.goal or "",
                                 facts=task_ctx.facts,
                                 steps=scratchpad.steps,
-                                failed_urls=task_ctx.failed_urls,
+                                failed_urls=list(task_ctx.urls_to_skip()),
                                 round_i=round_i,
                                 max_rounds=agent_max_tool_rounds,
                             )
                             if not more and block_reason == "search_hits_no_body":
-                                next_url = pick_fetch_url(
-                                    task_ctx.facts, skip=set(task_ctx.failed_urls)
-                                )
+                                next_url = pick_fetch_url(task_ctx.facts, skip=task_ctx.urls_to_skip(), goal=task_ctx.goal or "")
                                 if next_url:
                                     more = {
                                         "tool": "web_fetch",
@@ -1257,7 +1347,7 @@ async def run_chat(
                             in {"web_fetch", "http_request", "browser_extract", "browser_navigate"}
                             for s in scratchpad.steps
                         )
-                        next_url = pick_fetch_url(task_ctx.facts, skip=set(task_ctx.failed_urls))
+                        next_url = pick_fetch_url(task_ctx.facts, skip=task_ctx.urls_to_skip(), goal=task_ctx.goal or "")
                         if (
                             next_url
                             and not fetched_already
@@ -1313,7 +1403,7 @@ async def run_chat(
                             goal=task_ctx.goal or "",
                             facts=task_ctx.facts,
                             steps=scratchpad.steps,
-                            failed_urls=task_ctx.failed_urls,
+                            failed_urls=list(task_ctx.urls_to_skip()),
                         )
                         if br == "weak_materials":
                             run_state.intercept("weak_materials", round_i=round_i)
@@ -1437,7 +1527,7 @@ async def run_chat(
                 continue
             args = norm or {}
 
-            # 相同 web_search 须在记入 scratchpad 之前判断，否则会把自己算成「已搜过」而永远不执行
+            # 相同/近义 web_search 须在记入 scratchpad 之前判断，否则会把自己算成「已搜过」而永远不执行
             if tool == "web_search":
                 q = str((args or {}).get("query") or "").strip()
                 prior_q = [
@@ -1447,25 +1537,46 @@ async def run_chat(
                     for s in scratchpad.steps
                     if s.action == "web_search"
                 ]
-                if q and q in prior_q:
-                    run_state.intercept("duplicate_web_search", round_i=round_i, query=q[:80])
-                    yield _emit_traj(
-                        intercept_step(
-                            "duplicate_web_search",
-                            round_i=round_i,
-                            detail=f"已搜过「{q[:40]}」",
+                searches_done = count_search_steps(scratchpad.steps)
+                near_dup = bool(q and is_near_duplicate_search_query(q, prior_q))
+                next_u = pick_fetch_url(task_ctx.facts, skip=task_ctx.urls_to_skip(), goal=task_ctx.goal or "")
+                # 已有搜索命中却仍反复搜 → 优先去抓正文，避免近义 query 空转
+                prefer_fetch = bool(
+                    next_u
+                    and (
+                        near_dup
+                        or (
+                            searches_done >= 2
+                            and has_search_hit_facts(task_ctx.facts)
                         )
                     )
-                    next_u = pick_fetch_url(task_ctx.facts, skip=set(task_ctx.failed_urls))
-                    if next_u:
-                        async for chunk in _emit_think(
-                            f"已搜索过「{q[:40]}」，改为 web_fetch: {next_u[:100]}\n"
-                        ):
+                )
+                if near_dup or prefer_fetch:
+                    reason_key = "duplicate_web_search" if near_dup else "search_hits_prefer_fetch"
+                    run_state.intercept(reason_key, round_i=round_i, query=q[:80])
+                    yield _emit_traj(
+                        intercept_step(
+                            reason_key,
+                            round_i=round_i,
+                            detail=(
+                                f"已搜过近义「{q[:40]}」"
+                                if near_dup
+                                else f"已搜索 {searches_done} 次，改为抓取正文"
+                            ),
+                        )
+                    )
+                    if prefer_fetch and next_u:
+                        tip_msg = (
+                            f"近义搜索已执行过「{q[:40]}」，改为 web_fetch: {next_u[:100]}\n"
+                            if near_dup
+                            else f"已有搜索结果，停止重复搜索，改为 web_fetch: {next_u[:100]}\n"
+                        )
+                        async for chunk in _emit_think(tip_msg):
                             yield chunk
                         tool = "web_fetch"
                         args = {"url": next_u}
-                    elif task_ctx.facts:
-                        tip = "相同搜索词已执行过，请基于已有 Observation finish，勿重复搜索。"
+                    elif task_ctx.facts and near_dup:
+                        tip = "相同/近义搜索词已执行过，请基于已有 Observation finish，勿重复搜索。"
                         scratchpad.add_thought_action(think, tool, args, round_i)
                         scratchpad.set_observation(tip)
                         yield sse("react.observation", {"round": round_i, "observation": tip, "tool": tool})
@@ -1473,9 +1584,9 @@ async def run_chat(
                             yield chunk
                         continue
                     # 无 facts 却重复搜：换 query 再试一次，不要空转
-                    elif round_i < agent_max_tool_rounds - 1:
+                    elif near_dup and round_i < agent_max_tool_rounds - 1:
                         alt_q = task_ctx.goal or q
-                        if alt_q != q:
+                        if alt_q != q and not is_near_duplicate_search_query(alt_q, prior_q + [q]):
                             async for chunk in _emit_think(f"搜索无结果，改用目标原文再搜: {alt_q[:60]}\n"):
                                 yield chunk
                             args = {"query": alt_q}
@@ -1494,9 +1605,30 @@ async def run_chat(
                 task_ctx.add_step(tip)
                 continue
 
-            # 禁止对已失败 URL / 相同参数死循环重试
+            # 禁止对已失败 / 已成功抓取的 URL 死循环重试
             nav_url = str(args.get("url") or "")
-            if tool == "browser_navigate" and nav_url and nav_url in task_ctx.failed_urls:
+            if (
+                tool in {"web_fetch", "browser_navigate", "http_request"}
+                and nav_url
+                and nav_url in task_ctx.fetched_urls
+            ):
+                tip = f"URL 本轮已抓取过，跳过重复打开: {nav_url[:120]}"
+                scratchpad.add_thought_action(think, tool, args, round_i)
+                scratchpad.set_observation(tip)
+                yield sse("react.observation", {"round": round_i, "observation": tip, "tool": tool})
+                async for chunk in _emit_think(f"Observation: {tip}\n"):
+                    yield chunk
+                task_ctx.add_step(tip)
+                next_u = pick_fetch_url(task_ctx.facts, skip=task_ctx.urls_to_skip(), goal=task_ctx.goal or "")
+                if next_u and next_u != nav_url and round_i < agent_max_tool_rounds - 1:
+                    async for chunk in _emit_think(f"改抓下一来源: {next_u[:80]}\n"):
+                        yield chunk
+                    tool = "web_fetch"
+                    args = {"url": next_u}
+                    nav_url = next_u
+                else:
+                    continue
+            elif tool == "browser_navigate" and nav_url and nav_url in task_ctx.failed_urls:
                 async for chunk in _emit_think(
                     f"URL 已失败过，跳过重复 navigate，改用 http_request 抓取: {nav_url}\n"
                 ):
@@ -1665,7 +1797,7 @@ async def run_chat(
                 blocked_page_streak += 1
                 if cur_url:
                     task_ctx.mark_failed_url(cur_url)
-                next_u = pick_fetch_url(task_ctx.facts, skip=set(task_ctx.failed_urls))
+                next_u = pick_fetch_url(task_ctx.facts, skip=task_ctx.urls_to_skip(), goal=task_ctx.goal or "")
                 tip_block = f"命中验证码/风控页，跳过: {cur_url[:100]}"
                 async for chunk in _emit_think(tip_block + "\n"):
                     yield chunk
@@ -1809,7 +1941,7 @@ async def run_chat(
                     goal=task_ctx.goal or "",
                     facts=task_ctx.facts,
                     steps=scratchpad.steps,
-                    failed_urls=task_ctx.failed_urls,
+                    failed_urls=list(task_ctx.urls_to_skip()),
                     round_i=round_i,
                     max_rounds=agent_max_tool_rounds,
                 )

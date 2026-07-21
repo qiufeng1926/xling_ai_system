@@ -15,7 +15,10 @@ playwright install chromium
 # MySQL 需有库 xlink_agent。本机无 Docker 时执行：
 #   scripts\init-local-mysql.cmd
 # （默认 root 密码 root，与门户 .env 中 MYSQL_ROOT_PASSWORD 一致）
-uvicorn api.main:app --reload --port 8003
+uvicorn api.main:app --reload --port 8003 --timeout-graceful-shutdown 5
+# 注意：长对话/ReAct 跑着时不要改 backend 代码触发热重载，
+# 否则 uvicorn 会卡在 Waiting for connections to close（SSE 未断开）。
+# 若已卡住：在该终端 Ctrl+C 强制退出后重新启动。
 ```
 
 Qdrant **不必**用 Docker：开发默认用 `qdrant-client` 的 **local 嵌入式**模式。

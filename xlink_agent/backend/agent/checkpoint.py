@@ -18,6 +18,7 @@ def serialize_task_context(ctx: TaskContext) -> dict[str, Any]:
         "facts": list(ctx.facts),
         "artifacts": list(ctx.artifacts),
         "failed_urls": list(ctx.failed_urls),
+        "fetched_urls": list(ctx.fetched_urls),
         "failed_calls": dict(ctx.failed_calls),
         "last_tool": ctx.last_tool,
         "last_ok": ctx.last_ok,
@@ -36,6 +37,7 @@ def restore_task_context(data: dict[str, Any] | None) -> TaskContext:
     ctx.facts = list(d.get("facts") or [])
     ctx.artifacts = list(d.get("artifacts") or [])
     ctx.failed_urls = list(d.get("failed_urls") or [])
+    ctx.fetched_urls = list(d.get("fetched_urls") or [])
     ctx.failed_calls = dict(d.get("failed_calls") or {})
     ctx.last_tool = str(d.get("last_tool") or "")
     ctx.last_ok = bool(d.get("last_ok", True))

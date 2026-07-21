@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -165,9 +166,13 @@ async def test_finalize_expands_thin_draft() -> CaseResult:
         model, ctx, draft, round_i=2, thought="可以交付了", run_state=rs
     )
     ok = (
-        rs.finalize_path == FinalizePath.DRAFT_EXPANDED.value
-        and "曼昆" in out
-        and len(out) > len(draft)
+        rs.finalize_path
+        in {
+            FinalizePath.DRAFT_EXPANDED.value,
+            FinalizePath.DRAFT_DIRECT_NO_MATERIALS.value,
+        }
+        and ("曼昆" in out or "国富论" in out or "经济学原理" in out)
+        and out.count("《") >= 5
     )
     return CaseResult(
         "finalize_expands_thin_draft",
@@ -177,8 +182,9 @@ async def test_finalize_expands_thin_draft() -> CaseResult:
 
 
 def test_web_search_duplicate_logic() -> CaseResult:
-    """第一次搜索不应被判定为重复（曾导致搜索永远不执行）。"""
+    """第一次搜索不应被判定为重复；近义 query 应判重复。"""
     from agent.react import ReactScratchpad
+    from agent.research_policy import is_near_duplicate_search_query
 
     def is_duplicate(scratchpad: ReactScratchpad, q: str) -> bool:
         prior_q = [
@@ -188,7 +194,7 @@ def test_web_search_duplicate_logic() -> CaseResult:
             for s in scratchpad.steps
             if s.action == "web_search"
         ]
-        return bool(q and q in prior_q)
+        return bool(q and is_near_duplicate_search_query(q, prior_q))
 
     pad = ReactScratchpad()
     q = "经济类型书籍推荐"
@@ -196,11 +202,19 @@ def test_web_search_duplicate_logic() -> CaseResult:
     pad.add_thought_action("搜", "web_search", {"query": q}, 0)
     pad.set_observation("（模拟）")
     second_blocked = is_duplicate(pad, q)
-    ok = not first_blocked and second_blocked
+    near = is_near_duplicate_search_query(
+        "git操作对Token消耗量的具体影响",
+        ["git操作对Token消耗量的影响"],
+    )
+    distinct = is_near_duplicate_search_query(
+        "资治通鉴讲了什么",
+        ["git操作对Token消耗量的影响"],
+    )
+    ok = not first_blocked and second_blocked and near and not distinct
     return CaseResult(
         "web_search_duplicate_logic",
         ok,
-        f"first={first_blocked} second={second_blocked}",
+        f"first={first_blocked} second={second_blocked} near={near} distinct={distinct}",
     )
 
 
@@ -952,6 +966,433 @@ def test_safety_gate() -> CaseResult:
     return CaseResult("safety_gate", True, f"blocked={len(blocked)} allowed={len(allowed)}")
 
 
+def test_thin_source_list_rejected() -> CaseResult:
+    """来源名清单不得当成合格答案（资治通鉴回归）。"""
+    from agent.answer import (
+        format_entity_list_answer,
+        is_nav_chrome_body,
+        is_poorly_grounded,
+        is_substantive_draft,
+        is_thin_list_draft,
+        materials_blob_for_synthesis,
+    )
+    from agent.delivery_gate import get_default_delivery_gate
+
+    elist = format_entity_list_answer(
+        "资治通鉴具体是说什么的",
+        ["资治通鉴", "通鉴", "维基百科", "zh", "知乎"],
+    )
+    if not is_thin_list_draft(elist):
+        return CaseResult("thin_source_list", False, "elist not thin")
+    if is_substantive_draft(elist, "资治通鉴具体是说什么的"):
+        return CaseResult("thin_source_list", False, "elist marked substantive")
+    gate = get_default_delivery_gate()
+    facts = [
+        "搜索结果(duckduckgo): 1. 资治通鉴（司马光主编的编年体通史）_百度百科 — "
+        "《资治通鉴》是司马光奉命编撰的编年体通史，历时19年。\n"
+        "   链接: https://baike.baidu.com/item/x\n"
+        "2. 资治通鉴 - 维基百科 — 全书294卷\n"
+        "   链接: https://zh.wikipedia.org/zh-hans/x"
+    ]
+    v = gate.check_final(goal="资治通鉴具体是说什么的", answer=elist, facts=facts)
+    if v.ok:
+        return CaseResult("thin_source_list", False, f"gate allowed elist: {v}")
+
+    good = (
+        "《资治通鉴》是北宋史学家司马光主编的一部编年体通史，历时19年编撰完成。"
+        "全书共294卷，约三百多万字，记载了从周威烈王二十三年到五代后周世宗显德六年的历史。"
+        "它以政治、军事和民族关系为主，旨在为统治者提供历史借鉴。"
+    )
+    if is_thin_list_draft(good) or not is_substantive_draft(good, "资治通鉴具体是说什么的"):
+        return CaseResult("thin_source_list", False, "good paragraph misclassified")
+
+    chrome = (
+        "网页正文摘要: 资治通鉴 - 维基百科，自由的百科全书 跳转到内容 主菜单 移至侧栏 "
+        "隐藏 导航 首页 创建账号 登录 个人工具 开关成书子章节 开关目录 编辑链接 大陆简体"
+    )
+    if not is_nav_chrome_body(chrome):
+        return CaseResult("thin_source_list", False, "chrome not detected")
+    blob = materials_blob_for_synthesis(facts + [chrome])
+    if "导航壳" not in blob and "维基百科，自由的百科全书 跳转到内容" in blob:
+        return CaseResult("thin_source_list", False, "chrome still in materials")
+
+    # 幻觉长文：材料讲资治通鉴，答案却大谈无关「四步学习法」
+    halluc = (
+        "关于资治通鉴，建议你按四步学习法推进：先明确目标与基础，再选一条主线课程，"
+        "做出最小作品后迭代提示词，最后注意版权与合规。"
+        "另外2024年全球Token消耗同比增长237%，git提交会使上下文膨胀。"
+    )
+    body_facts = [
+        "网页正文摘要: 《资治通鉴》是司马光主编的编年体通史，历时19年，共294卷，"
+        "记事起自周威烈王二十三年，迄于五代后周世宗显德六年，共1362年。"
+        "宋神宗赐名，意为鉴于往事有资于治道。成书有刘恕、刘攽、范祖禹协助，"
+        "材料除正史外杂史多至二百余种，专取国家盛衰与生民休戚。"
+    ]
+    if not is_poorly_grounded(halluc, body_facts):
+        return CaseResult("thin_source_list", False, "hallucination not flagged")
+    if is_poorly_grounded(good, body_facts):
+        return CaseResult("thin_source_list", False, "grounded answer flagged")
+
+    return CaseResult("thin_source_list", True, "ok")
+
+
+def test_search_shell_junk_filtered() -> CaseResult:
+    """搜狗跳转/备案页不得当作可抓正文；系列编号凑数应被拒。"""
+    from agent.answer import (
+        first_content_urls_from_facts,
+        is_nav_chrome_body,
+        is_series_padding_list,
+    )
+    from agent.delivery_gate import get_default_delivery_gate
+    from agent.research_policy import count_body_facts
+    from tools.web_tools import is_content_fetch_url, is_search_engine_shell_body
+
+    junk = (
+        "搜狗搜索引擎 - 上网从搜狗开始 网页 微信 知乎 查询限制在100个汉字以内。"
+        "企业推广 免责声明 京ICP证050897号 京ICP备11001839号-1 京公网安备11000002000025号"
+    )
+    if not is_search_engine_shell_body(junk) or not is_nav_chrome_body(junk):
+        return CaseResult("search_shell_junk", False, "junk not detected")
+
+    facts = [
+        "搜索结果(sogou): 1. 书单 — 《中国历代政治得失》\n"
+        "   链接: https://www.sogou.com/link?url=hedJjaC291MBtMZVirtXo7CqjI0tE6P9\n"
+        "2. 知乎讨论\n"
+        "   链接: https://www.zhihu.com/question/123\n",
+        f"网页正文摘要: {junk}",
+    ]
+    urls = first_content_urls_from_facts(facts, limit=5)
+    if any("sogou.com" in u for u in urls):
+        return CaseResult("search_shell_junk", False, f"sogou url leaked: {urls}")
+    if "https://www.zhihu.com/question/123" not in urls:
+        return CaseResult("search_shell_junk", False, f"zhihu missing: {urls}")
+    if is_content_fetch_url("https://www.sogou.com/link?url=abc"):
+        return CaseResult("search_shell_junk", False, "sogou link marked fetchable")
+    if count_body_facts(facts) != 0:
+        return CaseResult("search_shell_junk", False, f"junk counted as body={count_body_facts(facts)}")
+
+    padded = (
+        "推荐如下：\n"
+        "1. 历史是个什么玩意儿1\n说明很长很长很长很长很长。\n"
+        "2. 历史是个什么玩意儿2\n说明很长很长很长很长很长。\n"
+        "3. 历史是个什么玩意儿3\n说明很长很长很长很长很长。\n"
+        "4. 历史是个什么玩意儿4\n说明很长很长很长很长很长。\n"
+        "5. 历史是个什么玩意儿5\n说明很长很长很长很长很长。\n"
+        "6. 历史是个什么玩意儿6\n说明很长很长很长很长很长。\n"
+        "7. 历史是个什么玩意儿7\n说明很长很长很长很长很长。\n"
+        "8. 历史是个什么玩意儿8\n说明很长很长很长很长很长。"
+    )
+    if not is_series_padding_list(padded):
+        return CaseResult("search_shell_junk", False, "series padding not flagged")
+    v = get_default_delivery_gate().check_final(
+        goal="推荐20本历史书", answer=padded, facts=[]
+    )
+    if v.ok or v.reason != "series_padding":
+        return CaseResult("search_shell_junk", False, f"gate={v}")
+
+    return CaseResult("search_shell_junk", True, "ok")
+
+
+def test_book_list_entity_junk_filtered() -> CaseResult:
+    """计数清单：套话不当实体；跑题正文不计作有效材料（用荐书场景作探针）。"""
+    from agent.answer import (
+        extract_grounded_entities_from_facts,
+        format_entity_list_answer,
+        is_junk_entity_name,
+        is_off_topic_body_for_goal,
+        materials_blob_for_synthesis,
+    )
+    from agent.research_policy import count_body_facts
+
+    goal = "给我推荐20本历史相关的书籍"
+    if not is_junk_entity_name("以下10本书"):
+        return CaseResult("book_list_entity_junk", False, "以下10本书 not junk")
+    if not is_junk_entity_name("10本高质量的硬核"):
+        return CaseResult("book_list_entity_junk", False, "硬核 phrase not junk")
+    if not is_junk_entity_name("本书围绕熊廷弼之死"):
+        return CaseResult("book_list_entity_junk", False, "半截句 not junk")
+    if is_junk_entity_name("万历十五年"):
+        return CaseResult("book_list_entity_junk", False, "real title flagged junk")
+
+    facts = [
+        "搜索结果(bing): 1. 40本历史书推荐 — 《万历十五年》《史记》等\n"
+        "   链接: https://www.zhihu.com/question/1\n"
+        "2. 什么值得买：以下10本书 — 清单导语\n"
+        "   链接: https://post.smzdm.com/p/1\n",
+        "网页正文摘要: 中华上下五千年各朝代故事 盘古开天 5000言 历史故事汇 "
+        + ("故事" * 40),
+    ]
+    story = facts[1]
+    if not is_off_topic_body_for_goal(story, goal):
+        return CaseResult("book_list_entity_junk", False, "story body not off-topic")
+    if count_body_facts(facts, goal=goal) != 0:
+        return CaseResult(
+            "book_list_entity_junk",
+            False,
+            f"off-topic counted as body={count_body_facts(facts, goal=goal)}",
+        )
+
+    ents = extract_grounded_entities_from_facts(facts, goal=goal)
+    if any(is_junk_entity_name(e) for e in ents):
+        return CaseResult("book_list_entity_junk", False, f"junk entities leaked: {ents}")
+    if "万历十五年" not in ents and "史记" not in ents:
+        return CaseResult("book_list_entity_junk", False, f"real books missing: {ents}")
+    draft = format_entity_list_answer(goal, ents)
+    if "以下10本" in draft or "高质量" in draft:
+        return CaseResult("book_list_entity_junk", False, f"junk in draft: {draft}")
+
+    blob = materials_blob_for_synthesis(facts, goal=goal)
+    if "盘古开天" in blob or "5000言" in blob:
+        return CaseResult("book_list_entity_junk", False, "story body entered materials")
+
+    return CaseResult("book_list_entity_junk", True, "ok")
+
+
+def test_list_hallucination_sanitized() -> CaseResult:
+    """通用：模板硬凑 / 重复条目必须清洗；弱材料不得硬凑满 N。"""
+    from agent.answer import (
+        is_count_list_goal,
+        is_duplicate_heavy_list,
+        is_honest_shortfall_answer,
+        is_template_fabricated_list,
+        sanitize_hallucinated_list_answer,
+    )
+    from agent.delivery_gate import get_default_delivery_gate
+
+    # 探针 A：荐书
+    goal_books = "给我推荐20本历史相关的书籍"
+    fabricated = (
+        "以下未充分联网核实，仅供参考。\n"
+        "1. 《史记》 — 司马迁\n说明足够长足够长足够长足够长。\n"
+        "2. 《资治通鉴》 — 司马光\n说明足够长足够长足够长足够长。\n"
+        "3. 《万历十五年》 — 黄仁宇\n说明足够长足够长足够长足够长。\n"
+        "16. 《历史与记忆》保罗·利科\n说明足够长足够长足够长足够长。\n"
+        "17. 《历史与历史学》雷蒙·阿隆\n说明足够长足够长足够长足够长。\n"
+        "18. 《历史与政治》雷蒙·阿隆\n说明足够长足够长足够长足够长。\n"
+        "19. 《历史与历史学家》雷蒙·阿隆\n说明足够长足够长足够长足够长。\n"
+        "20. 《历史与历史学家》雷蒙·阿隆\n说明足够长足够长足够长足够长。\n"
+    )
+    if not is_count_list_goal(goal_books):
+        return CaseResult("list_hallucination", False, "count list not detected")
+    if not is_duplicate_heavy_list(fabricated):
+        return CaseResult("list_hallucination", False, "duplicate not detected")
+    if not is_template_fabricated_list(fabricated, goal=goal_books):
+        return CaseResult("list_hallucination", False, "template not detected")
+    cleaned = sanitize_hallucinated_list_answer(fabricated, goal=goal_books, facts=[])
+    if "历史与历史学家" in cleaned and cleaned.count("历史与") >= 3:
+        return CaseResult("list_hallucination", False, f"fabricated survived: {cleaned[:200]}")
+    # 应保留真实书名，去掉「历史与X」模板连造
+    if "史记" not in cleaned and "万历十五年" not in cleaned:
+        return CaseResult("list_hallucination", False, f"real titles lost: {cleaned[:200]}")
+    if cleaned.count("历史与") >= 3:
+        return CaseResult("list_hallucination", False, f"template padding kept: {cleaned[:200]}")
+    if not is_honest_shortfall_answer(cleaned) and "推荐如下" not in cleaned:
+        return CaseResult("list_hallucination", False, f"not rescued list: {cleaned[:200]}")
+    v = get_default_delivery_gate().check_final(goal=goal_books, answer=fabricated, facts=[])
+    if v.ok or v.reason not in {"duplicate_items", "fabricated_template", "series_padding"}:
+        return CaseResult("list_hallucination", False, f"gate={v}")
+
+    # 探针 B：非书籍清单同样生效
+    goal_tools = "推荐10款适合办公的笔记软件"
+    padded = (
+        "1. 笔记与同步\n说明足够长足够长足够长足够长。\n"
+        "2. 笔记与协作\n说明足够长足够长足够长足够长。\n"
+        "3. 笔记与搜索\n说明足够长足够长足够长足够长。\n"
+        "4. 笔记与模板\n说明足够长足够长足够长足够长。\n"
+        "5. 笔记与导出\n说明足够长足够长足够长足够长。\n"
+    )
+    if not is_template_fabricated_list(padded, goal=goal_tools):
+        return CaseResult("list_hallucination", False, "non-book template missed")
+    cleaned2 = sanitize_hallucinated_list_answer(padded, goal=goal_tools, facts=[])
+    # 模板清单应被清掉或标为诚实短答，不能原样留下 5 条「笔记与X」
+    if cleaned2.count("笔记与") >= 3:
+        return CaseResult("list_hallucination", False, f"non-book template kept: {cleaned2[:200]}")
+    return CaseResult("list_hallucination", True, "ok")
+
+
+def test_draft_survives_offtopic_materials() -> CaseResult:
+    """材料是百科/新闻壳时，不得冲掉草稿里已列出的实质书名。"""
+    from agent.answer import (
+        format_title_marks_as_list,
+        materials_support_count_list,
+        materials_usable_for_goal,
+    )
+
+    goal = "推荐20本经济相关的书籍"
+    facts = [
+        "搜索结果(bing): 1. 经济 （社会生产关系的总和）_百度百科 — 经济概念含义\n"
+        "   链接: https://baike.baidu.com/item/经济/1\n"
+        "2. 中国经济网 — 国家经济门户\n"
+        "   链接: http://m.ce.cn/\n",
+        "网页正文摘要: 中华人民共和国2025年国民经济和社会发展统计公报 国家统计局 "
+        + ("发展" * 40),
+    ]
+    draft = (
+        "以下是一些经济相关的书籍推荐：《经济学原理》、《资本论》、《国富论》、"
+        "《货币战争》、《投资最重要的事》、《穷查理宝典》、《金融的逻辑》、"
+        "《债务危机》、《经济学的思维方式》、《行为金融学》。"
+    )
+    if materials_support_count_list(facts, goal):
+        return CaseResult("draft_vs_offtopic", False, "junk materials marked supportive")
+    if materials_usable_for_goal(facts, goal):
+        return CaseResult("draft_vs_offtopic", False, "junk materials marked usable")
+    formatted = format_title_marks_as_list(draft, goal=goal)
+    if "经济学原理" not in formatted or formatted.count("《") < 8:
+        return CaseResult("draft_vs_offtopic", False, f"format weak: {formatted}")
+    return CaseResult("draft_vs_offtopic", True, "ok")
+
+
+async def test_finalize_keeps_finish_book_list() -> CaseResult:
+    """复现日志：finish 已有完整《书名》清单时，前端不得只交 facts 里的单本/规划名。"""
+    from agent.context import TaskContext
+    from agent.orchestrator import _finalize_user_answer
+    from agent.run_state import AgentRunState
+
+    goal = "给我推荐20本历史相关的书籍"
+    finish = (
+        "以下是我为您推荐的20本历史相关书籍：《史记》、《资治通鉴》、《三国演义》、"
+        "《红楼梦》、《明朝那些事儿》、《中国大历史》、《万历十五年》、《世界历史简明教程》、"
+        "《人类简史》、《枪炮、病菌与钢铁》、《文明的冲突与世界秩序的重建》、"
+        "《历史深处的忧虑》、《历史三调：作为事件、经历和神话的义和团》、"
+        "《历史学的枢纽：柯林伍德的历史哲学》、《历史哲学导论》、"
+        "《历史学家的技艺》、《历史学家的技艺续编》、"
+        "《历史学家的技艺：历史与历史学》、《历史学家的技艺：历史与历史学》、"
+        "《历史学家的技艺：历史与历史学》"
+    )
+    facts = [
+        "搜索结果(bing): 1. 推荐 40本 历史 类 书籍 - 知乎 — …万历十五年…\n"
+        "   链接: https://zhuanlan.zhihu.com/p/578849596\n",
+        "网页正文摘要: 经济网_经济日报《经济》杂志社官网 " + ("宏观" * 30),
+    ]
+    ctx = TaskContext(goal=goal, facts=facts)
+    rs = AgentRunState(run_id="test-finish-keep", goal=goal)
+
+    class _M:
+        async def chat(self, *a, **k):
+            return "1. 《扩大消费十五五规划》\n说明足够长足够长足够长足够长。"
+
+    out = await _finalize_user_answer(
+        _M(), ctx, finish, round_i=8, thought="可以交付了", run_state=rs
+    )
+    if "十五五" in out or "经济网" in out:
+        return CaseResult("finalize_keeps_finish", False, f"junk delivered: {out[:200]}")
+    if out.count("《") < 8:
+        return CaseResult("finalize_keeps_finish", False, f"too thin: {out[:240]}")
+    if "史记" not in out or "万历十五年" not in out:
+        return CaseResult("finalize_keeps_finish", False, f"missing classics: {out[:240]}")
+    # 重复注水应被去掉，不应只剩注水
+    if out.count("历史学家的技艺：历史与历史学") >= 2:
+        return CaseResult("finalize_keeps_finish", False, "padding not deduped")
+    return CaseResult(
+        "finalize_keeps_finish",
+        True,
+        f"path={rs.finalize_path} books={out.count('《')} preview={out[:80]}",
+    )
+
+
+async def test_finalize_story_page_cannot_wipe_finish() -> CaseResult:
+    """复现 18:05：SERP+通史故事页材料不得把 20 本书草稿冲成「仅万历十五年」。"""
+    from agent.answer import materials_support_count_list, materials_usable_for_goal
+    from agent.context import TaskContext
+    from agent.orchestrator import _finalize_user_answer
+    from agent.run_state import AgentRunState
+
+    goal = "给我推荐20本历史相关的书籍"
+    finish = (
+        "以下是我为您推荐的20本历史相关书籍：《史记》、《资治通鉴》、《三国演义》、"
+        "《红楼梦》、《西游记》、《水浒传》、《明朝那些事儿》、《清史稿》、"
+        "《中国大历史》、《世界历史简明教程》、《万历十五年》、《大历史》、"
+        "《人类简史》、《枪炮、病菌与钢铁》、《文明之光》、《历史深处的忧虑》、"
+        "《历史的细节》、《历史的温度》、《历史的裂缝》、《全球通史》。"
+    )
+    story = (
+        "网页正文摘要: 中国历史-各朝代故事-中华上下五千年 - 5000言 最近搜索 清空 "
+        "从古老文明的第一声号子起，中国历史经历了五千年。盘古开天辟地 女娲传说 "
+        "大禹治水 后羿代夏 《诗经》问世 仲尼修订《春秋》 远古时代 各朝代故事 "
+        + ("历史" * 20)
+    )
+    facts = [
+        "搜索结果(bing): 1. 推荐 40本 历史 类 书籍 - 知乎 — 推荐的都是相对比较通俗的。"
+        "当然，推荐的都是水平比较 … 《万历十五年》\n"
+        "   链接: https://zhuanlan.zhihu.com/p/578849596\n"
+        "2. 豆瓣高分！这15本 历史 好 书 — 本书围绕熊廷弼之死…\n"
+        "   链接: https://zhuanlan.zhihu.com/p/1942426486134010161\n",
+        story,
+    ]
+    if materials_support_count_list(facts, goal):
+        # 允许 SERP 像书单；但故事页单独不得撑起「可用材料」
+        story_only = [story]
+        if materials_support_count_list(story_only, goal) or materials_usable_for_goal(
+            story_only, goal
+        ):
+            return CaseResult(
+                "finalize_story_wipe",
+                False,
+                "story page alone marked as list materials",
+            )
+
+    ctx = TaskContext(goal=goal, facts=facts)
+    rs = AgentRunState(run_id="test-story-wipe", goal=goal)
+
+    class _M:
+        async def chat(self, *a, **k):
+            # 模拟 grounding 后模型只吐出材料里能核验的一本
+            return "根据公开检索整理如下：\n1. 《万历十五年》\n（材料中明确可核验的条目共 1 条。）"
+
+    out = await _finalize_user_answer(
+        _M(), ctx, finish, round_i=11, thought="可以交付了", run_state=rs
+    )
+    if out.count("《") < 10:
+        return CaseResult(
+            "finalize_story_wipe",
+            False,
+            f"wiped to thin: path={rs.finalize_path} chars={len(out)} {out[:200]}",
+        )
+    if "史记" not in out or "资治通鉴" not in out:
+        return CaseResult("finalize_story_wipe", False, f"classics lost: {out[:240]}")
+    if re.search(r"可核验的条目共\s*1", out):
+        return CaseResult("finalize_story_wipe", False, f"entity-list leak: {out[:200]}")
+    return CaseResult(
+        "finalize_story_wipe",
+        True,
+        f"path={rs.finalize_path} books={out.count('《')}",
+    )
+
+
+async def test_finalize_keeps_econ_finish_list() -> CaseResult:
+    from agent.context import TaskContext
+    from agent.orchestrator import _finalize_user_answer
+    from agent.run_state import AgentRunState
+
+    goal = "推荐20本经济相关的书籍"
+    finish = (
+        "以下是一些经济相关的书籍推荐：《经济学原理》、《资本论》、《国富论》、"
+        "《穷查理宝典》、《投资最重要的事》、《金融的逻辑》、《货币战争》、《债务危机》、"
+        "《经济学方法论》、《行为经济学》、《微观经济学：现代观点》、《宏观经济学：现代观点》、"
+        "《国际经济学》、《发展经济学》、《产业经济学》、《劳动经济学》、《公共经济学》、"
+        "《环境经济学》、《健康经济学》、《信息经济学》。"
+    )
+    facts = [
+        "搜索结果(bing): 1. 经济_百度百科 — 社会生产关系\n链接: https://baike.baidu.com/item/经济/1\n",
+        "网页正文摘要: 扩大消费“十五五”规划 国家发展 " + ("经济" * 40),
+    ]
+    ctx = TaskContext(goal=goal, facts=facts)
+    rs = AgentRunState(run_id="test-econ-keep", goal=goal)
+
+    class _M:
+        async def chat(self, *a, **k):
+            return "1. 《扩大消费十五五规划》"
+
+    out = await _finalize_user_answer(
+        _M(), ctx, finish, round_i=7, thought="可以交付了", run_state=rs
+    )
+    if "十五五" in out:
+        return CaseResult("finalize_keeps_econ", False, f"plan leaked: {out[:200]}")
+    if "经济学原理" not in out or "资本论" not in out or out.count("《") < 10:
+        return CaseResult("finalize_keeps_econ", False, f"lost draft: {out[:240]}")
+    return CaseResult("finalize_keeps_econ", True, f"path={rs.finalize_path} n={out.count('《')}")
+
+
 async def run_all() -> list[CaseResult]:
     results: list[CaseResult] = []
     sync_tests = [
@@ -974,6 +1415,11 @@ async def run_all() -> list[CaseResult]:
         test_task_binding,
         test_entity_match,
         test_session_memory,
+        test_thin_source_list_rejected,
+        test_search_shell_junk_filtered,
+        test_book_list_entity_junk_filtered,
+        test_list_hallucination_sanitized,
+        test_draft_survives_offtopic_materials,
         test_safety_gate,
     ]
     for fn in sync_tests:
@@ -987,6 +1433,9 @@ async def run_all() -> list[CaseResult]:
         test_synthesize_early_return(),
         test_thin_draft_requests_expand(),
         test_finalize_expands_thin_draft(),
+        test_finalize_keeps_finish_book_list(),
+        test_finalize_story_page_cannot_wipe_finish(),
+        test_finalize_keeps_econ_finish_list(),
     ]:
         try:
             results.append(await coro)

@@ -76,7 +76,7 @@ class AnswerQualityGate:
 
         deep = is_deep_research_goal(goal)
         searches = count_search_steps(steps)
-        bodies = count_body_facts(facts)
+        bodies = count_body_facts(facts, goal=goal)
         min_s = min_searches_for_goal(goal)
         min_b = min_bodies_for_goal(goal)
         skip = set(failed_urls or [])
@@ -89,7 +89,7 @@ class AnswerQualityGate:
                     hint=f"搜索 {searches}/{min_s}",
                 )
             if bodies < min_b:
-                next_u = pick_fetch_url(facts, skip=skip)
+                next_u = pick_fetch_url(facts, skip=skip, goal=goal)
                 if next_u:
                     return DeliveryVerdict(
                         False,
@@ -139,8 +139,34 @@ class AnswerQualityGate:
             "合集" in text or "书单" in text or "推荐" in text[:40]
         ):
             return DeliveryVerdict(False, "parrot_titles", hint="合集标题口吻")
+        from agent.answer import (
+            is_duplicate_heavy_list,
+            is_poorly_grounded,
+            is_series_padding_list,
+            is_template_fabricated_list,
+        )
+
+        if is_series_padding_list(text):
+            return DeliveryVerdict(False, "series_padding", hint="用同一系列编号硬凑条数")
+        if is_duplicate_heavy_list(text):
+            return DeliveryVerdict(False, "duplicate_items", hint="列表存在重复条目")
+        if is_template_fabricated_list(text, goal=goal):
+            return DeliveryVerdict(False, "fabricated_template", hint="疑似模板硬凑伪书名")
+        from agent.answer import is_count_list_goal, is_off_type_list_item, _list_item_titles
+
+        if is_count_list_goal(goal):
+            items = _list_item_titles(text)
+            if items:
+                bad = sum(1 for it in items if is_off_type_list_item(it, goal))
+                if bad >= max(1, (len(items) + 1) // 2):
+                    return DeliveryVerdict(
+                        False, "wrong_item_type", hint="条目类型与目标不符"
+                    )
         if is_thin_list_draft(text):
             return DeliveryVerdict(False, "thin_list", hint="条目过薄，仅有标题")
+        # 有实质检索材料时，拒绝与材料几乎无重合的长文（防幻觉扩写）
+        if facts and is_poorly_grounded(text, facts):
+            return DeliveryVerdict(False, "poor_grounding", hint="答案与检索材料脱节")
         return DeliveryVerdict(True, "")
 
     def check_final(

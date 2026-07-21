@@ -35,6 +35,65 @@ def _html_to_text(html: str, limit: int = 12000) -> str:
     return text[:limit]
 
 
+# 搜索引擎中间页 / 跳转页：不可当内容站抓取
+_SEARCH_SHELL_HOST_MARKERS = (
+    "sogou.com/web",
+    "sogou.com/link",
+    "www.sogou.com/",
+    "sogou.com/?",
+    "bing.com/search",
+    "bing.com/ck/",
+    "duckduckgo.com",
+    "google.com/search",
+    "google.com/url?",
+    "baidu.com/s?",
+    "baidu.com/link?",
+)
+
+
+def is_content_fetch_url(url: str) -> bool:
+    """是否适合 web_fetch 的内容站（排除搜索引擎结果页与加密跳转）。"""
+    u = (url or "").strip()
+    if not u.startswith("http"):
+        return False
+    low = u.lower()
+    if any(x in low for x in _SEARCH_SHELL_HOST_MARKERS):
+        return False
+    # 搜狗任意站内页（跳转失败常落到首页备案页）
+    if "sogou.com" in low:
+        return False
+    return True
+
+
+def is_search_engine_shell_body(text: str) -> bool:
+    """搜狗/备案页等：看起来很长，实则全是页脚垃圾。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    markers = (
+        "京公网安备",
+        "京ICP备",
+        "京ICP证",
+        "京网文",
+        "网药械信息备字",
+        "查询限制在100个汉字",
+        "搜狗搜索引擎",
+        "上网从搜狗开始",
+        "网上有害信息举报专区",
+        "药品医疗器械网络信息服务备案",
+        "让每一次点击都充满意义",
+    )
+    hits = sum(1 for k in markers if k in t)
+    if hits >= 3:
+        return True
+    if hits >= 2 and ("搜狗" in t or "Sogou.com" in t or "Sogou.com" in t):
+        return True
+    # 备案词 + 几乎无书名/叙述句
+    if hits >= 2 and "《" not in t and len(re.findall(r"[。！？]", t)) < 2:
+        return True
+    return False
+
+
 def _clean_href(href: str) -> str:
     href = (href or "").strip()
     if not href:
@@ -47,7 +106,7 @@ def _clean_href(href: str) -> str:
                 return unquote(qs["uddg"][0])
         except Exception:
             pass
-    # 搜狗跳转: /link?url= 或 link.sogou.com
+    # 搜狗跳转: /link?url= 或 link.sogou.com（多数为加密串，解不出真实 URL）
     if "sogou.com" in href or href.startswith("/link"):
         try:
             full = href
@@ -57,13 +116,35 @@ def _clean_href(href: str) -> str:
             for key in ("url", "ou", "src", "u"):
                 if qs.get(key):
                     cand = unquote(qs[key][0])
-                    if cand.startswith("http"):
+                    if cand.startswith("http") and is_content_fetch_url(cand):
                         return cand
         except Exception:
             pass
+        # 解不出真实内容站 → 返回空，避免把 /link?url=加密串当可抓链接
+        return ""
     if href.startswith("//"):
         href = "https:" + href
     return href
+
+
+def _sanitize_search_hits(results: list[dict[str, str]]) -> list[dict[str, str]]:
+    """去掉空标题；不可抓的搜索跳转 URL 清空（保留有摘要的命中供合成）。"""
+    out: list[dict[str, str]] = []
+    for r in results or []:
+        title = str(r.get("title") or "").strip()
+        if len(title) < 4:
+            continue
+        url = _clean_href(str(r.get("url") or ""))
+        if url and not is_content_fetch_url(url):
+            url = ""
+        snippet = str(r.get("snippet") or "").strip()
+        # 无链接且摘要极短的纯 SERP 标题，对交付帮助很小
+        if not url and len(snippet) < 12 and "《" not in title and "《" not in snippet:
+            # 仍保留带「书/推荐/历史」等线索的标题
+            if not any(k in title for k in ("书", "推荐", "经典", "必读", "榜", "书单")):
+                continue
+        out.append({"title": title, "url": url, "snippet": snippet[:300]})
+    return out
 
 
 async def web_fetch(url: str, *, max_chars: int = 18000) -> dict[str, Any]:
@@ -72,6 +153,14 @@ async def web_fetch(url: str, *, max_chars: int = 18000) -> dict[str, Any]:
         url = assert_public_url(url)
     except Exception as exc:
         return {"error": str(exc), "url": url, "ok": False}
+    if not is_content_fetch_url(url):
+        return {
+            "ok": False,
+            "error": "该链接为搜索引擎跳转/结果页，请换知乎/百科/豆瓣等内容站",
+            "url": url,
+            "status": 0,
+            "text": "",
+        }
     try:
         async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, headers=_HEADERS) as client:
             resp = await client.get(url)
@@ -82,6 +171,14 @@ async def web_fetch(url: str, *, max_chars: int = 18000) -> dict[str, Any]:
         else:
             cleaned = text[:max_chars]
         final_url = str(resp.url)
+        if not is_content_fetch_url(final_url):
+            return {
+                "ok": False,
+                "error": "跳转后落到搜索引擎壳页，无有效正文",
+                "status": resp.status_code,
+                "url": final_url,
+                "text": cleaned[:300],
+            }
         if resp.status_code >= 400:
             return {
                 "ok": False,
@@ -104,6 +201,14 @@ async def web_fetch(url: str, *, max_chars: int = 18000) -> dict[str, Any]:
             return {
                 "ok": False,
                 "error": "页面被拦截或无有效正文",
+                "status": resp.status_code,
+                "url": final_url,
+                "text": cleaned[:300],
+            }
+        if is_search_engine_shell_body(cleaned):
+            return {
+                "ok": False,
+                "error": "页面无有效正文（搜索引擎壳页/备案页脚）",
                 "status": resp.status_code,
                 "url": final_url,
                 "text": cleaned[:300],
@@ -139,11 +244,11 @@ def _parse_duckduckgo(html: str, max_results: int) -> list[dict[str, str]]:
             sn = parent.select_one(".result__snippet") or parent.select_one("a.result__snippet")
             if sn:
                 snippet = sn.get_text(" ", strip=True)
-        if title and href.startswith("http"):
-            out.append({"title": title, "url": href, "snippet": snippet[:300]})
-        if len(out) >= max_results:
+        if title and (href.startswith("http") or len(snippet) >= 12):
+            out.append({"title": title, "url": href if href.startswith("http") else "", "snippet": snippet[:300]})
+        if len(out) >= max_results * 2:
             break
-    return out
+    return _sanitize_search_hits(out)[:max_results]
 
 
 def _parse_sogou(html: str, max_results: int) -> list[dict[str, str]]:
@@ -154,18 +259,19 @@ def _parse_sogou(html: str, max_results: int) -> list[dict[str, str]]:
         if not a:
             continue
         title = a.get_text(" ", strip=True)
-        href = _clean_href(a.get("href") or "")
-        if href.startswith("?"):
-            href = "https://www.sogou.com/web" + href
-        elif href.startswith("/"):
-            href = "https://www.sogou.com" + href
+        raw_href = (a.get("href") or "").strip()
+        href = _clean_href(raw_href)
+        # 禁止把 /link 加密跳转或 /web SERP 再拼回搜狗域名
+        if not href and raw_href.startswith("/") and not raw_href.startswith("/link"):
+            cand = "https://www.sogou.com" + raw_href
+            href = cand if is_content_fetch_url(cand) else ""
         sn = block.select_one(".space-txt") or block.select_one(".str-text") or block.select_one("p")
         snippet = sn.get_text(" ", strip=True) if sn else ""
         if title and len(title) >= 4:
             out.append({"title": title, "url": href, "snippet": snippet[:300]})
-        if len(out) >= max_results:
+        if len(out) >= max_results * 2:
             break
-    return out
+    return _sanitize_search_hits(out)[:max_results]
 
 
 def _parse_bing(html: str, max_results: int) -> list[dict[str, str]]:
@@ -181,15 +287,15 @@ def _parse_bing(html: str, max_results: int) -> list[dict[str, str]]:
         snippet = sn.get_text(" ", strip=True) if sn else ""
         if title:
             out.append({"title": title, "url": href, "snippet": snippet[:300]})
-        if len(out) >= max_results:
+        if len(out) >= max_results * 2:
             break
     if not out:
-        for a in soup.select("h2 a")[:max_results]:
+        for a in soup.select("h2 a")[: max_results * 2]:
             title = a.get_text(" ", strip=True)
             href = _clean_href(a.get("href") or "")
             if title:
                 out.append({"title": title, "url": href, "snippet": ""})
-    return out
+    return _sanitize_search_hits(out)[:max_results]
 
 
 async def _search_duckduckgo(client: httpx.AsyncClient, q: str, max_results: int) -> list[dict[str, str]]:
@@ -243,39 +349,55 @@ async def web_search(
     max_results: int = 5,
     user_id: int | None = None,
 ) -> dict[str, Any]:
-    """联网搜索：DuckDuckGo → 搜狗 → Bing →（可选）浏览器打开搜索页。"""
+    """联网搜索：DuckDuckGo → Bing → 搜狗 →（可选）浏览器打开搜索页。"""
     q = (query or "").strip()
     if not q:
         return {"error": "query 不能为空", "ok": False}
 
     backends = (
         ("duckduckgo", _search_duckduckgo),
-        ("sogou", _search_sogou),
         ("bing", _search_bing),
+        ("sogou", _search_sogou),
     )
     errors: list[str] = []
+    weak_backup: list[dict[str, str]] | None = None
+    weak_source = ""
+
+    def _pack(source: str, results: list[dict[str, str]]) -> dict[str, Any]:
+        lines = [
+            f"{i}. {r['title']}"
+            + (f" — {r['snippet']}" if r.get("snippet") else "")
+            + (f"\n   链接: {r['url']}" if r.get("url") else "")
+            for i, r in enumerate(results, 1)
+        ]
+        text = "\n".join(lines)
+        logger.info("web_search ok via=%s query=%s hits=%s", source, q[:40], len(results))
+        return {
+            "ok": True,
+            "query": q,
+            "source": source,
+            "results": results,
+            "text": text,
+        }
+
     async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, headers=_HEADERS) as client:
         for name, fn in backends:
             try:
-                results = await fn(client, q, max_results)
-                if results:
-                    lines = [
-                        f"{i}. {r['title']}"
-                        + (f" — {r['snippet']}" if r.get("snippet") else "")
-                        + (f"\n   链接: {r['url']}" if r.get("url") else "")
-                        for i, r in enumerate(results, 1)
-                    ]
-                    text = "\n".join(lines)
-                    logger.info("web_search ok via=%s query=%s hits=%s", name, q[:40], len(results))
-                    return {
-                        "ok": True,
-                        "query": q,
-                        "source": name,
-                        "results": results,
-                        "text": text,
-                    }
-                errors.append(f"{name}:0hits")
-                logger.info("web_search empty via=%s query=%s", name, q[:40])
+                results = _sanitize_search_hits(await fn(client, q, max_results))
+                if not results:
+                    errors.append(f"{name}:0hits")
+                    logger.info("web_search empty via=%s query=%s", name, q[:40])
+                    continue
+                usable_urls = sum(1 for r in results if r.get("url"))
+                if usable_urls == 0:
+                    # 只有标题/摘要、无可抓链接 → 记弱备份，继续试其它引擎
+                    if weak_backup is None:
+                        weak_backup = results
+                        weak_source = name
+                    errors.append(f"{name}:no_fetchable_url")
+                    logger.info("web_search %s hits lack fetchable urls, try next", name)
+                    continue
+                return _pack(name, results)
             except Exception as exc:
                 errors.append(f"{name}:{exc}")
                 logger.warning("web_search backend %s failed: %s", name, exc)
@@ -295,31 +417,19 @@ async def web_search(
                     continue
                 page = await browser_pool.page_html(user_id)
                 html = str(page.get("html") or "")
-                results = parser(html, max_results) if html else []
-                if results:
-                    lines = [
-                        f"{i}. {r['title']}"
-                        + (f" — {r['snippet']}" if r.get("snippet") else "")
-                        + (f"\n   链接: {r['url']}" if r.get("url") else "")
-                        for i, r in enumerate(results, 1)
-                    ]
-                    logger.info(
-                        "web_search ok via=browser(%s) query=%s hits=%s",
-                        search_url[:40],
-                        q[:40],
-                        len(results),
-                    )
-                    return {
-                        "ok": True,
-                        "query": q,
-                        "source": "browser",
-                        "results": results,
-                        "text": "\n".join(lines),
-                    }
+                results = _sanitize_search_hits(parser(html, max_results) if html else [])
+                if results and any(r.get("url") for r in results):
+                    return _pack("browser", results)
+                if results and weak_backup is None:
+                    weak_backup = results
+                    weak_source = "browser"
                 errors.append("browser:0hits")
         except Exception as exc:
             errors.append(f"browser:{exc}")
             logger.warning("web_search browser fallback failed: %s", exc)
+
+    if weak_backup:
+        return _pack(weak_source or "weak", weak_backup)
 
     return {
         "ok": False,

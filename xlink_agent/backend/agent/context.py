@@ -18,6 +18,7 @@ class TaskContext:
     facts: list[str] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
     failed_urls: list[str] = field(default_factory=list)
+    fetched_urls: list[str] = field(default_factory=list)
     failed_calls: dict[str, int] = field(default_factory=dict)
     last_tool: str = ""
     last_ok: bool = True
@@ -50,6 +51,17 @@ class TaskContext:
             self.failed_urls.append(url)
             if len(self.failed_urls) > 10:
                 self.failed_urls = self.failed_urls[-10:]
+
+    def mark_fetched_url(self, url: str) -> None:
+        """成功抓取过的 URL，禁止本轮再抓同一页空转。"""
+        url = (url or "").strip()
+        if url and url not in self.fetched_urls:
+            self.fetched_urls.append(url)
+            if len(self.fetched_urls) > 16:
+                self.fetched_urls = self.fetched_urls[-16:]
+
+    def urls_to_skip(self) -> set[str]:
+        return set(self.failed_urls or []) | set(self.fetched_urls or [])
 
     def call_key(self, tool: str, args: dict[str, Any]) -> str:
         url = str(args.get("url") or "")
@@ -85,6 +97,10 @@ class TaskContext:
             lines.append(
                 "  → 对这些 URL 不要再次 browser_navigate；改用 http_request 抓取，或换其他公开站点。"
             )
+        if self.fetched_urls:
+            lines.append("- 本轮已成功抓取过的 URL（勿重复打开同一页）:")
+            for u in self.fetched_urls[-6:]:
+                lines.append(f"  · {u}")
         if self.steps:
             lines.append("- 本轮已执行步骤:")
             for s in self.steps[-8:]:
@@ -130,6 +146,10 @@ def summarize_tool_result(tool: str, result: dict[str, Any]) -> tuple[bool, str,
             updates["browser_url"] = url
         if not text:
             return False, "页面正文为空（可能尚未打开有效页面，或选择器无匹配）", updates
+        from agent.answer import is_nav_chrome_body
+
+        if is_nav_chrome_body(text):
+            return False, "抓取失败: 页面无有效正文（搜索引擎壳页/备案页脚）", updates
         return True, summarize_http_or_extract_for_memory(tool, result), updates
 
     if tool == "browser_screenshot":
@@ -170,6 +190,10 @@ def summarize_tool_result(tool: str, result: dict[str, Any]) -> tuple[bool, str,
         status = result.get("status")
         if isinstance(status, int) and status >= 400:
             return False, f"抓取失败: HTTP {status}", {}
+        from agent.answer import is_nav_chrome_body
+
+        if is_nav_chrome_body(text):
+            return False, "抓取失败: 页面无有效正文（搜索引擎壳页/备案页脚）", {}
         return True, summarize_http_or_extract_for_memory(tool, result), {}
 
     if tool.startswith("file_write_"):
@@ -226,12 +250,29 @@ def apply_result_to_context(
     if ok:
         # 只把与当前目标相关的结果写入 facts，避免新闻污染书单等跨题串味
         from agent.memory_policy import fact_relevant_to_goal
+        from agent.answer import is_off_topic_body_for_goal
+
+        url_hit = str((call_args or {}).get("url") or result.get("url") or "").strip()
+        if tool in {"web_fetch", "browser_extract", "http_request"} and url_hit:
+            ctx.mark_fetched_url(url_hit)
+            final_u = str(result.get("url") or "").strip()
+            if final_u and final_u != url_hit:
+                ctx.mark_fetched_url(final_u)
 
         if tool.startswith("file_write_") or tool in {"web_search", "web_fetch"} or fact_relevant_to_goal(
             summary, ctx.goal
         ):
-            # 搜索/抓取结果一律入库，避免「有 Observation 却无 facts」导致误判失败
-            ctx.add_fact(summary)
+            if tool in {"web_fetch", "browser_extract", "http_request"} and is_off_topic_body_for_goal(
+                summary, ctx.goal
+            ):
+                # 抓到了页但与当前目标无关 → 记失败 URL，不入库污染
+                if url_hit:
+                    ctx.mark_failed_url(url_hit)
+                ctx.last_ok = False
+                ctx.last_error = "抓取页与当前目标无关，已跳过"
+                ctx.add_step(f"{tool}: 跳过无关页 {url_hit[:80]}")
+            else:
+                ctx.add_fact(summary)
         elif tool.startswith("http") or tool.startswith("browser_"):
             text = str(result.get("text") or "")
             if text and fact_relevant_to_goal(text[:500], ctx.goal):

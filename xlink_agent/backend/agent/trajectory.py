@@ -101,6 +101,7 @@ TOOL_TITLE_FAIL: dict[str, str] = {
 
 INTERCEPT_TITLE: dict[str, str] = {
     "duplicate_web_search": "跳过重复搜索",
+    "search_hits_prefer_fetch": "已有搜索，改为抓正文",
     "auto_web_fetch": "自动打开搜索结果",
     "premature_finish_auto_search": "补充搜索后再回答",
     "file_claim_recover": "改为实际生成文件",
@@ -113,6 +114,11 @@ INTERCEPT_TITLE: dict[str, str] = {
     "llm_unavailable": "模型连接中断，改用已有材料",
     "safety_block": "安全策略：暂不支持该问题",
     "weak_materials": "材料偏弱，强制充实成稿",
+    "poor_grounding": "答案与材料脱节，已拦截幻觉",
+    "series_padding": "拒绝系列编号凑数",
+    "duplicate_items": "拒绝重复条目",
+    "fabricated_template": "拒绝模板硬凑伪书名",
+    "wrong_item_type": "拒绝与目标类型不符的条目",
     "parrot_titles": "拒绝标题清单交差",
     "thin_list": "条目过薄，继续扩写",
     "quality_force_expand": "质量门控强制扩写",

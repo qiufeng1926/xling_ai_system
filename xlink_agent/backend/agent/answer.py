@@ -281,7 +281,7 @@ def public_facts(ctx: "TaskContext") -> list[str]:
 def synthesize_public_answer(ctx: "TaskContext") -> str:
     """轮次用尽时：用本轮相关事实合成可读答复（通用，不按业务场景硬编码话术）。"""
     goal = ctx.goal or ""
-    entities = extract_grounded_entities_from_facts(ctx.facts)
+    entities = extract_grounded_entities_from_facts(ctx.facts, goal=goal)
     if entities:
         return format_entity_list_answer(goal, entities)
 
@@ -520,7 +520,173 @@ def is_likely_source_title(name: str, search_titles: list[str] | None = None) ->
     return False
 
 
-def extract_grounded_entities_from_facts(facts: list[str]) -> list[str]:
+def is_count_list_goal(goal: str) -> bool:
+    """用户明确要「N 条/个/本/…」或「推荐一份清单」类目标（跨场景通用）。"""
+    g = goal or ""
+    if re.search(r"\d+\s*(本|个|条|款|篇|首|部|家|种|项|份|套)", g):
+        return True
+    if any(k in g for k in ("推荐", "盘点", "清单", "列表", "列举", "给出")) and any(
+        k in g for k in ("本", "个", "条", "款", "篇", "部", "种", "项", "一些", "几个")
+    ):
+        return True
+    return False
+
+
+def requested_list_count(goal: str) -> int | None:
+    m = re.search(r"(\d+)\s*(本|个|条|款|篇|首|部|家|种|项|份|套)", goal or "")
+    if not m:
+        return None
+    try:
+        return max(1, min(50, int(m.group(1))))
+    except Exception:
+        return None
+
+
+def requested_list_unit(goal: str) -> str:
+    m = re.search(r"\d+\s*(本|个|条|款|篇|首|部|家|种|项|份|套)", goal or "")
+    return m.group(1) if m else "条"
+
+
+def prefers_title_marks(goal: str) -> bool:
+    """目标像书籍/作品名清单时，优先信《》抽取。"""
+    g = goal or ""
+    return any(k in g for k in ("书", "书籍", "书单", "小说", "著作", "影片", "电影", "剧"))
+
+
+# 兼容旧名：语义已升级为通用计数清单
+def is_book_list_goal(goal: str) -> bool:
+    return is_count_list_goal(goal)
+
+
+def is_junk_entity_name(name: str) -> bool:
+    """拦截清单套话、站点名、半截句子——禁止当成具体条目进终稿（通用）。"""
+    name = (name or "").strip().strip("《》").strip()
+    if not name:
+        return True
+    # 「以下10本/个」「10条高质量…」
+    if re.match(r"^以下\d*", name):
+        return True
+    if re.match(r"^\d+\s*(本|个|条|款|篇|部|种|项)", name):
+        return True
+    if re.search(r"\d+\s*(本|个|条|款|篇|部|种|项)", name) and any(
+        k in name for k in ("以下", "高质量", "硬核", "建议", "必读", "精选", "推荐", "盘点")
+    ):
+        return True
+    if any(
+        k in name
+        for k in (
+            "高质量的硬核",
+            "本书围绕",
+            "建议收藏",
+            "重塑你的",
+            "点击查看",
+            "了解更多",
+        )
+    ):
+        return True
+    # 半截句子 / 非专名
+    if name.startswith(("本书", "本文", "该文", "这里", "下面", "上述", "这个", "那个")):
+        return True
+    if any(k in name for k in ("围绕", "讲述了", "主要写", "介绍了", "点击")) and len(name) >= 8:
+        return True
+    if re.search(r"(推荐|书单|清单|盘点|合集|榜单)$", name) and len(name) <= 12:
+        return True
+    return False
+
+
+_GOAL_STOP = {
+    "给我",
+    "帮我",
+    "请",
+    "一下",
+    "一些",
+    "几个",
+    "相关",
+    "推荐",
+    "盘点",
+    "清单",
+    "列表",
+    "列举",
+    "详细",
+    "介绍",
+    "说说",
+    "讲讲",
+    "的",
+    "和",
+    "与",
+    "及",
+}
+
+# 单独出现不足以证明「答对了题型」的宽泛主题词
+_WEAK_CORE = {
+    "历史",
+    "中国",
+    "文化",
+    "科技",
+    "经济",
+    "生活",
+    "新闻",
+    "信息",
+    "内容",
+    "问题",
+    "世界",
+    "社会",
+    "时代",
+}
+
+
+def goal_core_tokens(goal: str) -> list[str]:
+    """去掉祈使/数量词后的主题核，用于正文相关性判断。"""
+    g = goal or ""
+    g = re.sub(r"\d+\s*(本|个|条|款|篇|首|部|家|种|项|份|套)", " ", g)
+    for s in sorted(_GOAL_STOP, key=len, reverse=True):
+        g = g.replace(s, " ")
+    toks: list[str] = []
+    for m in re.finditer(r"[\u4e00-\u9fff]{2,8}|[A-Za-z][A-Za-z0-9\-_]{2,20}", g):
+        t = m.group(0)
+        if t not in _GOAL_STOP and t not in toks:
+            toks.append(t)
+    return toks[:12]
+
+
+def is_off_topic_body_for_goal(text: str, goal: str) -> bool:
+    """抓取正文与当前目标主题/题型明显不符 → 不入库（通用）。"""
+    g = (goal or "").strip()
+    t = (text or "").strip()
+    if not g or len(t) < 80:
+        return False
+    core = goal_core_tokens(g)
+    if not core:
+        return False
+    strong_hit = sum(1 for c in core if c in t and c not in _WEAK_CORE)
+    weak_hit = sum(1 for c in core if c in t and c in _WEAK_CORE)
+    listish = (
+        t.count("《")
+        + len(re.findall(r"(?:^|[\n\s])\d{1,2}[\.、．]", t[:1200]))
+        + sum(1 for k in ("推荐", "清单", "盘点", "排行", "TOP", "榜单", "入门", "书单") if k in t)
+    )
+    # 主题词几乎对不上
+    if strong_hit == 0 and weak_hit == 0 and len(t) > 120:
+        return True
+    # 计数清单：只有宽泛主题词、又无列表结构 → 常见「同主题但答错题型」
+    if is_count_list_goal(g):
+        # 故事/通史站：即使夹杂《诗经》《春秋》，没有书单语义也算跑题
+        storyish = sum(
+            1
+            for k in ("历史故事", "盘古", "各朝代", "上下五千年", "5000言", "远古时代", "治水")
+            if k in t
+        )
+        list_cue = sum(1 for k in ("书单", "书籍推荐", "必读书", "好书", "豆瓣", "荐书") if k in t)
+        if storyish >= 1 and list_cue == 0:
+            return True
+        if listish >= 2 and list_cue >= 1 and (strong_hit + weak_hit) >= 1:
+            return False
+        if strong_hit == 0 and list_cue == 0 and len(t) > 100:
+            return True
+    return False
+
+
+def extract_grounded_entities_from_facts(facts: list[str], *, goal: str = "") -> list[str]:
     """从搜索摘要/正文 Observation 中抽出具体实体（如《书名》），排除搜索页标题。"""
     titles = search_titles_from_facts(facts)
     blob = "\n".join(facts or [])
@@ -533,12 +699,15 @@ def extract_grounded_entities_from_facts(facts: list[str]) -> list[str]:
             snippet_parts.append(line)
     scan = "\n".join(snippet_parts)
     entities: list[str] = []
+    prefer_marks = prefers_title_marks(goal)
 
     def _add(name: str) -> None:
         name = (name or "").strip().strip("《》").strip()
         if not (2 <= len(name) <= 40):
             return
         if _is_site_or_channel_label(name):
+            return
+        if is_junk_entity_name(name):
             return
         if is_likely_source_title(name, titles):
             return
@@ -551,15 +720,19 @@ def extract_grounded_entities_from_facts(facts: list[str]) -> list[str]:
 
     for m in re.finditer(r"《([^》]{1,40})》", scan):
         _add(m.group(1))
-    # 无书名号时：数字编号后的短专名（避免整段句子）
-    for m in re.finditer(
-        r"(?:^|[\s，、；;])(?:\d{1,2}[\.、．]|[-·•])\s*[《]?([\u4e00-\u9fffA-Za-z0-9·]{2,20})[》]?",
-        scan,
-    ):
-        cand = m.group(1).strip()
-        if any(k in cand for k in ("推荐", "链接", "作者", "如果", "希望", "本文")):
-            continue
-        _add(cand)
+    # 有书名号类目标且已抽到《》时，不再用编号短名（易吸入「以下N本」套话）
+    allow_numbered = not prefer_marks or not entities
+    if allow_numbered:
+        for m in re.finditer(
+            r"(?:^|[\s，、；;])(?:\d{1,2}[\.、．]|[-·•])\s*[《]?([\u4e00-\u9fffA-Za-z0-9·]{2,20})[》]?",
+            scan,
+        ):
+            cand = m.group(1).strip()
+            if any(k in cand for k in ("推荐", "链接", "作者", "如果", "希望", "本文", "以下", "高质量")):
+                continue
+            if is_junk_entity_name(cand):
+                continue
+            _add(cand)
 
     return entities[:16]
 
@@ -703,7 +876,172 @@ def build_citations(facts: list[str], *, max_n: int = 8) -> list[dict[str, str]]
     return out[:max_n]
 
 
-def materials_blob_for_synthesis(facts: list[str], *, max_chars: int = 10000) -> str:
+def _fact_looks_like_list_source(fact: str) -> bool:
+    """是否像「清单/书单/盘点」来源，而非故事站正文里偶尔出现的《书名》。"""
+    f = fact or ""
+    if f.startswith("搜索结果"):
+        return any(k in f for k in ("推荐", "书单", "盘点", "好书", "必读", "豆瓣", "本 "))
+    if any(k in f[:80] for k in ("书单", "书籍推荐", "必读书", "好书推荐", "豆瓣")):
+        return True
+    # 正文里有较多编号 + 书名号，才像清单页
+    if f.count("《") >= 3 and len(re.findall(r"\d+[\.、．]", f[:800])) >= 3:
+        return True
+    return False
+
+
+def materials_support_count_list(facts: list[str], goal: str) -> bool:
+    """检索材料是否真能支撑「计数清单」交付（有足够具体条目，而非百科定义/新闻壳）。"""
+    if not is_count_list_goal(goal):
+        return bool(facts)
+    # 只从「像清单」的事实里抽条目；故事站里的《诗经》《春秋》不能充当荐书材料
+    list_facts = [f for f in (facts or []) if _fact_looks_like_list_source(f)]
+    if not list_facts:
+        return False
+    ents = [
+        e
+        for e in extract_grounded_entities_from_facts(list_facts, goal=goal)
+        if not is_off_type_list_item(e, goal) and not _is_and_template_title(e)
+    ]
+    if len(ents) >= 3:
+        return True
+    marks = []
+    for m in re.finditer(r"《([^》]{2,40})》", "\n".join(list_facts)):
+        name = m.group(1).strip()
+        if (
+            not is_off_type_list_item(name, goal)
+            and not is_junk_entity_name(name)
+            and not _is_and_template_title(name)
+        ):
+            marks.append(name)
+    return len(set(marks)) >= 3
+
+
+def is_off_type_list_item(name: str, goal: str = "") -> bool:
+    """条目类型与目标明显不符（如荐书却交规划/日报/门户站）。"""
+    n = (name or "").strip().strip("《》")
+    if not n or is_junk_entity_name(n):
+        return True
+    if any(
+        k in n
+        for k in (
+            "规划",
+            "公报",
+            "日报",
+            "晚报",
+            "纲要",
+            "通知",
+            "统计局",
+            "百科",
+            "门户",
+            "官网",
+            "杂志社",
+            "新闻网",
+            "经济网",
+            "人民日报",
+            "新华社",
+        )
+    ):
+        return True
+    # 荐书/作品清单：单字栏目名不算（两字书名如《史记》必须保留）
+    if prefers_title_marks(goal) and len(n) < 2:
+        return True
+    return False
+
+
+def materials_usable_for_goal(facts: list[str], goal: str) -> bool:
+    """是否存在「可用来接地扩写」的材料；计数清单要求材料真有可列条目。"""
+    facts = facts or []
+    if not facts:
+        return False
+    if is_count_list_goal(goal):
+        return materials_support_count_list(facts, goal)
+    return bool(extract_search_hit_cards(facts)) or has_substantive_content_facts(facts)
+
+
+def _is_and_template_title(name: str) -> bool:
+    """「主题与后缀」短模板名（历史与记忆 / 笔记与同步）。"""
+    n = (name or "").strip().strip("《》")
+    return bool(re.match(r"^[\u4e00-\u9fffA-Za-z]{2,8}与[\u4e00-\u9fffA-Za-z]{1,10}$", n))
+
+
+def format_title_marks_as_list(text: str, *, goal: str = "") -> str:
+    """把『《A》、《B》、…』草稿整理成编号列表（保留实质条目，去重、去错类型）。"""
+    titles = []
+    seen: set[str] = set()
+    for m in re.finditer(r"《([^》]{1,40})》", text or ""):
+        name = m.group(1).strip()
+        if is_off_type_list_item(name, goal) or is_junk_entity_name(name):
+            continue
+        # 去掉末尾明显模板注水（如「历史学家的技艺：历史与历史学」连造）
+        if re.search(r"[：:].{0,12}(历史与|与历史学)", name) and "技艺" in name:
+            continue
+        if _is_and_template_title(name):
+            continue
+        key = _norm_item(name)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        titles.append(name)
+    if len(titles) < 3:
+        return (text or "").strip()
+    n_want = requested_list_count(goal)
+    take = titles[: n_want or len(titles)]
+    head = "根据已整理条目推荐如下（未充分联网核验正文，条目来自本轮整理，供参考）："
+    if n_want and len(take) < n_want:
+        head = (
+            f"根据已整理条目推荐如下（未凑满要求的 {n_want} {requested_list_unit(goal)}；"
+            "未充分联网核验正文，供参考）："
+        )
+    lines = [head, ""] + [f"{i}. 《{t}》" for i, t in enumerate(take, 1)]
+    if n_want and len(take) < n_want:
+        lines.append("")
+        lines.append("若需要更完整清单，请提供可打开的书单链接，或稍后再试。")
+    return "\n".join(lines)
+
+
+def rescue_count_list_answer(
+    text: str, *, goal: str = "", facts: list[str] | None = None
+) -> str:
+    """计数清单交付抢救：优先保留文本中的具体条目，绝不因跑题 facts 丢掉已总结书名。
+
+    这是前端交付与 finish 草稿不一致的关键修复点。
+    """
+    raw = sanitize_public_answer(text or "")
+    if is_count_list_goal(goal) and raw.count("《") >= 3:
+        formatted = format_title_marks_as_list(raw, goal=goal)
+        if formatted.count("《") >= 3:
+            return ensure_knowledge_disclaimer(formatted)
+    # 编号列表里的非错类型、非模板条目
+    items: list[str] = []
+    seen: set[str] = set()
+    for it in _list_item_titles(raw):
+        if is_off_type_list_item(it, goal) or is_junk_entity_name(it) or _is_and_template_title(it):
+            continue
+        key = _norm_item(it)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        items.append(it.strip("《》"))
+    if len(items) >= 3:
+        n_want = requested_list_count(goal)
+        take = items[: n_want or len(items)]
+        mark = prefers_title_marks(goal)
+        head = "根据已整理条目推荐如下（未充分联网核验正文，供参考）："
+        if n_want and len(take) < n_want:
+            head = (
+                f"根据已整理条目推荐如下（未凑满要求的 {n_want} {requested_list_unit(goal)}；"
+                "未充分联网核验正文，供参考）："
+            )
+        lines = [head, ""]
+        for i, e in enumerate(take, 1):
+            lines.append(f"{i}. 《{e}》" if mark else f"{i}. {e}")
+        return ensure_knowledge_disclaimer("\n".join(lines))
+    return honest_grounded_list_answer(goal, facts)
+
+
+def materials_blob_for_synthesis(
+    facts: list[str], *, max_chars: int = 10000, goal: str = ""
+) -> str:
     """拼给总结模型的材料包：命中卡片 + 正文摘要。"""
     parts: list[str] = []
     cards = extract_search_hit_cards(facts)
@@ -726,6 +1064,7 @@ def materials_blob_for_synthesis(facts: list[str], *, max_chars: int = 10000) ->
             or f.startswith("网页摘录")
         )
         and not is_nav_chrome_body(f)
+        and not (goal and is_off_topic_body_for_goal(f, goal))
     ]
     if bodies:
         parts.append("## 网页正文摘录")
@@ -734,8 +1073,9 @@ def materials_blob_for_synthesis(facts: list[str], *, max_chars: int = 10000) ->
     elif cards:
         # 正文是导航壳时，明确提示模型优先用搜索摘要扩写，勿复读站点名
         parts.append(
-            "## 说明\n抓取页多为导航壳，请优先依据上方「搜索命中」摘要扩写成完整中文答复，"
-            "禁止只输出维基百科/知乎/百度百科等来源名列表。"
+            "## 说明\n抓取页多为导航壳或与目标无关，请优先依据上方「搜索命中」摘要扩写成完整中文答复，"
+            "禁止只输出维基百科/知乎/百度百科等来源名列表；"
+            "禁止把「以下N本/个/条」等清单套话当成具体条目；材料不够就少写并说明。"
         )
     # 其它与目标相关的事实也带上
     extras = [
@@ -745,6 +1085,7 @@ def materials_blob_for_synthesis(facts: list[str], *, max_chars: int = 10000) ->
         and not f.startswith("搜索结果")
         and len(f) >= 20
         and not is_nav_chrome_body(f)
+        and not (goal and is_off_topic_body_for_goal(f, goal))
     ]
     if extras:
         parts.append("## 其它本轮有效信息")
@@ -755,22 +1096,27 @@ def materials_blob_for_synthesis(facts: list[str], *, max_chars: int = 10000) ->
 
 
 _SYNTH_SYSTEM = (
-    "你是通用信息整理编辑，最终答案质量对齐豆包/主流办公智能体（信息充分、结构清晰、可直接阅读）。\n"
+    "你是通用信息整理编辑。优先「有依据、少幻觉」，其次才是篇幅。\n"
     "根据「用户目标」与「检索材料 / 模型草稿」撰写最终答复，规则：\n"
-    "1. 开头 1～2 句总起（点明主题；若目标含条数/范围，写清楚；可加一句筛选标准）。\n"
+    "1. 开头 1～2 句总起（点明主题；若目标含条数/范围，写清楚）。\n"
     "2. 简单题：总起 + 编号要点；每条至少 2～3 句实质说明，禁止只有标题。\n"
-    "3. 深度题（详细/全书/结构/分析）：总起 + 分节「概览 → 结构或阶段 → 核心观点 → 小结/启示」，"
-    "每节有实质段落，不要三言两语交差。\n"
-    "4. 编号条目：标题行（书籍可用《书名》，新闻/普通条目禁止乱加《》）+ 随后 3～5 句"
-    "（背景/主体、核心内容、意义或适合谁；有数字/时间则写出）。\n"
-    "5. 信息要充分：宁可写长一点写清楚，也不要只堆标题。\n"
+    "3. 深度题：总起 + 分节「概览 → 结构或阶段 → 核心观点 → 小结/启示」，"
+    "每节有实质段落；但分节内容必须能在材料中找到依据。\n"
+    "4. 编号条目：标题行（书籍可用《书名》，新闻/普通条目禁止乱加《》）+ 随后说明；"
+    "有数字/时间须与材料一致。\n"
+    "5. **接地优先**：当检索材料能支撑当前题型时，事实须来自材料或草稿已写明内容；"
+    "若材料明显跑题（如荐书却只有百科定义/新闻公报），而草稿已有具体条目，应整理草稿并标明未充分联网核实，"
+    "**禁止**用跑题材料里的栏目名/规划名顶替草稿条目。\n"
     "6. **禁止**把搜索引擎结果页标题、栏目名、合集名当成答案条目交差。\n"
     "7. **禁止**让用户在只读任务里「回复编号 / 告诉我第几条 / 选一条再展开」；自行写完完整答案。\n"
-    "8. 严格遵守目标约束；实时精确数字核验不到不要编造，可写「供参考」或说明无法核验。\n"
-    "9. 若检索材料为空但「模型草稿」已有条目：扩写成完整可读答复，可标「供参考」；"
-    "**禁止**只说「没有材料无法推荐」或「检索材料有限」作为主要内容。\n"
+    "8. 实时精确数字/股价/天气等核验不到：明确说无法核验，禁止编造。\n"
+    "9. 检索材料为空或极弱时：若草稿已有实质内容，可整理草稿并在文首标明"
+    "「以下未充分联网核实，仅供参考」；"
+    "不要为了凑篇幅编造材料中没有的书名、数据、事件。\n"
     "10. 只输出给用户的中文正文，禁止 JSON / 工具名 / 内部步骤 / Thought/Observation。"
 )
+
+_KNOWLEDGE_DISCLAIMER = "以下内容未充分联网核实，仅供常识参考："
 
 _PICK_NUMBER_RE = re.compile(
     r"(回复|告诉我|请选|选择|选一个|选一条|发我).{0,12}(编号|第?\s*\d+\s*[条项个]|哪一[条项])|"
@@ -805,6 +1151,116 @@ def strip_pick_number_prompts(text: str) -> str:
     return out
 
 
+def ensure_knowledge_disclaimer(text: str) -> str:
+    """常识/弱材料路径：文首必须有未核实声明。"""
+    t = (text or "").strip()
+    if not t:
+        return t
+    if any(
+        k in t[:80]
+        for k in (
+            "未充分联网核实",
+            "未联网核实",
+            "仅供常识参考",
+            "仅供参考",
+            "未能核实",
+            "无法核验",
+        )
+    ):
+        return t
+    return f"{_KNOWLEDGE_DISCLAIMER}\n\n{t}"
+
+
+_GROUNDING_STOP = {
+    "根据",
+    "可以",
+    "以及",
+    "还有",
+    "进行",
+    "通过",
+    "关于",
+    "如果",
+    "因为",
+    "所以",
+    "这个",
+    "这些",
+    "那些",
+    "一个",
+    "我们",
+    "他们",
+    "用户",
+    "问题",
+    "内容",
+    "主要",
+    "如下",
+    "以下",
+    "上面",
+    "下面",
+    "总起",
+    "概述",
+    "小结",
+    "启示",
+    "参考",
+    "公开",
+    "检索",
+    "材料",
+    "整理",
+    "说明",
+    "介绍",
+}
+
+
+def _content_tokens(text: str) -> set[str]:
+    """抽取可用于接地比对的词块（中文二元组 / 短词段 / 英文词 / 数字）。"""
+    t = text or ""
+    out: set[str] = set()
+    for m in re.finditer(r"[A-Za-z][A-Za-z0-9\-_.]{1,24}|\d{2,4}", t):
+        out.add(m.group(0).lower())
+    for m in re.finditer(r"[\u4e00-\u9fff]{2,}", t):
+        run = m.group(0)
+        if run in _GROUNDING_STOP:
+            continue
+        if 2 <= len(run) <= 6:
+            out.add(run)
+        for i in range(len(run) - 1):
+            bg = run[i : i + 2]
+            if bg not in _GROUNDING_STOP:
+                out.add(bg)
+    return out
+
+
+def answer_grounding_ratio(answer: str, materials: str) -> float:
+    """答案词块落在材料中的比例；材料过短时返回 1.0（不做硬拦）。"""
+    mat = (materials or "").strip()
+    ans = (answer or "").strip()
+    if not ans:
+        return 0.0
+    if len(mat) < 80:
+        return 1.0
+    a_toks = _content_tokens(ans)
+    if len(a_toks) < 10:
+        return 1.0
+    m_toks = _content_tokens(mat)
+    if len(m_toks) < 8:
+        return 1.0
+    hit = sum(1 for x in a_toks if x in m_toks or (len(x) >= 2 and x in mat))
+    return hit / max(len(a_toks), 1)
+
+
+def is_poorly_grounded(answer: str, facts: list[str] | None, *, goal: str = "") -> bool:
+    """有实质正文材料时，答案与材料重合过低 → 疑似幻觉扩写。
+
+    仅有搜索标题/摘要时不做硬拦（否则任何合理扩写都会被误杀）。
+    """
+    facts = facts or []
+    if not has_substantive_content_facts(facts):
+        return False
+    materials = materials_blob_for_synthesis(facts, goal=goal)
+    if len(materials) < 80:
+        return False
+    return answer_grounding_ratio(answer, materials) < 0.18
+
+
 async def synthesize_rich_answer(
     model: Any,
     *,
@@ -814,42 +1270,85 @@ async def synthesize_rich_answer(
     thought: str = "",
     force_expand: bool = False,
 ) -> str:
-    """豆包风格交付：总起 + 编号条目（标题行 + 多句要点），信息尽量充分。"""
-    materials = materials_blob_for_synthesis(facts)
+    """豆包风格交付：总起 + 编号条目；有材料时强制接地，禁止臆造细节。"""
     draft_clean = sanitize_public_answer(draft or "")
+    list_materials_ok = (
+        materials_support_count_list(facts, goal) if is_count_list_goal(goal) else True
+    )
+    # 计数清单但材料跑题：清空材料包，避免用百科/新闻「接地」冲掉草稿
+    if is_count_list_goal(goal) and not list_materials_ok:
+        materials = ""
+        if (
+            draft_clean
+            and not is_template_fabricated_list(draft_clean, goal=goal)
+            and draft_clean.count("《") >= 3
+            and not (force_expand and is_thin_list_draft(draft_clean))
+        ):
+            formatted = format_title_marks_as_list(draft_clean, goal=goal)
+            body = formatted if formatted.count("《") >= 3 else draft_clean
+            return ensure_knowledge_disclaimer(body)
+    else:
+        materials = materials_blob_for_synthesis(facts, goal=goal)
 
     if not materials and not draft_clean:
         return ""
 
-    # 无材料且草稿已充实（非薄清单）且未强制扩写 → 可直接交
+    # 无材料且草稿已充实（非薄清单）且未强制扩写 → 可直接交（文首加声明）
     if (
         not materials
         and is_substantive_draft(draft_clean, goal)
         and not is_thin_list_draft(draft_clean)
         and not force_expand
     ):
-        return draft_clean
+        return ensure_knowledge_disclaimer(draft_clean)
 
     n_hint = ""
     m = re.search(r"(\d+)\s*(?:本|个|条|款|篇|首|部)", goal or "")
     if m:
         n_hint = (
             f"用户明确要求约 {m.group(1)} 条；尽量凑够并写充分，"
-            "材料不够就如实少写并说明。\n"
+            "材料不够就如实少写并说明，禁止虚构条目凑数。\n"
         )
 
     expand_hint = ""
-    if force_expand or is_thin_list_draft(draft_clean) or not materials:
+    if materials:
         expand_hint = (
-            "特别要求：草稿若只有标题清单，必须扩写为「标题 + 3～5 句说明」的充实版本；"
-            "可使用通行稳定知识补充介绍，并在总起或文末注明「供参考」。\n"
+            "特别要求（接地）：只依据「检索材料」与草稿已有内容组织答案；"
+            "不要把 Thought 里的猜测写进终稿；材料没有的细节直接省略；"
+            "可概括材料，但禁止补充材料未出现的具体事实/数据/人名。\n"
+            "禁止把「以下N本/条」「N个高质量…」等清单套话当成具体条目。\n"
+        )
+        if is_thin_list_draft(draft_clean) or force_expand:
+            expand_hint += (
+                "草稿若只有标题清单：用材料中的摘要/正文为每条补写 2～4 句；"
+                "材料不够写的条目宁可删掉，也不要凭空扩写。\n"
+            )
+    elif force_expand or is_thin_list_draft(draft_clean) or not materials:
+        expand_hint = (
+            "特别要求：当前几乎无检索正文。若草稿已有条目，整理成可读答复，"
+            f"文首必须写「{_KNOWLEDGE_DISCLAIMER}」；"
+            "禁止为凑篇幅编造草稿中没有的书名、数据或事件；"
+            "宁可条目少、说明短，也不要臆造。\n"
         )
     from agent.research_policy import is_deep_research_goal
 
-    if is_deep_research_goal(goal):
+    if is_deep_research_goal(goal) and materials:
         expand_hint += (
-            "这是深度问题：请按「概览 / 结构或阶段 / 核心观点 / 小结启示」充分展开，"
-            "不要只写三段短介绍；材料不足处用稳定知识补全并标明供参考。\n"
+            "这是深度问题：在材料支撑范围内按「概览 / 结构或阶段 / 核心观点 / 小结启示」展开；"
+            "某一节材料不足就写「材料未覆盖」并跳过，禁止用臆测填满分节。\n"
+        )
+    elif is_deep_research_goal(goal) and not materials:
+        expand_hint += (
+            "这是深度问题但材料不足：给出有限概述即可，并标明未充分核实；禁止假装已完成多源综述。\n"
+        )
+
+    thought_block = ""
+    if thought and not materials:
+        thought_block = f"Thought（仅线索，禁止把未核实猜测写进答案）：\n{(thought or '（无）')[:300]}\n\n"
+    elif thought and materials:
+        thought_block = (
+            "Thought（忽略其中与材料不符的猜测，不得据此扩写事实）：\n"
+            f"{(thought or '（无）')[:200]}\n\n"
         )
 
     messages = [
@@ -861,23 +1360,25 @@ async def synthesize_rich_answer(
                 f"{n_hint}"
                 f"{expand_hint}\n"
                 f"检索材料：\n{materials or '（无）'}\n\n"
-                f"模型草稿（可参考，错误处请改正，薄清单请扩写）：\n"
+                f"模型草稿（可参考；与材料冲突时以材料为准；薄清单请用材料扩写）：\n"
                 f"{(draft or '（空）')[:2500]}\n\n"
-                f"Thought（仅供参考）：\n{(thought or '（无）')[:500]}\n\n"
-                "请输出最终高质量、信息充分的中文答案。"
+                f"{thought_block}"
+                "请输出最终中文答案（有材料则接地；无材料则短而诚实）。"
             ),
         },
     ]
     try:
-        text = await model.chat(messages, temperature=0.4)
+        text = await model.chat(messages, temperature=0.2)
     except Exception:
         if is_substantive_draft(draft_clean, goal, facts=facts):
-            return draft_clean
+            return draft_clean if materials else ensure_knowledge_disclaimer(draft_clean)
         if draft_clean and (extract_answer_items(draft_clean) or draft_clean.count("《") >= 2):
-            return draft_clean
+            return draft_clean if materials else ensure_knowledge_disclaimer(draft_clean)
         return ""
     out = sanitize_public_answer(text or "")
     out = strip_pick_number_prompts(out)
+    if not materials and out:
+        out = ensure_knowledge_disclaimer(out)
     if (
         not out
         or is_hollow_answer(out)
@@ -886,12 +1387,14 @@ async def synthesize_rich_answer(
         or any(x in out for x in ("没有材料无法", "无法根据检索材料", "目前没有提供具体"))
     ):
         if is_substantive_draft(draft_clean, goal, facts=facts):
-            return strip_pick_number_prompts(draft_clean)
-        # 薄清单：模型误杀时仍回退草稿，避免交「没有材料」
+            fb = strip_pick_number_prompts(draft_clean)
+            return fb if materials else ensure_knowledge_disclaimer(fb)
+        # 薄清单：模型误杀时仍回退草稿，避免交空壳
         if draft_clean and (
             extract_answer_items(draft_clean) or draft_clean.count("《") >= 2 or len(draft_clean) >= 24
         ):
-            return strip_pick_number_prompts(draft_clean)
+            fb = strip_pick_number_prompts(draft_clean)
+            return fb if materials else ensure_knowledge_disclaimer(fb)
         return ""
     if answer_parrots_search_titles(out, facts):
         if is_substantive_draft(draft_clean, goal, facts=facts):
@@ -899,9 +1402,51 @@ async def synthesize_rich_answer(
         if draft_clean and (extract_answer_items(draft_clean) or draft_clean.count("《") >= 2):
             return strip_pick_number_prompts(draft_clean)
         return ""
+    # 有材料却几乎不接地 → 回退草稿或材料摘要，避免幻觉终稿
+    if materials and is_poorly_grounded(out, facts, goal=goal):
+        # 计数清单：草稿书名远多于材料实体时，禁止用 format_entity_list 冲成单条
+        if is_count_list_goal(goal) and draft_clean.count("《") >= 5:
+            formatted = format_title_marks_as_list(draft_clean, goal=goal)
+            body = formatted if formatted.count("《") >= 3 else draft_clean
+            if body.count("《") >= 5:
+                return ensure_knowledge_disclaimer(strip_pick_number_prompts(body))
+        if is_substantive_draft(draft_clean, goal, facts=facts) and not is_poorly_grounded(
+            draft_clean, facts, goal=goal
+        ):
+            return strip_pick_number_prompts(draft_clean)
+        # 用材料拼一段保守答复（仅当草稿也撑不起清单时）
+        from agent.context import TaskContext
+
+        conservative = synthesize_public_answer(
+            TaskContext(goal=goal, facts=list(facts or []))
+        )
+        if (
+            conservative
+            and len(conservative) >= 40
+            and not (
+                is_count_list_goal(goal)
+                and draft_clean.count("《") > (conservative or "").count("《")
+            )
+        ):
+            return sanitize_public_answer(conservative)
+        if is_substantive_draft(draft_clean, goal, facts=facts):
+            return strip_pick_number_prompts(draft_clean)
+        if draft_clean.count("《") >= 3:
+            formatted = format_title_marks_as_list(draft_clean, goal=goal)
+            body = formatted if formatted.count("《") >= 3 else draft_clean
+            return ensure_knowledge_disclaimer(strip_pick_number_prompts(body))
     # 扩写后若反而更薄，回退草稿
     if draft_clean and answer_depth_score(out) + 8 < answer_depth_score(draft_clean):
         return strip_pick_number_prompts(draft_clean)
+    # 计数清单：模型 grounding 后条目骤减 → 回退草稿
+    if (
+        is_count_list_goal(goal)
+        and draft_clean.count("《") >= 5
+        and (out or "").count("《") < 3
+    ):
+        formatted = format_title_marks_as_list(draft_clean, goal=goal)
+        body = formatted if formatted.count("《") >= 3 else draft_clean
+        return ensure_knowledge_disclaimer(strip_pick_number_prompts(body))
     # 明显滥用书名号套新闻：再压一次简单清洗
     if out.count("《") >= 3 and not any(k in goal for k in ("书", "小说", "阅读", "著作", "经济")):
         out2 = re.sub(r"《([^》]+)》", r"\1", out)
@@ -911,7 +1456,6 @@ async def synthesize_rich_answer(
         if answer_depth_score(draft_clean) >= answer_depth_score(out):
             return strip_pick_number_prompts(draft_clean)
     return out
-
 
 def _norm_item(s: str) -> str:
     t = re.sub(r"\s+", "", (s or "").lower())
@@ -996,18 +1540,19 @@ async def verify_final_answer(
     if rich:
         return rich
 
-    entities = extract_grounded_entities_from_facts(facts)
+    entities = extract_grounded_entities_from_facts(facts, goal=goal)
     if entities and (not draft or answer_parrots_search_titles(draft, facts) or "线索，不是最终答案" in (draft or "")):
         draft = format_entity_list_answer(goal, entities)
 
-    materials = materials_blob_for_synthesis(facts, max_chars=5000)
+    materials = materials_blob_for_synthesis(facts, max_chars=5000, goal=goal)
     messages = [
         {
             "role": "system",
             "content": (
                 "你是通用 Agent 的答案核对员。\n"
-                "对照目标与材料重写最终答复：编号列表；每条标题+2～4句要点；"
-                "非书籍不要用《》；禁止用搜索页标题凑数；严格贴合目标范围。\n"
+                "对照目标与材料重写最终答复：只保留材料能支撑的事实；"
+                "编号列表；每条标题+要点；非书籍不要用《》；禁止用搜索页标题凑数。\n"
+                "材料没有的细节禁止补充；宁可短，也不要编造。\n"
                 "只输出中文最终答案。"
             ),
         },
@@ -1037,13 +1582,20 @@ async def verify_final_answer(
 
 
 def is_nav_chrome_body(text: str) -> bool:
-    """维基/百科等抓到的主要是导航壳，不是可用正文。
+    """维基导航壳 / 搜狗备案页等：看起来很长，实则不可用。
 
     短文本不算 chrome（可能是可用摘要片段）；是否计入「正文篇数」由调用方再做长度门槛。
     """
     t = (text or "").strip()
     if not t:
         return False
+    try:
+        from tools.web_tools import is_search_engine_shell_body
+
+        if is_search_engine_shell_body(t):
+            return True
+    except Exception:
+        pass
     chrome_hits = sum(
         1
         for k in (
@@ -1061,6 +1613,10 @@ def is_nav_chrome_body(text: str) -> bool:
             "维基共享资源",
             "主菜单",
             "特殊页面",
+            "京公网安备",
+            "京ICP备",
+            "上网从搜狗开始",
+            "查询限制在100个汉字",
         )
         if k in t
     )
@@ -1070,6 +1626,202 @@ def is_nav_chrome_body(text: str) -> bool:
     if chrome_hits >= 2 and not re.search(r"[。；][^。；]{20,}", t):
         return True
     return False
+
+
+def is_series_padding_list(text: str) -> bool:
+    """同一书名系列用 1～N 编号硬凑条数（如「历史是个什么玩意儿1～8」）。"""
+    items = extract_answer_items(text or "")
+    if len(items) < 6:
+        numbered = []
+        for ln in (text or "").splitlines():
+            m = re.match(r"^\s*\d+[\.、．]\s*[*《]*\s*([^*\n]{2,80})", ln.strip())
+            if m:
+                numbered.append(m.group(1).strip().strip("》").strip("*").strip())
+        items = numbered
+    if len(items) < 6:
+        return False
+    bases: list[str] = []
+    for it in items:
+        b = re.sub(r"[\s《》\*·\-—]+", "", it)
+        b = re.sub(
+            r"(第?[0-9０-９一二三四五六七八九十百]+[册卷部集季册]?|[0-9０-９]+)$",
+            "",
+            b,
+        )
+        if len(b) >= 4:
+            bases.append(b)
+    if len(bases) < 6:
+        return False
+    from collections import Counter
+
+    cnt = Counter(bases)
+    top_n = cnt.most_common(1)[0][1]
+    return top_n >= 4 and top_n / len(bases) >= 0.35
+
+
+def _list_item_titles(text: str) -> list[str]:
+    items = extract_answer_items(text or "")
+    if len(items) >= 2:
+        return items
+    numbered: list[str] = []
+    for ln in (text or "").splitlines():
+        m = re.match(r"^\s*\d+[\.、．]\s*(?:\*\*)?《?([^》\n*]{2,60})", ln.strip())
+        if m:
+            numbered.append(m.group(1).strip().strip("*").strip())
+    return numbered
+
+
+def is_duplicate_heavy_list(text: str) -> bool:
+    """终稿出现完全重复条目（如 19、20 同名）。"""
+    items = _list_item_titles(text)
+    if len(items) < 2:
+        return False
+    norms = [_norm_item(x) for x in items if _norm_item(x)]
+    if len(norms) < 2:
+        return False
+    from collections import Counter
+
+    c = Counter(norms)
+    return c.most_common(1)[0][1] >= 2
+
+
+def is_template_fabricated_list(text: str, *, goal: str = "") -> bool:
+    """检测模板硬凑清单：同前缀连造、标题高度同构（跨场景通用）。"""
+    items = _list_item_titles(text)
+    if len(items) < 4:
+        return False
+    from collections import Counter
+
+    # 「X与Y / X和Y」同前缀连造（如历史与记忆/历史学/政治）
+    prefixes: list[str] = []
+    for it in items:
+        n = re.sub(r"[\s《》\*]+", "", it)
+        m = re.match(r"^([\u4e00-\u9fffA-Za-z]{2,8})[与和之]", n)
+        if m:
+            prefixes.append(m.group(1).lower())
+    if prefixes and Counter(prefixes).most_common(1)[0][1] >= 3:
+        return True
+    # 标题头 3～4 字大量撞车
+    heads = [_norm_item(it)[:4] for it in items if len(_norm_item(it)) >= 4]
+    if heads and Counter(heads).most_common(1)[0][1] >= 4:
+        return True
+    # 同一「定语人名/机构」挂在很多条上，且条目本身短而同构
+    name_hits = re.findall(
+        r"([\u4e00-\u9fff]{1,3}[·・.][\u4e00-\u9fff]{1,4}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)",
+        text or "",
+    )
+    if len(name_hits) >= 4 and len(items) >= 10:
+        if Counter(name_hits).most_common(1)[0][1] >= 3:
+            return True
+    return False
+
+
+def dedupe_numbered_list_answer(text: str) -> str:
+    """去掉编号列表中的完全重复条（保留首次）。"""
+    t = (text or "").strip()
+    if not t:
+        return t
+    lines = t.splitlines()
+    out: list[str] = []
+    seen: set[str] = set()
+    num = 0
+    for ln in lines:
+        m = re.match(r"^(\s*)(\d+)([\.、．])\s*(.+)$", ln)
+        if not m:
+            out.append(ln)
+            continue
+        body = m.group(4).strip()
+        title_m = re.match(r"(?:\*\*)?《([^》]+)》|(\*\*[^*]+\*\*)|([^\s—\-]{2,40})", body)
+        key_src = ""
+        if title_m:
+            key_src = title_m.group(1) or title_m.group(2) or title_m.group(3) or body[:40]
+        key = _norm_item(key_src or body[:40])
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        num += 1
+        out.append(f"{m.group(1)}{num}{m.group(3)} {body}")
+    return "\n".join(out).strip()
+
+
+def is_honest_shortfall_answer(text: str) -> bool:
+    """是否为「材料不足、明确未凑满」的诚实短答（可放行薄列表门控）。"""
+    t = text or ""
+    return any(
+        k in t
+        for k in (
+            "未凑满",
+            "暂不编造",
+            "未能从可核验",
+            "未能打开",
+            "不够可核验",
+            "不硬凑",
+            "不是完整",
+        )
+    )
+
+
+def honest_grounded_list_answer(goal: str, facts: list[str] | None = None) -> str:
+    """弱材料时：只交材料可核验条目；绝不靠常识硬凑满 N（通用办公场景）。"""
+    facts = facts or []
+    ents = [e for e in extract_grounded_entities_from_facts(facts, goal=goal) if not is_junk_entity_name(e)]
+    ents = ents[:12]
+    n_want = requested_list_count(goal)
+    unit = requested_list_unit(goal)
+    head = (
+        "以下内容未充分联网核实，仅供参考。\n"
+        "本轮未能打开足够的正文来源，为避免编造条目凑数，"
+        "只整理材料中可核验的具体项"
+    )
+    if n_want:
+        head += f"（未凑满要求的 {n_want} {unit}）"
+    head += "。"
+    if ents:
+        mark = prefers_title_marks(goal)
+        lines = [head, ""]
+        for i, e in enumerate(ents, 1):
+            lines.append(f"{i}. 《{e}》" if mark else f"{i}. {e}")
+        lines.append("")
+        lines.append("若需要更完整清单，请稍后再试，或提供可访问的来源链接。")
+        return "\n".join(lines)
+    return (
+        f"{head}\n\n"
+        "当前检索摘要里也没有足够可核验的具体条目，暂不编造清单。"
+        "请换个更具体的问法，或指定可打开的来源后再试。"
+    )
+
+
+# 兼容旧调用名
+def honest_short_book_answer(goal: str, facts: list[str] | None = None) -> str:
+    return honest_grounded_list_answer(goal, facts)
+
+
+def sanitize_hallucinated_list_answer(
+    text: str, *, goal: str = "", facts: list[str] | None = None
+) -> str:
+    """终稿清洗：去重；模板/重复时从原文抢救条目，禁止用跑题 facts 顶替已总结清单。"""
+    t = dedupe_numbered_list_answer(sanitize_public_answer(text or ""))
+    if not t:
+        return t
+    if not is_count_list_goal(goal):
+        return t
+
+    # 文本里已有足够书名号 → 一律先抢救成干净编号列表（去重、去错类型）
+    if t.count("《") >= 3:
+        rescued = rescue_count_list_answer(t, goal=goal, facts=facts)
+        if rescued.count("《") >= 3:
+            return rescued
+
+    if is_duplicate_heavy_list(t) or is_template_fabricated_list(t, goal=goal) or is_series_padding_list(t):
+        return rescue_count_list_answer(t, goal=goal, facts=facts)
+
+    items = _list_item_titles(t)
+    if items:
+        bad = sum(1 for it in items if is_off_type_list_item(it, goal))
+        if bad >= max(1, (len(items) + 1) // 2):
+            return rescue_count_list_answer(t, goal=goal, facts=facts)
+    return t
 
 
 def has_substantive_content_facts(facts: list[str]) -> bool:
@@ -1187,22 +1939,48 @@ _FETCH_DEPRIORITIZE_HOSTS = (
 )
 
 
-def pick_fetch_url(facts: list[str], *, skip: set[str] | None = None) -> str | None:
-    """取下一条可抓取内容 URL（跳过已失败/验证码页；易墙站点后置）。"""
+def _url_goal_relevance(url: str, facts: list[str], goal: str) -> int:
+    """按搜索命中标题/摘要与目标主题重合度打分；无命中信息时返回中性分。"""
+    if not url or not goal:
+        return 1
+    core = goal_core_tokens(goal)
+    cards = extract_search_hit_cards(facts)
+    blob = ""
+    for c in cards:
+        if url.rstrip("/") in (c.get("url") or "").rstrip("/") or (c.get("url") or "") in url:
+            blob = f"{c.get('title') or ''} {c.get('snippet') or ''}"
+            break
+    if not blob:
+        # URL 路径里带目标核也加分
+        blob = url
+    if not core:
+        return 1
+    return sum(1 for c in core if c in blob)
+
+
+def pick_fetch_url(
+    facts: list[str], *, skip: set[str] | None = None, goal: str = ""
+) -> str | None:
+    """取下一条可抓取内容 URL（跳过已失败；与目标无关/易墙站点后置）。"""
     skip = skip or set()
-    preferred: list[str] = []
-    deferred: list[str] = []
-    for u in first_content_urls_from_facts(facts, limit=8):
+    scored: list[tuple[int, int, str]] = []
+    for i, u in enumerate(first_content_urls_from_facts(facts, limit=10)):
         if u in skip:
             continue
         if any(x in u for x in ("unhuman", "captcha", "challenge", "verify")):
             continue
+        rel = _url_goal_relevance(u, facts, goal)
+        # 与目标几乎无关的链接后置（常见：百科定义页、同主题故事站）
+        penalty = 0
+        if goal and rel == 0:
+            penalty = 5
         if any(h in u for h in _FETCH_DEPRIORITIZE_HOSTS):
-            deferred.append(u)
-        else:
-            preferred.append(u)
-    ordered = preferred + deferred
-    return ordered[0] if ordered else None
+            penalty += 2
+        scored.append((penalty, -rel, u))
+    if not scored:
+        return None
+    scored.sort()
+    return scored[0][2]
 
 
 def enrich_finish_answer(
@@ -1243,7 +2021,7 @@ def enrich_finish_answer(
             return ""
         return candidate
 
-    from_entities = format_entity_list_answer(goal, extract_grounded_entities_from_facts(facts))
+    from_entities = format_entity_list_answer(goal, extract_grounded_entities_from_facts(facts, goal=goal))
     if from_entities and not is_thin_list_draft(from_entities):
         v = get_default_delivery_gate().check_draft(goal=goal, draft=from_entities, facts=facts)
         if not v.ok:
@@ -1266,21 +2044,28 @@ def reject_or_pass_final_answer(
 
 
 def first_content_urls_from_facts(facts: list[str], *, limit: int = 3) -> list[str]:
-    """从搜索事实里抽出可 web_fetch 的内容站链接（跳过搜索引擎结果页）。"""
+    """从搜索事实里抽出可 web_fetch 的内容站链接（跳过搜索引擎结果页/跳转壳）。"""
+    try:
+        from tools.web_tools import is_content_fetch_url
+    except Exception:
+
+        def is_content_fetch_url(u: str) -> bool:  # type: ignore
+            low = (u or "").lower()
+            return not any(
+                x in low
+                for x in (
+                    "sogou.com",
+                    "bing.com/search",
+                    "duckduckgo.com",
+                    "google.com/search",
+                )
+            )
+
     urls: list[str] = []
     for f in facts:
         for m in re.finditer(r"https?://[^\s\]\)\"\'<>]+", f):
             u = m.group(0).rstrip(".,;，。")
-            if any(
-                x in u
-                for x in (
-                    "sogou.com/web",
-                    "bing.com/search",
-                    "bing.com/ck/",
-                    "duckduckgo.com",
-                    "google.com/search",
-                )
-            ):
+            if not is_content_fetch_url(u):
                 continue
             if u not in urls:
                 urls.append(u)

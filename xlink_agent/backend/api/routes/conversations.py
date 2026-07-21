@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -216,6 +216,7 @@ def _message_react_steps(metadata_json: str | None) -> list[dict]:
 async def chat(
     conversation_id: int,
     body: ChatBody,
+    request: Request,
     user: PortalUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -231,6 +232,8 @@ async def chat(
         async for chunk in run_chat(
             db, user_id=uid, conversation_id=conversation_id, user_text=body.message.strip()
         ):
+            if await request.is_disconnected():
+                break
             yield chunk
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")

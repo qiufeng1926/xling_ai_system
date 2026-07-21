@@ -84,8 +84,8 @@ def count_fetch_steps(steps: list[Any]) -> int:
     return n
 
 
-def count_body_facts(facts: list[str]) -> int:
-    from agent.answer import is_nav_chrome_body
+def count_body_facts(facts: list[str], *, goal: str = "") -> int:
+    from agent.answer import is_nav_chrome_body, is_off_topic_body_for_goal
 
     n = 0
     for f in facts or []:
@@ -93,6 +93,8 @@ def count_body_facts(facts: list[str]) -> int:
             ("网页正文摘要", "网页内容摘要", "页面内容摘要", "网页摘录")
         ) or "正文条目线索" in f[:24]:
             if len(f) >= 80 and not is_nav_chrome_body(f):
+                if goal and is_off_topic_body_for_goal(f, goal):
+                    continue
                 n += 1
     return n
 
@@ -125,6 +127,16 @@ def alt_search_queries(goal: str, prior_queries: list[str] | None = None) -> lis
         f"{core} 作者简介 评价",
         f"{core} summary outline",
     ]
+    from agent.answer import is_count_list_goal
+
+    if is_count_list_goal(g):
+        cands = [
+            g,
+            f"{core} 清单 具体名称",
+            f"{core} 推荐 盘点",
+            f"{core} 入门 列表",
+            f"{core} 排行 具体条目",
+        ] + cands
     out: list[str] = []
     for q in cands:
         q = re.sub(r"\s+", " ", q).strip()
@@ -152,6 +164,51 @@ def prior_search_queries(steps: list[Any]) -> list[str]:
         if q:
             qs.append(q)
     return qs
+
+
+# 搜索词噪声：去掉后用于近义重复判定（「…影响」vs「…具体影响」）
+_SEARCH_QUERY_NOISE = re.compile(
+    r"(具体|详细|深入|进一步|全面|系统|完整|简要|简介|"
+    r"的影响|影响|分析|了解|查询|搜索|调研|情况|问题|"
+    r"是什么|如何|怎样|怎么|为何|为什么|哪些|多少|"
+    r"吗|呢|啊|吧|了|的|与|和|对|关于)"
+)
+
+
+def normalize_search_query(q: str) -> str:
+    """归一化搜索词，便于近义重复判定。"""
+    t = (q or "").strip().lower()
+    t = re.sub(r"\s+", "", t)
+    t = _SEARCH_QUERY_NOISE.sub("", t)
+    return t
+
+
+def is_near_duplicate_search_query(q: str, prior: list[str]) -> bool:
+    """相同或近义搜索词（仅改「具体/详细」等）视为重复。"""
+    nq = normalize_search_query(q)
+    raw_q = re.sub(r"\s+", "", (q or "").strip().lower())
+    if not nq and not raw_q:
+        return False
+    for p in prior or []:
+        if not p:
+            continue
+        raw_p = re.sub(r"\s+", "", p.strip().lower())
+        if raw_q and raw_q == raw_p:
+            return True
+        np = normalize_search_query(p)
+        if nq and np and nq == np:
+            return True
+        # 归一化后互相包含（且足够长，避免短词误伤）
+        if nq and np and len(nq) >= 4 and len(np) >= 4 and (nq in np or np in nq):
+            return True
+        # 字符集合高度重合
+        if nq and np and len(nq) >= 6 and len(np) >= 6:
+            sa, sb = set(nq), set(np)
+            inter = len(sa & sb)
+            union = len(sa | sb) or 1
+            if inter / union >= 0.78 and abs(len(nq) - len(np)) <= max(4, len(nq) // 3):
+                return True
+    return False
 
 
 def has_search_hit_facts(facts: list[str]) -> bool:
@@ -195,7 +252,7 @@ def next_research_tool(
 
     deep = is_deep_research_goal(goal)
     searches = count_search_steps(steps)
-    bodies = count_body_facts(facts)
+    bodies = count_body_facts(facts, goal=goal)
     min_b = min_bodies_for_goal(goal)
     skip = set(failed_urls or [])
 
@@ -226,7 +283,7 @@ def next_research_tool(
             }
 
     if reason in {"search_hits_no_body", "need_more_bodies"}:
-        next_u = pick_fetch_url(facts, skip=skip)
+        next_u = pick_fetch_url(facts, skip=skip, goal=goal)
         if next_u:
             return {
                 "tool": "web_fetch",
@@ -247,7 +304,7 @@ def next_research_tool(
             }
 
     if deep and bodies < min_b:
-        next_u = pick_fetch_url(facts, skip=skip)
+        next_u = pick_fetch_url(facts, skip=skip, goal=goal)
         if next_u:
             return {
                 "tool": "web_fetch",
@@ -262,7 +319,7 @@ def next_research_tool(
         and bodies < 1
         and not has_substantive_content_facts(facts)
     ):
-        next_u = pick_fetch_url(facts, skip=skip)
+        next_u = pick_fetch_url(facts, skip=skip, goal=goal)
         if next_u:
             return {
                 "tool": "web_fetch",
@@ -276,7 +333,7 @@ def next_research_tool(
 
 def research_status_line(goal: str, facts: list[str], steps: list[Any]) -> str:
     deep = is_deep_research_goal(goal)
-    bodies = count_body_facts(facts)
+    bodies = count_body_facts(facts, goal=goal)
     searches = count_search_steps(steps)
     min_s = min_searches_for_goal(goal)
     min_b = min_bodies_for_goal(goal)
