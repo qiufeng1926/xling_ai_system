@@ -1573,6 +1573,162 @@ async def test_pipeline_format_retry_non_book() -> CaseResult:
     )
 
 
+def test_count_shortfall_detection() -> CaseResult:
+    """通用：用户要 N 条时，1 条详写也算条数不足。"""
+    from agent.answer import (
+        count_list_items_in_text,
+        is_count_shortfall,
+        min_acceptable_list_count,
+    )
+
+    goal = "推荐20款办公效率工具"
+    one = (
+        "以下内容未充分联网核实，仅供常识参考：\n"
+        "1. Notion\n这是一款全能笔记与协作工具，适合团队知识库，"
+        "模板丰富，可以搭建项目管理与文档中心。"
+    )
+    if count_list_items_in_text(one, goal=goal) >= 3:
+        return CaseResult("count_shortfall", False, "miscounted one item")
+    if not is_count_shortfall(one, goal):
+        return CaseResult("count_shortfall", False, "1/20 not shortfall")
+    if min_acceptable_list_count(goal) != 14:
+        return CaseResult(
+            "count_shortfall",
+            False,
+            f"min={min_acceptable_list_count(goal)}",
+        )
+    fullish = "\n".join(
+        f"{i}. 工具{i}\n说明足够长足够长足够长足够长足够长。" for i in range(1, 16)
+    )
+    if is_count_shortfall(fullish, goal):
+        return CaseResult("count_shortfall", False, "15/20 should pass min")
+    return CaseResult("count_shortfall", True, "ok")
+
+
+def test_rich_sectioned_list_not_wiped() -> CaseResult:
+    """分板块+短评+选用建议的充实清单不得被判重复/薄清单/硬凑，也不得被 sanitize 压薄。"""
+    from agent.answer import (
+        count_list_items_in_text,
+        is_duplicate_heavy_list,
+        is_template_fabricated_list,
+        is_thin_list_draft,
+        is_title_only_list_answer,
+        sanitize_hallucinated_list_answer,
+    )
+    from agent.delivery_gate import get_default_delivery_gate
+    from agent.inference.format_retry import needs_format_retry
+
+    goal = "给我推荐20本历史相关的书籍"
+    rich = (
+        "一、中国历史\n"
+        "1. 《史记》：司马迁所著，详实记载了从黄帝到汉武帝的历史，被誉为中国古代史学的巅峰之作，"
+        "适合对中国古代历史有深入了解的读者。\n"
+        "2. 《资治通鉴》：司马光编纂，系统记载了从周威烈王到五代末年的历史，是研究中国古代历史的重要资料。\n"
+        "3. 《三国演义》：罗贯中创作，以三国时期为背景，描绘了三家争霸故事，深受读者喜爱。\n"
+        "4. 《红楼梦》：曹雪芹所著，以贾宝玉、林黛玉的爱情故事为主线，深刻反映了封建社会的种种矛盾。\n"
+        "5. 《明朝那些事儿》：当年明月所著，以幽默风趣的语言讲述了明朝的历史。\n"
+        "6. 《中国大历史》：黄仁宇所著，从宏观角度分析了中国历史的发展脉络。\n"
+        "7. 《万历十五年》：黄仁宇所著，以万历十五年这一年为切入点，探讨了明朝晚期的社会状况。\n"
+        "\n二、世界历史\n"
+        "8. 《世界历史简明教程》：这是一本介绍世界历史的入门书籍，内容全面，适合初学者。\n"
+        "9. 《人类简史》：尤瓦尔·赫拉利所著，从大历史的角度探讨了人类的发展历程。\n"
+        "10. 《枪炮、病菌与钢铁》：贾雷德·戴蒙德所著，分析了不同地区文明发展的原因。\n"
+        "11. 《文明之光》：吴军所著，以科技、文化、艺术为线索，展现了人类文明的辉煌。\n"
+        "\n三、历史理论与方法\n"
+        "12. 《历史深处的忧虑》：黄仁宇所著，探讨了历史研究的方法和意义。\n"
+        "13. 《历史学的几个问题》：这是一本关于历史学理论的基础书籍。\n"
+        "14. 《历史哲学导论》：介绍了历史哲学的基本概念和理论。\n"
+        "15. 《历史学家的技艺》：这是一本关于历史学研究的技巧和方法的书。\n"
+        "\n四、历史学著作\n"
+        "16. 《历史学家的技艺：历史学导论》：介绍了历史学的基本概念和研究方法。\n"
+        "17. 《历史学的理论与实践》：探讨了历史学在理论和实践中的应用。\n"
+        "18. 《历史学家的技艺：历史学方法论》：详细介绍了历史学的研究方法。\n"
+        "\n选用建议：\n"
+        "- 如果您对中国历史感兴趣，可以阅读《史记》、《资治通鉴》、《三国演义》等。\n"
+        "- 如果您想了解世界历史，可以阅读《人类简史》、《枪炮、病菌与钢铁》等。\n"
+        "- 如果您对历史学有兴趣，可以阅读《历史学的几个问题》、《历史学家的技艺》等\n"
+    )
+    n = count_list_items_in_text(rich, goal=goal)
+    if n < 14 or n > 22:
+        return CaseResult("rich_sectioned_list", False, f"bad count n={n}")
+    if is_duplicate_heavy_list(rich):
+        return CaseResult("rich_sectioned_list", False, "false duplicate")
+    if is_template_fabricated_list(rich, goal=goal):
+        return CaseResult("rich_sectioned_list", False, "false template")
+    if is_title_only_list_answer(rich, goal=goal) or is_thin_list_draft(rich):
+        return CaseResult("rich_sectioned_list", False, "false thin/title-only")
+    if needs_format_retry(rich, goal=goal, profile=None):
+        return CaseResult("rich_sectioned_list", False, "false format_retry")
+    v = get_default_delivery_gate().check_final(goal=goal, answer=rich, facts=[])
+    if not v.ok:
+        return CaseResult("rich_sectioned_list", False, f"gate fail reason={v.reason}")
+    cleaned = sanitize_hallucinated_list_answer(rich, goal=goal, facts=[])
+    if is_title_only_list_answer(cleaned, goal=goal) or len(cleaned) < len(rich) // 2:
+        return CaseResult(
+            "rich_sectioned_list",
+            False,
+            f"sanitize crushed chars={len(cleaned)} was={len(rich)}",
+        )
+    if "选用建议" not in cleaned or "中国历史" not in cleaned:
+        return CaseResult("rich_sectioned_list", False, f"structure lost: {cleaned[:180]}")
+    return CaseResult("rich_sectioned_list", True, f"ok n={n} chars={len(cleaned)}")
+
+
+async def test_pipeline_fills_count_shortfall() -> CaseResult:
+    """草稿仅 1 条时，流水线应触发补齐重试，不能以单条详写交差。"""
+    from agent.answer import count_list_items_in_text, is_count_shortfall
+    from agent.context import TaskContext
+    from agent.orchestrator import _finalize_user_answer
+    from agent.run_state import AgentRunState
+
+    goal = "给我推荐10款适合办公的笔记软件"
+    finish = "根据公开检索整理如下：\n\n1. Notion\n\n（材料中明确可核验的条目共 1 条。）"
+    filled = (
+        "以下内容未充分联网核实，仅供常识参考：\n\n"
+        "10 款办公笔记工具如下。\n\n"
+        + "\n".join(
+            f"{i}. 工具{i}\n适合办公场景的笔记与知识管理，协作与本地能力各有侧重，适合不同团队。"
+            for i in range(1, 11)
+        )
+        + "\n\n选用建议：团队协作优先前几款。"
+    )
+    ctx = TaskContext(goal=goal, facts=[])
+    rs = AgentRunState(run_id="test-count-fill", goal=goal)
+    n = {"c": 0}
+
+    class _M:
+        async def chat(self, *a, **k):
+            n["c"] += 1
+            # 前两次故意只交 1 条详写，随后补齐
+            if n["c"] <= 2:
+                return (
+                    "以下内容未充分联网核实，仅供常识参考：\n"
+                    "1. Notion\n全能笔记，适合团队知识库与项目管理，模板丰富可读性好。"
+                )
+            return filled
+
+    out = await _finalize_user_answer(
+        _M(), ctx, finish, round_i=5, thought="可交付", run_state=rs
+    )
+    if is_count_shortfall(out, goal):
+        return CaseResult(
+            "pipeline_count_fill",
+            False,
+            f"still short: n={count_list_items_in_text(out, goal=goal)} {out[:200]}",
+        )
+    if count_list_items_in_text(out, goal=goal) < 7:
+        return CaseResult(
+            "pipeline_count_fill",
+            False,
+            f"too few: {count_list_items_in_text(out, goal=goal)}",
+        )
+    return CaseResult(
+        "pipeline_count_fill",
+        True,
+        f"path={rs.finalize_path} items={count_list_items_in_text(out, goal=goal)} calls={n['c']}",
+    )
+
+
 async def run_all() -> list[CaseResult]:
     results: list[CaseResult] = []
     sync_tests = [
@@ -1603,6 +1759,8 @@ async def run_all() -> list[CaseResult]:
         test_safety_gate,
         test_delivery_preprocess_profile,
         test_composed_safety_gate,
+        test_count_shortfall_detection,
+        test_rich_sectioned_list_not_wiped,
     ]
     for fn in sync_tests:
         try:
@@ -1620,6 +1778,7 @@ async def run_all() -> list[CaseResult]:
         test_finalize_expands_structured_blurb(),
         test_finalize_keeps_econ_finish_list(),
         test_pipeline_format_retry_non_book(),
+        test_pipeline_fills_count_shortfall(),
     ]:
         try:
             results.append(await coro)

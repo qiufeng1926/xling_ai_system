@@ -12,6 +12,8 @@ from agent.answer import (
     is_title_only_list_answer,
     rescue_count_list_answer,
 )
+from agent.memory_policy import answer_relevant_to_goal
+
 from agent.delivery.types import (
     MaterialStrength,
     OutputAction,
@@ -54,8 +56,8 @@ def decide_output(
             )
         return Decision(OutputAction.PASS, text, path="pass", reason=verdict.reason or "ok")
 
-    # 结构薄清单 → 触发重试扩写
-    if verdict.reason in {"thin_list", "hollow"}:
+    # 结构薄清单 / 条数不足 → 触发重试扩写
+    if verdict.reason in {"thin_list", "hollow", "count_shortfall"}:
         return Decision(
             OutputAction.RETRY_EXPAND,
             text or draft,
@@ -72,6 +74,19 @@ def decide_output(
         "duplicate_items",
         "poor_grounding",
     }:
+        # 当前答案已是充实详写时勿抢救成薄清单（建议段重复书名等误杀）
+        if (
+            text
+            and not is_title_only_list_answer(text, goal=goal)
+            and not is_thin_list_draft(text)
+            and answer_relevant_to_goal(text, goal)
+        ):
+            return Decision(
+                OutputAction.PASS_WITH_DISCLAIMER,
+                ensure_knowledge_disclaimer(text),
+                path="rich_survive_false_gate",
+                reason=verdict.reason,
+            )
         if is_count_list_goal(goal) and (draft or "").count("《") >= 3:
             return Decision(
                 OutputAction.RESCUE_DRAFT,

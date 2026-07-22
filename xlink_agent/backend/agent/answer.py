@@ -383,11 +383,20 @@ def is_substantive_draft(text: str, goal: str = "", facts: list[str] | None = No
 
 def is_thin_list_draft(text: str) -> bool:
     """条目只有标题、几乎无说明 → 需要扩写。"""
-    t = sanitize_public_answer(text or "").strip()
+    t = _strip_advice_section(sanitize_public_answer(text or "").strip())
     if not t:
         return True
 
     numbered = [ln for ln in t.splitlines() if re.match(r"^\s*\d+[\.、．]", ln.strip())]
+    # 编号行自带「题名：短评」→ 已有说明，不算薄清单
+    inline_blurb = 0
+    for ln in numbered:
+        body = re.sub(r"^\s*\d+[\.、．]\s*", "", ln.strip())
+        if re.search(r"[：:]\s*.{18,}", body) or len(re.sub(r"\s+", "", body)) >= 36:
+            inline_blurb += 1
+    if len(numbered) >= 3 and inline_blurb >= max(2, (len(numbered) + 1) // 2):
+        return False
+
     # 声明/套话头不算「说明段落」
     _meta_ln = re.compile(
         r"^(以下|为您|推荐|供参考|根据公开|根据本轮|根据检索|根据已整理|整理如下|"
@@ -424,7 +433,7 @@ def is_thin_list_draft(text: str) -> bool:
             return True
 
     items = extract_answer_items(t)
-    if len(items) >= 2 and len(explain_lines) < 2:
+    if len(items) >= 2 and len(explain_lines) < 2 and inline_blurb < 2:
         cleaned = [re.sub(r"[《》\*\s]", "", i) for i in items]
         avg = sum(len(x) for x in cleaned) / max(len(cleaned), 1)
         if avg <= 18 and len(t) < 420:
@@ -434,9 +443,14 @@ def is_thin_list_draft(text: str) -> bool:
         if site_hits >= max(2, len(cleaned) // 2):
             return True
 
-    # 《题名》很多但全文偏短、几乎无说明 → 薄
-    marks = t.count("《")
-    if marks >= 5 and len(explain_lines) < max(2, marks // 3) and len(t) < marks * 36:
+    # 《题名》很多但全文偏短、几乎无说明 → 薄（有行内短评时不算）
+    marks = len(_list_item_titles(t)) or t.count("《")
+    if (
+        marks >= 5
+        and inline_blurb < 2
+        and len(explain_lines) < max(2, marks // 3)
+        and len(t) < marks * 36
+    ):
         return True
 
     # 已有多行说明段落，不算薄
@@ -445,14 +459,14 @@ def is_thin_list_draft(text: str) -> bool:
     if answer_depth_score(t) >= 55 and len(explain_lines) >= 3:
         return False
 
-    if t.count("《") >= 3 and len(t) < 280 and len(explain_lines) < 2:
+    if t.count("《") >= 3 and len(t) < 280 and len(explain_lines) < 2 and inline_blurb < 2:
         return True
     return False
 
 
 def is_title_only_list_answer(text: str, *, goal: str = "") -> bool:
     """计数清单终稿是否仍是「只有名称、无短评」——比 thin 更严，用于强制再扩写。"""
-    t = (text or "").strip()
+    t = _strip_advice_section((text or "").strip())
     if not t:
         return True
     if not is_count_list_goal(goal) and t.count("《") < 3 and not re.search(
@@ -461,20 +475,39 @@ def is_title_only_list_answer(text: str, *, goal: str = "") -> bool:
         return False
     if is_thin_list_draft(t):
         return True
-    titles = extract_title_marks(t, goal=goal) if t.count("《") >= 3 else []
-    n = max(len(titles), len(extract_answer_items(t)))
-    if n < 3:
+    # 编号行后带冒号/破折号长说明 → 已有短评，不算标题堆
+    blurb_n = 0
+    numbered_n = 0
+    for ln in t.splitlines():
+        if not re.match(r"^\s*\d+[\.、．]", ln.strip()):
+            continue
+        numbered_n += 1
+        body = re.sub(r"^\s*\d+[\.、．]\s*", "", ln.strip())
+        # 《题名》：说明… 或 题名：说明
+        if re.search(r"[：:]\s*.{18,}", body) or (
+            "》" in body and len(re.sub(r"\s+", "", body)) >= 28
+        ):
+            blurb_n += 1
+    if numbered_n >= 3 and blurb_n >= max(2, (numbered_n + 1) // 2):
         return False
-    # 平均每条不足约 45 字实质内容 → 仍算标题堆
+
+    titles = _list_item_titles(t)
+    n = len(titles)
+    if n < 3:
+        marks = t.count("《")
+        if marks >= 3:
+            n = marks
+        else:
+            return False
     body = re.sub(r"《[^》]+》", "", t)
     body = re.sub(r"(?m)^\s*\d+[\.、．]\s*", "", body)
     body = re.sub(
-        r"以下内容未充分联网核实[^\n]*|根据已整理条目推荐如下[^\n]*|仅供常识参考[^\n]*",
+        r"以下内容未充分联网核实[^\n]*|根据已整理条目推荐如下[^\n]*|仅供常识参考[^\n]*|未充分联网核实[^\n]*",
         "",
         body,
     )
     substance = len(re.sub(r"\s+", "", body))
-    return substance < n * 40
+    return substance < n * 28
 
 
 _SITE_LABELS = (
@@ -593,6 +626,42 @@ def requested_list_count(goal: str) -> int | None:
 def requested_list_unit(goal: str) -> str:
     m = re.search(r"\d+\s*(本|个|条|款|篇|首|部|家|种|项|份|套)", goal or "")
     return m.group(1) if m else "条"
+
+
+def count_list_items_in_text(text: str, *, goal: str = "") -> int:
+    """统计答复中的清单条目数（编号项标题去重，通用）。"""
+    titles = _list_item_titles(text or "")
+    if len(titles) >= 2:
+        return len(titles)
+    t = _strip_advice_section(text or "")
+    marks = []
+    seen: set[str] = set()
+    for m in re.finditer(r"《([^》]{1,40})》", t):
+        key = _norm_item(m.group(1))
+        if key and key not in seen:
+            seen.add(key)
+            marks.append(m.group(1))
+    return len(marks)
+
+
+def min_acceptable_list_count(goal: str) -> int | None:
+    """用户要求 N 条时，最低可接受条数（约 70%，且至少 min(N,3)）。"""
+    n = requested_list_count(goal)
+    if not n:
+        return None
+    if n <= 3:
+        return n
+    return max(3, (n * 7 + 9) // 10)
+
+
+def is_count_shortfall(text: str, goal: str) -> bool:
+    """计数清单答案条数明显低于用户目标（通用，不限领域）。"""
+    if not is_count_list_goal(goal):
+        return False
+    need = min_acceptable_list_count(goal)
+    if not need:
+        return False
+    return count_list_items_in_text(text or "", goal=goal) < need
 
 
 def prefers_title_marks(goal: str) -> bool:
@@ -1379,11 +1448,16 @@ async def synthesize_rich_answer(
         return ensure_knowledge_disclaimer(draft_clean)
 
     n_hint = ""
-    m = re.search(r"(\d+)\s*(?:本|个|条|款|篇|首|部)", goal or "")
-    if m:
+    n_want = requested_list_count(goal)
+    if n_want:
+        draft_n = count_list_items_in_text(draft_clean, goal=goal)
         n_hint = (
-            f"用户明确要求约 {m.group(1)} 条；尽量覆盖并写充分，"
-            "禁止虚构草稿/材料中没有的新条目；已有条目必须写清简介。\n"
+            f"用户明确要求约 {n_want} 条；终稿条目数应接近 {n_want}"
+            f"（至少约 {min_acceptable_list_count(goal)} 条）。\n"
+            f"当前草稿约有 {draft_n} 条。"
+            "若草稿/材料不足目标条数：须用常识补齐到接近目标条数，并为每条写 2～3 句简介；"
+            "文首标明未充分联网核实；禁止只交 1～2 条详写交差；"
+            "禁止编造冷门具体数据/虚假出处。\n"
         )
 
     expand_hint = ""
@@ -1398,30 +1472,37 @@ async def synthesize_rich_answer(
             is_thin_list_draft(draft_clean)
             or force_expand
             or is_title_only_list_answer(draft_clean, goal=goal)
+            or is_count_shortfall(draft_clean, goal)
         ):
             expand_hint += (
-                "草稿若偏标题清单：用材料摘要/正文为每条补写 2～4 句；"
-                "材料不够的条目可用常识级简介补全并文首标明未充分核实；"
+                "草稿若偏标题清单或条数不足：用材料为已有条目补写 2～4 句；"
+                "条数仍不足目标时，用常识补齐条目并文首标明未充分核实；"
                 "禁止把整篇答案缩成材料里能核验的一两项。\n"
             )
     elif force_expand or is_thin_list_draft(draft_clean) or not materials:
         expand_hint = (
             "特别要求：当前几乎无检索正文。若草稿已有条目，必须扩写成可读详答，"
             f"文首必须写「{_KNOWLEDGE_DISCLAIMER}」；"
-            "禁止编造草稿中没有的新条目名；禁止只输出编号标题清单。\n"
+            "禁止只输出编号标题清单。\n"
         )
-        if is_count_list_goal(goal) and (
+        if is_count_list_goal(goal) and n_want:
+            expand_hint += (
+                "计数清单详写要求（通用，不限垂类）：\n"
+                f"- 条目数须接近用户要求的 {n_want} 条（可常识补齐，须声明未充分核实）；\n"
+                "- 开头 2 句总起；条目≥8 时分 3～5 个主题板块；\n"
+                "- 每条至少 2～3 句实质说明；文末给选用建议。\n"
+            )
+        elif is_count_list_goal(goal) and (
             draft_clean.count("《") >= 3
             or len(extract_answer_items(draft_clean)) >= 3
             or is_title_only_list_answer(draft_clean, goal=goal)
         ):
             expand_hint += (
-                "计数清单详写要求（通用，不限书籍）：\n"
+                "计数清单详写要求（通用，不限垂类）：\n"
                 "- 开头 2 句总起：条数、覆盖范围、适合谁；\n"
                 "- 条目≥8 时分成 3～5 个主题板块（每板块小标题+一句定位）；\n"
                 "- 每条至少 2～3 句：是什么、特点/适用场景、为何值得选；\n"
-                "- 全文须明显长于纯标题列表（大约每条不少于 40～60 字说明）；\n"
-                "- 文末给简短选用顺序建议；必须覆盖草稿里绝大部分具体条目。\n"
+                "- 全文须明显长于纯标题列表；文末给选用建议。\n"
             )
     from agent.research_policy import is_deep_research_goal
 
@@ -1794,24 +1875,73 @@ def is_series_padding_list(text: str) -> bool:
     return top_n >= 4 and top_n / len(bases) >= 0.35
 
 
+def _strip_advice_section(text: str) -> str:
+    """去掉文末选用/阅读建议段，避免建议里的《书名》干扰条目统计。"""
+    t = text or ""
+    m = re.search(r"(?m)^(选用建议|阅读建议|使用建议|参考建议)\s*[:：]?\s*$", t)
+    if m:
+        return t[: m.start()].rstrip()
+    m2 = re.search(r"(?m)^(选用建议|阅读建议|使用建议)[:：]", t)
+    if m2:
+        return t[: m2.start()].rstrip()
+    return t
+
+
 def _list_item_titles(text: str) -> list[str]:
-    items = extract_answer_items(text or "")
-    if len(items) >= 2:
-        return items
-    numbered: list[str] = []
-    for ln in (text or "").splitlines():
-        m = re.match(r"^\s*\d+[\.、．]\s*(?:\*\*)?《?([^》\n*]{2,60})", ln.strip())
-        if m:
-            numbered.append(m.group(1).strip().strip("*").strip())
-    return numbered
+    """从编号清单行提取条目标题（去掉冒号后说明；忽略建议段；去重）。"""
+    t = _strip_advice_section(text or "")
+    titles: list[str] = []
+    seen: set[str] = set()
+    for ln in t.splitlines():
+        m = re.match(r"^\s*\d+[\.、．]\s*(.+)$", ln.strip())
+        if not m:
+            continue
+        raw = m.group(1).strip()
+        raw = re.sub(r"https?://\S+", "", raw).strip()
+        mm = re.match(r"(?:\*\*)?《([^》]{1,40})》", raw)
+        if mm:
+            name = mm.group(1).strip()
+        else:
+            name = re.split(r"[：:\—–\-]", raw, 1)[0].strip()
+            name = re.sub(r"^\*\*|\*\*$", "", name).strip().strip("《》")
+        if not (2 <= len(name) <= 40):
+            continue
+        if is_junk_entity_name(name):
+            continue
+        key = _norm_item(name)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        titles.append(name)
+    if len(titles) >= 2:
+        return titles
+    # 回退：纯《题名》串（无编号时）
+    for m in re.finditer(r"《([^》]{1,40})》", t):
+        name = m.group(1).strip()
+        key = _norm_item(name)
+        if not key or key in seen or is_junk_entity_name(name):
+            continue
+        seen.add(key)
+        titles.append(name)
+    return titles
 
 
 def is_duplicate_heavy_list(text: str) -> bool:
-    """终稿出现完全重复条目（如 19、20 同名）。"""
-    items = _list_item_titles(text)
-    if len(items) < 2:
+    """编号清单主列表中出现完全重复条目标题（忽略文末建议段）。"""
+    t = _strip_advice_section(text or "")
+    raw_titles: list[str] = []
+    for ln in t.splitlines():
+        m = re.match(r"^\s*\d+[\.、．]\s*(.+)$", ln.strip())
+        if not m:
+            continue
+        raw = m.group(1).strip()
+        mm = re.match(r"(?:\*\*)?《([^》]{1,40})》", raw)
+        name = mm.group(1).strip() if mm else re.split(r"[：:\—–\-]", raw, 1)[0].strip("《》* ")
+        if 2 <= len(name) <= 40:
+            raw_titles.append(name)
+    if len(raw_titles) < 2:
         return False
-    norms = [_norm_item(x) for x in items if _norm_item(x)]
+    norms = [_norm_item(x) for x in raw_titles if _norm_item(x)]
     if len(norms) < 2:
         return False
     from collections import Counter
@@ -1821,14 +1951,28 @@ def is_duplicate_heavy_list(text: str) -> bool:
 
 
 def is_template_fabricated_list(text: str, *, goal: str = "") -> bool:
-    """检测模板硬凑清单：同前缀连造、标题高度同构（跨场景通用）。"""
+    """检测模板硬凑清单：同前缀连造、标题高度同构（跨场景通用）。
+
+    已有短评的充实清单：仅当「短标题 + 高度同构」才判硬凑，避免误杀正常分类推荐。
+    """
     items = _list_item_titles(text)
     if len(items) < 4:
         return False
     from collections import Counter
 
-    # 「X与Y / X和Y」同前缀连造（如历史与记忆/历史学/政治）
-    prefixes: list[str] = []
+    # 充实短评清单：同主题词头撞车是正常的（如多本「历史…」），不据此整篇判假
+    if not is_thin_list_draft(text) and not is_title_only_list_answer(text, goal=goal):
+        prefixes: list[str] = []
+        for it in items:
+            n = re.sub(r"[\s《》\*]+", "", it)
+            m = re.match(r"^([\u4e00-\u9fffA-Za-z]{2,8})[与和]", n)
+            if m:
+                prefixes.append(m.group(1).lower())
+        if prefixes and Counter(prefixes).most_common(1)[0][1] >= 4:
+            return True
+        return False
+
+    prefixes = []
     for it in items:
         n = re.sub(r"[\s《》\*]+", "", it)
         m = re.match(r"^([\u4e00-\u9fffA-Za-z]{2,8})[与和之]", n)
@@ -1836,11 +1980,9 @@ def is_template_fabricated_list(text: str, *, goal: str = "") -> bool:
             prefixes.append(m.group(1).lower())
     if prefixes and Counter(prefixes).most_common(1)[0][1] >= 3:
         return True
-    # 标题头 3～4 字大量撞车
     heads = [_norm_item(it)[:4] for it in items if len(_norm_item(it)) >= 4]
-    if heads and Counter(heads).most_common(1)[0][1] >= 4:
+    if heads and Counter(heads).most_common(1)[0][1] >= 5:
         return True
-    # 同一「定语人名/机构」挂在很多条上，且条目本身短而同构
     name_hits = re.findall(
         r"([\u4e00-\u9fff]{1,3}[·・.][\u4e00-\u9fff]{1,4}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)",
         text or "",

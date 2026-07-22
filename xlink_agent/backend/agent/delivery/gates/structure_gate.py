@@ -7,6 +7,7 @@ from typing import Any
 from agent.answer import (
     answer_parrots_search_titles,
     is_count_list_goal,
+    is_count_shortfall,
     is_duplicate_heavy_list,
     is_hollow_answer,
     is_off_type_list_item,
@@ -82,6 +83,8 @@ class StructureGate:
                     return DeliveryVerdict(False, "wrong_item_type", hint="条目类型不符")
             if is_title_only_list_answer(t, goal=goal) or is_thin_list_draft(t):
                 return DeliveryVerdict(False, "thin_list", hint="条目过薄，仅有标题")
+            if is_count_shortfall(t, goal):
+                return DeliveryVerdict(False, "count_shortfall", hint="条目数明显少于用户要求")
         elif is_thin_list_draft(t):
             return DeliveryVerdict(False, "thin_list", hint="条目过薄，仅有标题")
         return DeliveryVerdict(True, "")

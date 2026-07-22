@@ -26,6 +26,7 @@ from agent.answer import (
     has_substantive_content_facts,
     honest_grounded_list_answer,
     is_count_list_goal,
+    is_count_shortfall,
     is_honest_shortfall_answer,
     is_hollow_answer,
     is_poorly_grounded,
@@ -76,11 +77,13 @@ from agent.react import (
     parse_react_output,
 )
 from agent.research_policy import (
+    alt_search_queries,
     can_finish_research,
     count_search_steps,
     has_search_hit_facts,
     is_near_duplicate_search_query,
     next_research_tool,
+    prior_search_queries,
 )
 from agent.delivery_gate import get_default_delivery_gate
 from agent.safety import (
@@ -1085,6 +1088,39 @@ async def run_chat(
                                 "think": "搜索后自动抓取内容页",
                                 "reason": "auto_web_fetch",
                             }
+                    # 计数清单：finish 条数明显不足目标 → 优先补搜，不把「1 条详写」当完成
+                    if (
+                        not more
+                        and is_count_list_goal(task_ctx.goal or "")
+                        and is_count_shortfall(
+                            enriched_preview or content, task_ctx.goal or ""
+                        )
+                        and round_i < agent_max_tool_rounds - 1
+                    ):
+                        alts = alt_search_queries(
+                            task_ctx.goal or "",
+                            prior_search_queries(scratchpad.steps),
+                        )
+                        if alts:
+                            more = {
+                                "tool": "web_search",
+                                "args": {"query": alts[0]},
+                                "think": "清单条数不足目标，继续检索具体条目",
+                                "reason": "count_shortfall",
+                            }
+                        else:
+                            next_url = pick_fetch_url(
+                                task_ctx.facts,
+                                skip=task_ctx.urls_to_skip(),
+                                goal=task_ctx.goal or "",
+                            )
+                            if next_url:
+                                more = {
+                                    "tool": "web_fetch",
+                                    "args": {"url": next_url},
+                                    "think": "清单条数不足，再抓一页提炼条目",
+                                    "reason": "count_shortfall",
+                                }
                     if more:
                         tool_n = str(more["tool"])
                         args_n = more.get("args") or {}

@@ -138,14 +138,16 @@ async def run_delivery_pipeline(
         force_disclaimer=materials != MaterialStrength.USABLE,
     )
 
-    # 格式重试
+    # 格式重试（含条数不足补齐）
+    from agent.answer import is_count_shortfall
+
     text, retries = await format_retry_expand(
         model,
         goal=goal,
         draft=draft,
         current=text,
         profile=profile,
-        max_retries=params.retry_budget,
+        max_retries=max(params.retry_budget, 2 if is_count_shortfall(text, goal) else params.retry_budget),
     )
     text = format_normalize(text, materials=materials)
 
@@ -174,9 +176,18 @@ async def run_delivery_pipeline(
                 text = format_normalize(cand, materials=MaterialStrength.EMPTY)
 
     verdict = gate.check_final(goal=goal, answer=text, facts=task_ctx.facts)
-    # 允许：诚实短答 / 清单详写已合格但门控误杀 thin
-    if not verdict.ok and verdict.reason == "thin_list":
-        if not is_title_only_list_answer(text, goal=goal) and not is_thin_list_draft(text):
+    # 允许：充实详答被门控误杀（thin / 假重复 / 假模板）时放行
+    if not verdict.ok and verdict.reason in {
+        "thin_list",
+        "duplicate_items",
+        "fabricated_template",
+    }:
+        if (
+            not is_title_only_list_answer(text, goal=goal)
+            and not is_thin_list_draft(text)
+            and not is_count_shortfall(text, goal)
+            and answer_relevant_to_goal(text, goal)
+        ):
             verdict = type(verdict)(True, "structure_ok_override", verdict.hint)
 
     decision = decide_output(
@@ -216,6 +227,24 @@ async def run_delivery_pipeline(
         )
 
     if decision.action == OutputAction.RESCUE_DRAFT:
+        # 已有充实详答时禁止冲成薄标题清单（门控误杀 duplicate/template 时）
+        if (
+            text
+            and not is_title_only_list_answer(text, goal=goal)
+            and not is_thin_list_draft(text)
+            and not is_count_shortfall(text, goal)
+            and answer_relevant_to_goal(text, goal)
+        ):
+            return _track_deliver(
+                run_state,
+                FinalizePath.DRAFT_EXPANDED,
+                ensure_knowledge_disclaimer(text),
+                goal=goal,
+                facts=task_ctx.facts,
+                materials=materials,
+                round_i=round_i,
+                retries=retries,
+            )
         # 再尝试详写；失败才交标题抢救
         rich4 = await synthesize_rich_answer(
             model, goal=goal, facts=[], draft=draft, thought=thought, force_expand=True
