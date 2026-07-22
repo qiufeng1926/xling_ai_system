@@ -49,10 +49,22 @@ _SHALLOW_MARKERS = (
 )
 
 
-def is_deep_research_goal(goal: str) -> bool:
+def is_deep_research_goal(goal: str, *, profile: Any | None = None) -> bool:
     g = (goal or "").strip()
     if not g:
         return False
+    # 意图驱动：调研 / 高事实风险默认更深
+    if profile is not None:
+        intent = getattr(profile, "intent", None)
+        risk = getattr(profile, "risk", None)
+        intent_v = getattr(intent, "value", intent)
+        risk_v = getattr(risk, "value", risk)
+        if intent_v in {"chitchat", "code_gen"}:
+            return False
+        if intent_v == "research" or risk_v == "high_fact":
+            return True
+        if intent_v == "list_recommend":
+            return False  # 清单题走材料可用判定，不强制深研正文数
     if any(k in g for k in _SHALLOW_MARKERS):
         return False
     if any(k in g for k in _DEEP_MARKERS):

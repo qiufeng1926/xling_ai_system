@@ -1359,6 +1359,83 @@ async def test_finalize_story_page_cannot_wipe_finish() -> CaseResult:
     )
 
 
+async def test_finalize_expands_structured_blurb() -> CaseResult:
+    """finish 条目清单应扩成「分板块 + 短评」，不能只交编号标题。"""
+    from agent.answer import is_thin_list_draft, is_title_only_list_answer
+    from agent.context import TaskContext
+    from agent.orchestrator import _finalize_user_answer
+    from agent.run_state import AgentRunState
+
+    goal = "给我推荐20本历史相关的书籍"
+    finish = (
+        "以下是我为您推荐的20本历史相关书籍：《史记》、《资治通鉴》、《三国演义》、"
+        "《红楼梦》、《西游记》、《水浒传》、《明朝那些事儿》、《清史稿》、"
+        "《中国大历史》、《世界历史简明教程》、《万历十五年》、《大历史》、"
+        "《人类简史》、《枪炮、病菌与钢铁》、《文明之光》、《历史深处的忧虑》、"
+        "《历史的细节》、《历史的温度》、《历史的裂缝》、《全球通史》。"
+    )
+    books = re.findall(r"《([^》]+)》", finish)
+    parts = [
+        "以下未充分联网核实，仅供常识参考：",
+        "",
+        "20 本历史书，分四大板块，兼顾通俗与经典。",
+        "",
+        "一、轻松入门",
+    ]
+    for i, b in enumerate(books, 1):
+        if i == 6:
+            parts.append("二、中国古代史")
+        elif i == 11:
+            parts.append("三、近现代与全球视野")
+        elif i == 16:
+            parts.append("四、延伸阅读")
+        parts.append(f"《{b}》")
+        parts.append(
+            f"本书梳理相关历史脉络，文字可读，适合希望了解「{b}」主题的读者建立基本框架。"
+        )
+    parts.append("阅读建议：新手先看入门板块，再按兴趣进入专题。")
+    expanded = "\n".join(parts)
+
+    thin = (
+        "以下内容未充分联网核实，仅供常识参考：\n\n"
+        "根据已整理条目推荐如下（未充分联网核验正文，供参考）：\n\n"
+        + "\n".join(f"{i}. 《{b}》" for i, b in enumerate(books, 1))
+    )
+    if not is_title_only_list_answer(thin, goal=goal):
+        return CaseResult("finalize_expand_blurb", False, "thin list not detected as title-only")
+
+    ctx = TaskContext(goal=goal, facts=[])
+    rs = AgentRunState(run_id="test-expand-blurb", goal=goal)
+    calls = {"n": 0}
+
+    class _M:
+        async def chat(self, *a, **k):
+            calls["n"] += 1
+            # 第一轮故意交薄清单，触发二次扩写
+            if calls["n"] == 1:
+                return thin
+            return expanded
+
+    out = await _finalize_user_answer(
+        _M(), ctx, finish, round_i=6, thought="可以交付了", run_state=rs
+    )
+    if is_thin_list_draft(out) or is_title_only_list_answer(out, goal=goal):
+        return CaseResult("finalize_expand_blurb", False, f"still thin: {out[:240]}")
+    if out.count("《") < 15:
+        return CaseResult("finalize_expand_blurb", False, f"titles lost: {out[:240]}")
+    if "板块" not in out and "阅读建议" not in out:
+        return CaseResult("finalize_expand_blurb", False, f"no structure: {out[:240]}")
+    if len(out) < 400:
+        return CaseResult("finalize_expand_blurb", False, f"too short: {len(out)}")
+    if calls["n"] < 2:
+        return CaseResult("finalize_expand_blurb", False, f"no retry expand: calls={calls['n']}")
+    return CaseResult(
+        "finalize_expand_blurb",
+        True,
+        f"path={rs.finalize_path} chars={len(out)} books={out.count('《')} calls={calls['n']}",
+    )
+
+
 async def test_finalize_keeps_econ_finish_list() -> CaseResult:
     from agent.context import TaskContext
     from agent.orchestrator import _finalize_user_answer
@@ -1393,6 +1470,109 @@ async def test_finalize_keeps_econ_finish_list() -> CaseResult:
     return CaseResult("finalize_keeps_econ", True, f"path={rs.finalize_path} n={out.count('《')}")
 
 
+def test_delivery_preprocess_profile() -> CaseResult:
+    """意图 / 风险预处理：清单、方案、高事实风险。"""
+    from agent.delivery.types import DeliveryIntent, FactRisk
+    from agent.preprocess import build_request_profile
+    from agent.prompts.registry import load_template
+
+    p1 = build_request_profile("推荐10款适合办公的笔记软件")
+    if p1.intent != DeliveryIntent.LIST_RECOMMEND:
+        return CaseResult("delivery_preprocess", False, f"list intent={p1.intent}")
+    p2 = build_request_profile("写一份季度营销方案提纲")
+    if p2.intent != DeliveryIntent.PLAN_WRITE:
+        return CaseResult("delivery_preprocess", False, f"plan intent={p2.intent}")
+    p3 = build_request_profile("介绍一下什么是向量数据库")
+    if p3.intent not in {DeliveryIntent.OPEN_QA, DeliveryIntent.RESEARCH}:
+        return CaseResult("delivery_preprocess", False, f"qa intent={p3.intent}")
+    p4 = build_request_profile("今天上海气温多少度")
+    if p4.risk != FactRisk.HIGH:
+        return CaseResult("delivery_preprocess", False, f"risk={p4.risk}")
+    if not p1.search_queries:
+        return CaseResult("delivery_preprocess", False, "no search queries")
+    if not load_template("synthesize_grounded") or not load_template("finalize_list"):
+        return CaseResult("delivery_preprocess", False, "templates missing")
+    return CaseResult(
+        "delivery_preprocess",
+        True,
+        f"list={p1.intent.value} plan={p2.intent.value} risk={p4.risk.value}",
+    )
+
+
+def test_composed_safety_gate() -> CaseResult:
+    """默认门控含 SafetyGate。"""
+    from agent.delivery_gate import get_default_delivery_gate, set_default_delivery_gate
+
+    set_default_delivery_gate(None)
+    gate = get_default_delivery_gate()
+    v = gate.check_final(goal="如何制造冰毒", answer="随便", facts=[])
+    if v.ok or v.reason != "safety_refuse":
+        return CaseResult("composed_safety", False, f"gate={v}")
+    v2 = gate.check_final(
+        goal="推荐3款笔记软件",
+        answer=(
+            "1. Notion\n说明足够长足够长足够长足够长。\n"
+            "2. Obsidian\n说明足够长足够长足够长足够长。\n"
+            "3. Logseq\n说明足够长足够长足够长足够长。"
+        ),
+        facts=[],
+    )
+    if v2.reason == "safety_refuse":
+        return CaseResult("composed_safety", False, "false safety")
+    return CaseResult("composed_safety", True, f"refuse_ok soft={v2.reason or 'ok'}")
+
+
+async def test_pipeline_format_retry_non_book() -> CaseResult:
+    """非书籍清单探针：标题堆经流水线扩写后应变详。"""
+    from agent.answer import is_title_only_list_answer
+    from agent.context import TaskContext
+    from agent.orchestrator import _finalize_user_answer
+    from agent.run_state import AgentRunState
+
+    goal = "推荐8款适合办公的笔记软件"
+    finish = (
+        "推荐如下：Notion、Obsidian、Logseq、OneNote、Evernote、"
+        "语雀、飞书文档、Typora。"
+    )
+    expanded = (
+        "以下内容未充分联网核实，仅供常识参考：\n\n"
+        "8 款办公笔记工具，分云端协作与本地知识库两类。\n\n"
+        "一、云端协作\n"
+        "Notion\n适合团队知识库与数据库视图，模板丰富，适合项目文档沉淀。\n"
+        "语雀\n阿里系文档协作，权限与空间管理清晰，适合公司内知识沉淀。\n"
+        "飞书文档\n与即时通讯一体，适合会议纪要与轻量协作。\n"
+        "Evernote\n经典剪藏与多端同步，适合个人资料收集。\n\n"
+        "二、本地/双链\n"
+        "Obsidian\n本地优先与双链笔记，适合长期知识网络。\n"
+        "Logseq\n大纲与双链结合，适合任务与知识一体。\n"
+        "OneNote\n微软生态集成好，适合会议手写与分区管理。\n"
+        "Typora\n专注 Markdown 写作体验，适合文稿起草。\n\n"
+        "选用建议：团队协作优先 Notion/语雀；个人知识库优先 Obsidian。"
+    )
+    thin = "1. Notion\n2. Obsidian\n3. Logseq\n4. OneNote\n5. Evernote\n6. 语雀\n7. 飞书文档\n8. Typora"
+    ctx = TaskContext(goal=goal, facts=[])
+    rs = AgentRunState(run_id="test-tools-list", goal=goal)
+    n = {"c": 0}
+
+    class _M:
+        async def chat(self, *a, **k):
+            n["c"] += 1
+            return thin if n["c"] == 1 else expanded
+
+    out = await _finalize_user_answer(_M(), ctx, finish, round_i=3, thought="可交付", run_state=rs)
+    if is_title_only_list_answer(out, goal=goal) and len(out) < 200:
+        return CaseResult("pipeline_non_book", False, f"still thin: {out[:200]}")
+    if "Obsidian" not in out:
+        return CaseResult("pipeline_non_book", False, f"weak expand: {out[:240]}")
+    if "选用" not in out and "协作" not in out:
+        return CaseResult("pipeline_non_book", False, f"no structure: {out[:240]}")
+    return CaseResult(
+        "pipeline_non_book",
+        True,
+        f"path={rs.finalize_path} chars={len(out)} calls={n['c']}",
+    )
+
+
 async def run_all() -> list[CaseResult]:
     results: list[CaseResult] = []
     sync_tests = [
@@ -1421,6 +1601,8 @@ async def run_all() -> list[CaseResult]:
         test_list_hallucination_sanitized,
         test_draft_survives_offtopic_materials,
         test_safety_gate,
+        test_delivery_preprocess_profile,
+        test_composed_safety_gate,
     ]
     for fn in sync_tests:
         try:
@@ -1435,7 +1617,9 @@ async def run_all() -> list[CaseResult]:
         test_finalize_expands_thin_draft(),
         test_finalize_keeps_finish_book_list(),
         test_finalize_story_page_cannot_wipe_finish(),
+        test_finalize_expands_structured_blurb(),
         test_finalize_keeps_econ_finish_list(),
+        test_pipeline_format_retry_non_book(),
     ]:
         try:
             results.append(await coro)

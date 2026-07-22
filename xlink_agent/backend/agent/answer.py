@@ -388,16 +388,32 @@ def is_thin_list_draft(text: str) -> bool:
         return True
 
     numbered = [ln for ln in t.splitlines() if re.match(r"^\s*\d+[\.、．]", ln.strip())]
+    # 声明/套话头不算「说明段落」
+    _meta_ln = re.compile(
+        r"^(以下|为您|推荐|供参考|根据公开|根据本轮|根据检索|根据已整理|整理如下|"
+        r"未充分|仅供常识|仅供参考|若需要更完整|材料中明确)"
+    )
     explain_lines = [
         ln.strip()
         for ln in t.splitlines()
         if ln.strip()
         and not re.match(r"^\s*\d+[\.、．]", ln)
-        and not re.match(
-            r"^(以下|为您|推荐|供参考|根据公开|根据本轮|根据检索|整理如下)", ln
-        )
+        and not _meta_ln.match(ln.strip())
+        and not re.match(r"^[一二三四五六七八九十]+[、．.]", ln.strip())  # 仅板块标题不算说明
         and len(re.sub(r"[《》\*\#\s]", "", ln)) >= 18
     ]
+
+    # 编号行几乎全是短标题，且说明行不足「每条约一条」→ 薄清单
+    if len(numbered) >= 3:
+        short_n = sum(
+            1
+            for ln in numbered
+            if len(re.sub(r"^\s*\d+[\.、．]\s*", "", ln.strip())) <= 24
+        )
+        if short_n >= max(3, (len(numbered) * 2) // 3) and len(explain_lines) < max(
+            2, len(numbered) // 2
+        ):
+            return True
 
     # 编号行全是短标签（来源名/站点名）→ 一律视为薄清单（优先于 depth_score）
     if len(numbered) >= 2 and len(explain_lines) < 2:
@@ -418,15 +434,47 @@ def is_thin_list_draft(text: str) -> bool:
         if site_hits >= max(2, len(cleaned) // 2):
             return True
 
+    # 《题名》很多但全文偏短、几乎无说明 → 薄
+    marks = t.count("《")
+    if marks >= 5 and len(explain_lines) < max(2, marks // 3) and len(t) < marks * 36:
+        return True
+
     # 已有多行说明段落，不算薄
-    if len(explain_lines) >= 2 and len(t) >= 160:
+    if len(explain_lines) >= 3 and len(t) >= 280:
         return False
-    if answer_depth_score(t) >= 40 and len(explain_lines) >= 1:
+    if answer_depth_score(t) >= 55 and len(explain_lines) >= 3:
         return False
 
     if t.count("《") >= 3 and len(t) < 280 and len(explain_lines) < 2:
         return True
     return False
+
+
+def is_title_only_list_answer(text: str, *, goal: str = "") -> bool:
+    """计数清单终稿是否仍是「只有名称、无短评」——比 thin 更严，用于强制再扩写。"""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if not is_count_list_goal(goal) and t.count("《") < 3 and not re.search(
+        r"^\s*\d+[\.、．]", t, re.M
+    ):
+        return False
+    if is_thin_list_draft(t):
+        return True
+    titles = extract_title_marks(t, goal=goal) if t.count("《") >= 3 else []
+    n = max(len(titles), len(extract_answer_items(t)))
+    if n < 3:
+        return False
+    # 平均每条不足约 45 字实质内容 → 仍算标题堆
+    body = re.sub(r"《[^》]+》", "", t)
+    body = re.sub(r"(?m)^\s*\d+[\.、．]\s*", "", body)
+    body = re.sub(
+        r"以下内容未充分联网核实[^\n]*|根据已整理条目推荐如下[^\n]*|仅供常识参考[^\n]*",
+        "",
+        body,
+    )
+    substance = len(re.sub(r"\s+", "", body))
+    return substance < n * 40
 
 
 _SITE_LABELS = (
@@ -670,13 +718,17 @@ def is_off_topic_body_for_goal(text: str, goal: str) -> bool:
         return True
     # 计数清单：只有宽泛主题词、又无列表结构 → 常见「同主题但答错题型」
     if is_count_list_goal(g):
-        # 故事/通史站：即使夹杂《诗经》《春秋》，没有书单语义也算跑题
+        # 同主题但题型跑偏：通史故事/百科叙事页偶有《篇名》，没有清单语义也算跑题
         storyish = sum(
             1
             for k in ("历史故事", "盘古", "各朝代", "上下五千年", "5000言", "远古时代", "治水")
             if k in t
         )
-        list_cue = sum(1 for k in ("书单", "书籍推荐", "必读书", "好书", "豆瓣", "荐书") if k in t)
+        list_cue = sum(
+            1
+            for k in ("书单", "清单", "盘点", "推荐", "必读", "排行", "TOP", "选型", "对比评测")
+            if k in t
+        )
         if storyish >= 1 and list_cue == 0:
             return True
         if listish >= 2 and list_cue >= 1 and (strong_hit + weak_hit) >= 1:
@@ -877,13 +929,13 @@ def build_citations(facts: list[str], *, max_n: int = 8) -> list[dict[str, str]]
 
 
 def _fact_looks_like_list_source(fact: str) -> bool:
-    """是否像「清单/书单/盘点」来源，而非故事站正文里偶尔出现的《书名》。"""
+    """是否像「清单/盘点/选型」来源，而非叙事页里偶尔出现的《题名》。"""
     f = fact or ""
     if f.startswith("搜索结果"):
-        return any(k in f for k in ("推荐", "书单", "盘点", "好书", "必读", "豆瓣", "本 "))
-    if any(k in f[:80] for k in ("书单", "书籍推荐", "必读书", "好书推荐", "豆瓣")):
+        return any(k in f for k in ("推荐", "书单", "清单", "盘点", "必读", "选型", "对比", "本 ", "款 ", "个 "))
+    if any(k in f[:80] for k in ("书单", "清单", "盘点", "推荐", "选型指南", "对比评测")):
         return True
-    # 正文里有较多编号 + 书名号，才像清单页
+    # 正文里有较多编号 + 书名号/条目标记，才像清单页
     if f.count("《") >= 3 and len(re.findall(r"\d+[\.、．]", f[:800])) >= 3:
         return True
     return False
@@ -964,12 +1016,12 @@ def _is_and_template_title(name: str) -> bool:
     return bool(re.match(r"^[\u4e00-\u9fffA-Za-z]{2,8}与[\u4e00-\u9fffA-Za-z]{1,10}$", n))
 
 
-def format_title_marks_as_list(text: str, *, goal: str = "") -> str:
-    """把『《A》、《B》、…』草稿整理成编号列表（保留实质条目，去重、去错类型）。"""
-    titles = []
+def extract_title_marks(text: str, *, goal: str = "") -> list[str]:
+    """抽出文本中的《书名/条目标题》，去重并过滤错类型。"""
+    titles: list[str] = []
     seen: set[str] = set()
     for m in re.finditer(r"《([^》]{1,40})》", text or ""):
-        name = m.group(1).strip()
+        name = (m.group(1) or "").strip()
         if is_off_type_list_item(name, goal) or is_junk_entity_name(name):
             continue
         # 去掉末尾明显模板注水（如「历史学家的技艺：历史与历史学」连造）
@@ -982,6 +1034,31 @@ def format_title_marks_as_list(text: str, *, goal: str = "") -> str:
             continue
         seen.add(key)
         titles.append(name)
+    return titles
+
+
+def answer_keeps_draft_titles(
+    answer: str,
+    draft: str,
+    *,
+    goal: str = "",
+    min_ratio: float = 0.55,
+    min_keep: int = 5,
+) -> bool:
+    """扩写稿是否仍保留草稿中大部分《条目》（防 grounding 冲成单本）。"""
+    draft_titles = extract_title_marks(draft, goal=goal)
+    if len(draft_titles) < 3:
+        return True
+    ans_keys = {_norm_item(x) for x in extract_title_marks(answer, goal=goal)}
+    keep = sum(1 for t in draft_titles if _norm_item(t) in ans_keys)
+    need = max(min_keep, int(len(draft_titles) * min_ratio + 0.999))
+    need = min(need, len(draft_titles))
+    return keep >= need
+
+
+def format_title_marks_as_list(text: str, *, goal: str = "") -> str:
+    """把『《A》、《B》、…』草稿整理成编号列表（保留实质条目，去重、去错类型）。"""
+    titles = extract_title_marks(text, goal=goal)
     if len(titles) < 3:
         return (text or "").strip()
     n_want = requested_list_count(goal)
@@ -1095,26 +1172,24 @@ def materials_blob_for_synthesis(
     return blob[:max_chars]
 
 
-_SYNTH_SYSTEM = (
-    "你是通用信息整理编辑。优先「有依据、少幻觉」，其次才是篇幅。\n"
-    "根据「用户目标」与「检索材料 / 模型草稿」撰写最终答复，规则：\n"
-    "1. 开头 1～2 句总起（点明主题；若目标含条数/范围，写清楚）。\n"
-    "2. 简单题：总起 + 编号要点；每条至少 2～3 句实质说明，禁止只有标题。\n"
-    "3. 深度题：总起 + 分节「概览 → 结构或阶段 → 核心观点 → 小结/启示」，"
-    "每节有实质段落；但分节内容必须能在材料中找到依据。\n"
-    "4. 编号条目：标题行（书籍可用《书名》，新闻/普通条目禁止乱加《》）+ 随后说明；"
-    "有数字/时间须与材料一致。\n"
-    "5. **接地优先**：当检索材料能支撑当前题型时，事实须来自材料或草稿已写明内容；"
-    "若材料明显跑题（如荐书却只有百科定义/新闻公报），而草稿已有具体条目，应整理草稿并标明未充分联网核实，"
-    "**禁止**用跑题材料里的栏目名/规划名顶替草稿条目。\n"
-    "6. **禁止**把搜索引擎结果页标题、栏目名、合集名当成答案条目交差。\n"
-    "7. **禁止**让用户在只读任务里「回复编号 / 告诉我第几条 / 选一条再展开」；自行写完完整答案。\n"
-    "8. 实时精确数字/股价/天气等核验不到：明确说无法核验，禁止编造。\n"
-    "9. 检索材料为空或极弱时：若草稿已有实质内容，可整理草稿并在文首标明"
-    "「以下未充分联网核实，仅供参考」；"
-    "不要为了凑篇幅编造材料中没有的书名、数据、事件。\n"
-    "10. 只输出给用户的中文正文，禁止 JSON / 工具名 / 内部步骤 / Thought/Observation。"
-)
+def _synth_system_prompt() -> str:
+    """从模板中心加载综合 system；缺失时回退内置文案。"""
+    try:
+        from agent.prompts.assembler import assemble_synthesize_system
+
+        t = assemble_synthesize_system(profile=None)
+        if t:
+            return t
+    except Exception:
+        pass
+    return (
+        "你是通用信息整理编辑。优先「有依据、少幻觉」，其次才是可读性与结构。"
+        "只输出给用户的中文正文；清单题禁止只交编号标题。"
+    )
+
+
+# 兼容旧引用
+_SYNTH_SYSTEM = _synth_system_prompt()
 
 _KNOWLEDGE_DISCLAIMER = "以下内容未充分联网核实，仅供常识参考："
 
@@ -1270,23 +1345,23 @@ async def synthesize_rich_answer(
     thought: str = "",
     force_expand: bool = False,
 ) -> str:
-    """豆包风格交付：总起 + 编号条目；有材料时强制接地，禁止臆造细节。"""
+    """可读交付：总起 + 分板块/编号 + 短评；有材料时接地，禁止臆造细节。"""
     draft_clean = sanitize_public_answer(draft or "")
     list_materials_ok = (
         materials_support_count_list(facts, goal) if is_count_list_goal(goal) else True
     )
-    # 计数清单但材料跑题：清空材料包，避免用百科/新闻「接地」冲掉草稿
+    # 计数清单但材料跑题：清空材料包；force_expand 时禁止早退成纯标题清单
     if is_count_list_goal(goal) and not list_materials_ok:
         materials = ""
         if (
             draft_clean
+            and not force_expand
             and not is_template_fabricated_list(draft_clean, goal=goal)
             and draft_clean.count("《") >= 3
-            and not (force_expand and is_thin_list_draft(draft_clean))
+            and not is_thin_list_draft(draft_clean)
+            and not is_title_only_list_answer(draft_clean, goal=goal)
         ):
-            formatted = format_title_marks_as_list(draft_clean, goal=goal)
-            body = formatted if formatted.count("《") >= 3 else draft_clean
-            return ensure_knowledge_disclaimer(body)
+            return ensure_knowledge_disclaimer(draft_clean)
     else:
         materials = materials_blob_for_synthesis(facts, goal=goal)
 
@@ -1298,6 +1373,7 @@ async def synthesize_rich_answer(
         not materials
         and is_substantive_draft(draft_clean, goal)
         and not is_thin_list_draft(draft_clean)
+        and not is_title_only_list_answer(draft_clean, goal=goal)
         and not force_expand
     ):
         return ensure_knowledge_disclaimer(draft_clean)
@@ -1306,30 +1382,47 @@ async def synthesize_rich_answer(
     m = re.search(r"(\d+)\s*(?:本|个|条|款|篇|首|部)", goal or "")
     if m:
         n_hint = (
-            f"用户明确要求约 {m.group(1)} 条；尽量凑够并写充分，"
-            "材料不够就如实少写并说明，禁止虚构条目凑数。\n"
+            f"用户明确要求约 {m.group(1)} 条；尽量覆盖并写充分，"
+            "禁止虚构草稿/材料中没有的新条目；已有条目必须写清简介。\n"
         )
 
     expand_hint = ""
     if materials:
         expand_hint = (
-            "特别要求（接地）：只依据「检索材料」与草稿已有内容组织答案；"
-            "不要把 Thought 里的猜测写进终稿；材料没有的细节直接省略；"
-            "可概括材料，但禁止补充材料未出现的具体事实/数据/人名。\n"
+            "特别要求（接地）：以「检索材料」与草稿已有条目组织答案；"
+            "不要把 Thought 里的猜测写成未标明的已核实事实；"
+            "可概括材料；禁止补充材料与草稿都未出现的冷门具体数据。\n"
             "禁止把「以下N本/条」「N个高质量…」等清单套话当成具体条目。\n"
         )
-        if is_thin_list_draft(draft_clean) or force_expand:
+        if (
+            is_thin_list_draft(draft_clean)
+            or force_expand
+            or is_title_only_list_answer(draft_clean, goal=goal)
+        ):
             expand_hint += (
-                "草稿若只有标题清单：用材料中的摘要/正文为每条补写 2～4 句；"
-                "材料不够写的条目宁可删掉，也不要凭空扩写。\n"
+                "草稿若偏标题清单：用材料摘要/正文为每条补写 2～4 句；"
+                "材料不够的条目可用常识级简介补全并文首标明未充分核实；"
+                "禁止把整篇答案缩成材料里能核验的一两项。\n"
             )
     elif force_expand or is_thin_list_draft(draft_clean) or not materials:
         expand_hint = (
-            "特别要求：当前几乎无检索正文。若草稿已有条目，整理成可读答复，"
+            "特别要求：当前几乎无检索正文。若草稿已有条目，必须扩写成可读详答，"
             f"文首必须写「{_KNOWLEDGE_DISCLAIMER}」；"
-            "禁止为凑篇幅编造草稿中没有的书名、数据或事件；"
-            "宁可条目少、说明短，也不要臆造。\n"
+            "禁止编造草稿中没有的新条目名；禁止只输出编号标题清单。\n"
         )
+        if is_count_list_goal(goal) and (
+            draft_clean.count("《") >= 3
+            or len(extract_answer_items(draft_clean)) >= 3
+            or is_title_only_list_answer(draft_clean, goal=goal)
+        ):
+            expand_hint += (
+                "计数清单详写要求（通用，不限书籍）：\n"
+                "- 开头 2 句总起：条数、覆盖范围、适合谁；\n"
+                "- 条目≥8 时分成 3～5 个主题板块（每板块小标题+一句定位）；\n"
+                "- 每条至少 2～3 句：是什么、特点/适用场景、为何值得选；\n"
+                "- 全文须明显长于纯标题列表（大约每条不少于 40～60 字说明）；\n"
+                "- 文末给简短选用顺序建议；必须覆盖草稿里绝大部分具体条目。\n"
+            )
     from agent.research_policy import is_deep_research_goal
 
     if is_deep_research_goal(goal) and materials:
@@ -1352,7 +1445,7 @@ async def synthesize_rich_answer(
         )
 
     messages = [
-        {"role": "system", "content": _SYNTH_SYSTEM},
+        {"role": "system", "content": _synth_system_prompt()},
         {
             "role": "user",
             "content": (
@@ -1360,15 +1453,15 @@ async def synthesize_rich_answer(
                 f"{n_hint}"
                 f"{expand_hint}\n"
                 f"检索材料：\n{materials or '（无）'}\n\n"
-                f"模型草稿（可参考；与材料冲突时以材料为准；薄清单请用材料扩写）：\n"
+                f"模型草稿（可参考；与材料冲突时以材料为准；薄清单请扩写）：\n"
                 f"{(draft or '（空）')[:2500]}\n\n"
                 f"{thought_block}"
-                "请输出最终中文答案（有材料则接地；无材料则短而诚实）。"
+                "请输出最终中文答案（有材料则接地；无材料则详写草稿条目并标明未充分核实）。"
             ),
         },
     ]
     try:
-        text = await model.chat(messages, temperature=0.2)
+        text = await model.chat(messages, temperature=0.35)
     except Exception:
         if is_substantive_draft(draft_clean, goal, facts=facts):
             return draft_clean if materials else ensure_knowledge_disclaimer(draft_clean)
@@ -1379,6 +1472,40 @@ async def synthesize_rich_answer(
     out = strip_pick_number_prompts(out)
     if not materials and out:
         out = ensure_knowledge_disclaimer(out)
+
+    # force_expand 后仍是标题堆 → 再强制扩写一轮
+    if force_expand and out and is_title_only_list_answer(out, goal=goal):
+        retry_messages = [
+            {"role": "system", "content": _synth_system_prompt()},
+            {
+                "role": "user",
+                "content": (
+                    f"用户目标：{goal}\n"
+                    "上一版答案仍然只有标题/编号，不合格。\n"
+                    "请在保留全部原有条目名称的前提下重写：必须分板块，"
+                    "每条写 2～3 句实质说明，文末给选用建议；"
+                    f"文首保留「{_KNOWLEDGE_DISCLAIMER}」。\n\n"
+                    f"草稿条目来源：\n{(draft or out)[:2500]}\n\n"
+                    f"不合格的上一版：\n{out[:2000]}\n\n"
+                    "请输出合格的详细中文答案。"
+                ),
+            },
+        ]
+        try:
+            text2 = await model.chat(retry_messages, temperature=0.45)
+            out2 = sanitize_public_answer(text2 or "")
+            out2 = strip_pick_number_prompts(out2)
+            if out2:
+                if not materials:
+                    out2 = ensure_knowledge_disclaimer(out2)
+                if not is_title_only_list_answer(out2, goal=goal) and (
+                    answer_keeps_draft_titles(out2, draft_clean or out, goal=goal)
+                    or len(out2) > len(out) + 120
+                ):
+                    out = out2
+        except Exception:
+            pass
+
     if (
         not out
         or is_hollow_answer(out)
@@ -1389,7 +1516,6 @@ async def synthesize_rich_answer(
         if is_substantive_draft(draft_clean, goal, facts=facts):
             fb = strip_pick_number_prompts(draft_clean)
             return fb if materials else ensure_knowledge_disclaimer(fb)
-        # 薄清单：模型误杀时仍回退草稿，避免交空壳
         if draft_clean and (
             extract_answer_items(draft_clean) or draft_clean.count("《") >= 2 or len(draft_clean) >= 24
         ):
@@ -1404,17 +1530,21 @@ async def synthesize_rich_answer(
         return ""
     # 有材料却几乎不接地 → 回退草稿或材料摘要，避免幻觉终稿
     if materials and is_poorly_grounded(out, facts, goal=goal):
-        # 计数清单：草稿书名远多于材料实体时，禁止用 format_entity_list 冲成单条
         if is_count_list_goal(goal) and draft_clean.count("《") >= 5:
-            formatted = format_title_marks_as_list(draft_clean, goal=goal)
-            body = formatted if formatted.count("《") >= 3 else draft_clean
-            if body.count("《") >= 5:
-                return ensure_knowledge_disclaimer(strip_pick_number_prompts(body))
+            # 详写且保住条目：即使与跑题材料不重合也保留
+            if answer_keeps_draft_titles(out, draft_clean, goal=goal) and not is_title_only_list_answer(
+                out, goal=goal
+            ):
+                return strip_pick_number_prompts(out)
+            if not force_expand:
+                formatted = format_title_marks_as_list(draft_clean, goal=goal)
+                body = formatted if formatted.count("《") >= 3 else draft_clean
+                if body.count("《") >= 5:
+                    return ensure_knowledge_disclaimer(strip_pick_number_prompts(body))
         if is_substantive_draft(draft_clean, goal, facts=facts) and not is_poorly_grounded(
             draft_clean, facts, goal=goal
         ):
             return strip_pick_number_prompts(draft_clean)
-        # 用材料拼一段保守答复（仅当草稿也撑不起清单时）
         from agent.context import TaskContext
 
         conservative = synthesize_public_answer(
@@ -1435,9 +1565,14 @@ async def synthesize_rich_answer(
             formatted = format_title_marks_as_list(draft_clean, goal=goal)
             body = formatted if formatted.count("《") >= 3 else draft_clean
             return ensure_knowledge_disclaimer(strip_pick_number_prompts(body))
-    # 扩写后若反而更薄，回退草稿
+    # 扩写后若反而更薄，回退草稿（详写成功时除外）
     if draft_clean and answer_depth_score(out) + 8 < answer_depth_score(draft_clean):
-        return strip_pick_number_prompts(draft_clean)
+        if not (
+            force_expand
+            and not is_title_only_list_answer(out, goal=goal)
+            and answer_keeps_draft_titles(out, draft_clean, goal=goal)
+        ):
+            return strip_pick_number_prompts(draft_clean)
     # 计数清单：模型 grounding 后条目骤减 → 回退草稿
     if (
         is_count_list_goal(goal)
@@ -1800,14 +1935,32 @@ def honest_short_book_answer(goal: str, facts: list[str] | None = None) -> str:
 def sanitize_hallucinated_list_answer(
     text: str, *, goal: str = "", facts: list[str] | None = None
 ) -> str:
-    """终稿清洗：去重；模板/重复时从原文抢救条目，禁止用跑题 facts 顶替已总结清单。"""
+    """终稿清洗：去重；模板/重复时从原文抢救条目，禁止用跑题 facts 顶替已总结清单。
+
+    已是「分板块+短评」的充实答复不得压成纯书名编号清单。
+    """
     t = dedupe_numbered_list_answer(sanitize_public_answer(text or ""))
     if not t:
         return t
     if not is_count_list_goal(goal):
         return t
 
-    # 文本里已有足够书名号 → 一律先抢救成干净编号列表（去重、去错类型）
+    # 充实答复：仅在模板/重复/错类型时抢救；否则原样保留短评结构
+    if t.count("《") >= 3 and not is_thin_list_draft(t):
+        if (
+            is_duplicate_heavy_list(t)
+            or is_template_fabricated_list(t, goal=goal)
+            or is_series_padding_list(t)
+        ):
+            return rescue_count_list_answer(t, goal=goal, facts=facts)
+        items = _list_item_titles(t)
+        if items:
+            bad = sum(1 for it in items if is_off_type_list_item(it, goal))
+            if bad >= max(1, (len(items) + 1) // 2):
+                return rescue_count_list_answer(t, goal=goal, facts=facts)
+        return t
+
+    # 薄清单 / 标题堆：整理成干净编号列表（去重、去错类型）
     if t.count("《") >= 3:
         rescued = rescue_count_list_answer(t, goal=goal, facts=facts)
         if rescued.count("《") >= 3:

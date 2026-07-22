@@ -38,6 +38,8 @@ class FinalizePath(str, Enum):
     QUALITY_FORCE_EXPAND = "quality_force_expand"
     QUALITY_REJECT_PARROT = "quality_reject_parrot"
     WEAK_MATERIALS = "weak_materials"
+    FORMAT_RETRY = "format_retry"
+    PIPELINE_PASS = "pipeline_pass"
 
 
 @dataclass

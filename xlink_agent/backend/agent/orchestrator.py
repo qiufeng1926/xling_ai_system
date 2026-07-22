@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from agent.answer import (
     answer_depth_score,
+    answer_keeps_draft_titles,
     answer_parrots_search_titles,
     asks_user_to_pick_number,
     build_citations,
@@ -30,6 +31,7 @@ from agent.answer import (
     is_poorly_grounded,
     is_substantive_draft,
     is_thin_list_draft,
+    is_title_only_list_answer,
     looks_like_internal,
     materials_usable_for_goal,
     pick_fetch_url,
@@ -638,302 +640,17 @@ async def _finalize_user_answer(
     thought: str = "",
     run_state: Any | None = None,
 ) -> str:
-    """交付：富文本总结为主；经 AnswerQualityGate 收口，禁止标题清单交差。"""
-    goal = task_ctx.goal or ""
-    gate = get_default_delivery_gate()
-    if is_disallowed_request(goal):
-        if run_state is not None:
-            run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
-        return SAFETY_REFUSAL
-    if is_safety_refusal(content or ""):
-        if run_state is not None:
-            run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
-        return SAFETY_REFUSAL
-    # 终稿仅查「泄漏禁止细节」，不用提问级规则扫全文（防「色情监管」误杀）
-    if answer_contains_prohibited_detail(content or ""):
-        if run_state is not None:
-            run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
-        return SAFETY_REFUSAL
-    # 若本轮曾有更好的 finish 草稿（调研拦截后丢失），优先作扩写种子
-    seed_content = content or ""
-    if run_state is not None:
-        saved = getattr(run_state, "react_finish_draft", "") or ""
-        if saved and (
-            is_hollow_answer(seed_content)
-            or is_thin_list_draft(seed_content)
-            or answer_depth_score(saved) > answer_depth_score(seed_content) + 8
-        ):
-            seed_content = saved
-    draft = enrich_finish_answer(
-        seed_content,
+    """交付流水线入口：预处理 → 综合 → 格式重试 → 门控 → 输出决策。"""
+    from agent.delivery.pipeline import run_delivery_pipeline
+
+    return await run_delivery_pipeline(
+        model,
+        task_ctx,
+        content,
+        round_i=round_i,
         thought=thought,
-        facts=task_ctx.facts,
-        goal=goal,
+        run_state=run_state,
     )
-    draft = _reject_internal_answer(draft, goal)
-    draft = strip_pick_number_prompts(draft)
-
-    has_materials = materials_usable_for_goal(task_ctx.facts, goal)
-    fact_n = len(task_ctx.facts)
-
-    def _track(path, text: str) -> str:
-        text = enforce_safety_answer(goal=goal, answer=text or "")
-        if is_safety_refusal(text):
-            if run_state is not None:
-                run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
-            return SAFETY_REFUSAL
-        text = strip_pick_number_prompts(_reject_internal_answer(text, goal) or text or "")
-        if asks_user_to_pick_number(text):
-            text = strip_pick_number_prompts(text)
-        # 计数清单：若清洗后条目骤减，从清洗前文本抢救（避免把 finish 书单冲成 facts 里的规划名）
-        before_san = text
-        text = sanitize_hallucinated_list_answer(text, goal=goal, facts=task_ctx.facts)
-        if (
-            is_count_list_goal(goal)
-            and before_san.count("《") >= 5
-            and (text or "").count("《") < 3
-        ):
-            text = rescue_count_list_answer(before_san, goal=goal, facts=task_ctx.facts)
-        text = enforce_safety_answer(goal=goal, answer=text)
-        if is_safety_refusal(text):
-            if run_state is not None:
-                run_state.record_finalize(FinalizePath.SAFETY_REFUSAL, SAFETY_REFUSAL, round_i=round_i)
-            return SAFETY_REFUSAL
-        # 质量门：不合格不得交付；有材料却几乎不接地也拒
-        verdict = gate.check_final(goal=goal, answer=text, facts=task_ctx.facts)
-        if text and not verdict.ok:
-            # 已整理的书名清单 / 诚实短答：允许薄列表交付
-            allow_list = (
-                verdict.reason in {"thin_list", "poor_grounding"}
-                and (
-                    is_honest_shortfall_answer(text)
-                    or (
-                        is_count_list_goal(goal)
-                        and text.count("《") >= 3
-                        and "推荐如下" in text
-                    )
-                )
-            )
-            if not allow_list:
-                if run_state is not None:
-                    run_state.intercept(verdict.reason or "quality_reject", round_i=round_i)
-                return ""
-        if text and has_materials and is_poorly_grounded(text, task_ctx.facts, goal=goal):
-            if not (
-                is_honest_shortfall_answer(text)
-                or (is_count_list_goal(goal) and text.count("《") >= 3)
-            ):
-                if run_state is not None:
-                    run_state.intercept("poor_grounding", round_i=round_i)
-                return ""
-        if run_state is not None:
-            run_state.record_finalize(path, text, round_i=round_i)
-            run_state.snapshot_answer(
-                "finalize_ctx",
-                text,
-                round_i=round_i,
-                path=path.value if hasattr(path, "value") else str(path),
-                has_materials=has_materials,
-                fact_count=fact_n,
-            )
-            logger.info(
-                "deliver[%s] path=%s chars=%s preview=%s",
-                run_state.run_id[:8],
-                path.value if hasattr(path, "value") else path,
-                len(text or ""),
-                re.sub(r"\s+", " ", (text or ""))[:160],
-            )
-        return text
-
-    async def _force_quality_deliver(preferred_path, seed: str) -> str:
-        """不合格草稿：接地扩写 → 抢救 finish 清单；禁止用跑题 facts 顶替已总结条目。"""
-        seed_text = seed or draft or ""
-        # 计数清单且草稿已有大量书名：直接抢救交付，不再走「facts 诚实短答」把书单冲掉
-        if is_count_list_goal(goal) and seed_text.count("《") >= 3:
-            rescued = rescue_count_list_answer(seed_text, goal=goal, facts=task_ctx.facts)
-            out = _track(FinalizePath.DRAFT_DIRECT_NO_MATERIALS, rescued)
-            if out:
-                return out
-            return enforce_safety_answer(goal=goal, answer=rescued)
-
-        rich = await synthesize_rich_answer(
-            model,
-            goal=goal,
-            facts=task_ctx.facts,
-            draft=seed_text,
-            thought=thought,
-            force_expand=True,
-        )
-        final = _reject_internal_answer(rich, goal)
-        out = _track(FinalizePath.QUALITY_FORCE_EXPAND, final or "")
-        if out:
-            return out
-        # 扩写结果本身合格但 _track 因 path 标记：优先 DRAFT_EXPANDED
-        if final and gate.check_final(goal=goal, answer=final, facts=task_ctx.facts).ok:
-            if not (has_materials and is_poorly_grounded(final, task_ctx.facts, goal=goal)):
-                out = _track(FinalizePath.DRAFT_EXPANDED, final)
-                if out:
-                    return out
-        if is_substantive_draft(seed_text, goal, facts=task_ctx.facts):
-            out = _track(preferred_path, seed_text)
-            if out:
-                return out
-        if is_count_list_goal(goal):
-            fallback = rescue_count_list_answer(seed_text, goal=goal, facts=task_ctx.facts)
-            out = _track(FinalizePath.KNOWLEDGE_FALLBACK, fallback)
-            if out:
-                return out
-            if run_state is not None:
-                run_state.record_finalize(FinalizePath.KNOWLEDGE_LAST_RESORT, fallback, round_i=round_i)
-            return enforce_safety_answer(goal=goal, answer=fallback)
-        fb = await knowledge_fallback_answer(model, goal, facts=task_ctx.facts)
-        final = _reject_internal_answer(fb or "", goal)
-        out = _track(FinalizePath.KNOWLEDGE_FALLBACK, final or "")
-        if out:
-            return out
-        offline = synthesize_public_answer(task_ctx)
-        fallback = sanitize_hallucinated_list_answer(
-            sanitize_public_answer(fb or offline or ""),
-            goal=goal,
-            facts=task_ctx.facts,
-        ) or (
-            f"关于「{goal[:60]}」，本轮未能从公开来源整理出足够可核验材料，"
-            "暂不给出可能不准确的细节。请换个更具体的问法，或稍后再试。"
-        )
-        if not any(k in fallback[:60] for k in ("未充分", "未能", "无法核验", "仅供")):
-            fallback = ensure_knowledge_disclaimer(fallback)
-        if run_state is not None:
-            run_state.record_finalize(FinalizePath.KNOWLEDGE_LAST_RESORT, fallback, round_i=round_i)
-        return enforce_safety_answer(goal=goal, answer=fallback)
-
-    # 硬优先：finish/草稿已列出足够《条目》→ 直接抢救交付，禁止 rich_synthesis 用单条实体冲掉
-    if is_count_list_goal(goal) and (draft or "").count("《") >= 5:
-        rescued = rescue_count_list_answer(draft, goal=goal, facts=task_ctx.facts)
-        if (rescued or "").count("《") >= 5:
-            out = _track(FinalizePath.DRAFT_DIRECT_NO_MATERIALS, rescued)
-            if out:
-                return out
-
-    # 无材料 + 薄清单/门控不合格：有书名号则先抢救；否则再扩写
-    if not has_materials and draft and (
-        is_thin_list_draft(draft)
-        or not gate.check_draft(goal=goal, draft=draft, facts=task_ctx.facts).ok
-    ):
-        if is_count_list_goal(goal) and (draft or "").count("《") >= 3:
-            rescued = rescue_count_list_answer(draft, goal=goal, facts=task_ctx.facts)
-            out = _track(FinalizePath.DRAFT_DIRECT_NO_MATERIALS, rescued)
-            if out:
-                return out
-        rich = await synthesize_rich_answer(
-            model,
-            goal=goal,
-            facts=task_ctx.facts,
-            draft=draft,
-            thought=thought,
-            force_expand=True,
-        )
-        final = _reject_internal_answer(rich, goal)
-        if final and answer_depth_score(final) >= answer_depth_score(draft):
-            out = _track(FinalizePath.DRAFT_EXPANDED, final)
-            if out:
-                return out
-        return await _force_quality_deliver(FinalizePath.DRAFT_EXPANDED, draft)
-
-    # 有实质性草稿但无可用检索材料：可交，但必须标明未充分核实
-    if is_substantive_draft(draft, goal, facts=task_ctx.facts) and not has_materials:
-        body = draft
-        if is_count_list_goal(goal) and (draft or "").count("《") >= 3:
-            formatted = format_title_marks_as_list(draft, goal=goal)
-            if formatted.count("《") >= 3:
-                body = formatted
-        out = _track(
-            FinalizePath.DRAFT_DIRECT_NO_MATERIALS,
-            ensure_knowledge_disclaimer(body),
-        )
-        if out:
-            return out
-        return await _force_quality_deliver(FinalizePath.DRAFT_DIRECT_NO_MATERIALS, draft)
-
-    if has_materials:
-        rich = await synthesize_rich_answer(
-            model,
-            goal=goal,
-            facts=task_ctx.facts,
-            draft=draft,
-            thought=thought,
-            force_expand=is_thin_list_draft(draft or "")
-            or bool(draft and not gate.check_draft(goal=goal, draft=draft, facts=task_ctx.facts).ok),
-        )
-        final = _reject_internal_answer(rich, goal)
-        if final and answer_relevant_to_goal(final, goal) and not answer_parrots_search_titles(
-            final, task_ctx.facts
-        ):
-            out = _track(FinalizePath.RICH_SYNTHESIS, final)
-            if out:
-                return out
-        if is_substantive_draft(draft, goal, facts=task_ctx.facts):
-            out = _track(FinalizePath.DRAFT_AFTER_RICH_FAIL, draft)
-            if out:
-                return out
-        return await _force_quality_deliver(FinalizePath.QUALITY_FORCE_EXPAND, draft or final or "")
-
-    elif draft and not is_hollow_answer(draft):
-        out = _track(FinalizePath.DRAFT_NON_HOLLOW, draft)
-        if out:
-            return out
-
-    # 无材料且草稿不足：常识兜底（仅当本轮已无法继续取数时由编排层调用）
-    if not has_materials or needs_knowledge_fallback(goal, task_ctx.facts, max(round_i, 1)):
-        if is_substantive_draft(draft, goal, facts=task_ctx.facts):
-            out = _track(FinalizePath.SUBSTANTIVE_BEFORE_FALLBACK, draft)
-            if out:
-                return out
-        if is_count_list_goal(goal):
-            rescued = rescue_count_list_answer(draft or "", goal=goal, facts=task_ctx.facts)
-            out = _track(FinalizePath.KNOWLEDGE_FALLBACK, rescued)
-            if out:
-                return out
-            return enforce_safety_answer(goal=goal, answer=rescued)
-        fb = await knowledge_fallback_answer(model, goal, facts=task_ctx.facts)
-        final = _reject_internal_answer(fb or "", goal)
-        out = _track(FinalizePath.KNOWLEDGE_FALLBACK, final or "")
-        if out:
-            return out
-        return await _force_quality_deliver(FinalizePath.KNOWLEDGE_FALLBACK, draft)
-
-    verified = await verify_final_answer(
-        model, goal=goal, facts=task_ctx.facts, draft=draft or "", thought=thought
-    )
-    final = _reject_internal_answer(verified, goal)
-    if final and answer_relevant_to_goal(final, goal):
-        out = _track(FinalizePath.VERIFIED, final)
-        if out:
-            return out
-    if is_substantive_draft(draft, goal, facts=task_ctx.facts):
-        out = _track(FinalizePath.SUBSTANTIVE_AFTER_VERIFY, draft)
-        if out:
-            return out
-
-    entities = extract_grounded_entities_from_facts(task_ctx.facts, goal=goal)
-    if entities:
-        rich2 = await synthesize_rich_answer(
-            model,
-            goal=goal,
-            facts=task_ctx.facts,
-            draft=format_entity_list_answer(goal, entities),
-            thought=thought,
-            force_expand=True,
-        )
-        final = _reject_internal_answer(rich2, goal)
-        out = _track(FinalizePath.ENTITY_SYNTHESIS, final or "")
-        if out:
-            return out
-        # 禁止 ENTITY_LIST_RAW 直接交标题实体列表
-        return await _force_quality_deliver(
-            FinalizePath.ENTITY_SYNTHESIS, format_entity_list_answer(goal, entities)
-        )
-
-    return await _force_quality_deliver(FinalizePath.KNOWLEDGE_LAST_RESORT, draft)
 
 
 async def _emit_answer(text: str) -> AsyncIterator[str]:
