@@ -115,7 +115,14 @@ def required_file_write_tool(
     for label, tool in _CONSTRAINT_TO_WRITE_TOOL.items():
         if label in blob:
             return tool
-    if re.search(r"以文档形式|word\s*文档|\bdocx\b|输出\s*Word", blob, re.I):
+    # 含错别字「形势」、写入/下载文档等口语
+    if re.search(
+        r"以文档(?:形式|形势)|文档的?(?:形式|形势)|word\s*文档|\bdocx\b|输出\s*Word|"
+        r"写入文档|生成文档|做成文档|文档形式|可下载的?文档|返回.{0,6}文档|"
+        r"下载.{0,6}文档|给我.{0,4}文档|文档给我",
+        blob,
+        re.I,
+    ):
         return "file_write_docx"
     if re.search(r"\bxlsx\b|excel\s*表格", blob, re.I):
         return "file_write_xlsx"
@@ -136,7 +143,11 @@ def extract_constraints(text: str) -> list[str]:
     if m:
         out.append(f"数量约 {m.group(1)}{m.group(2)}")
     for fmt, label in (
-        (r"\bdocx\b|word|Word|以文档形式|文档形式", "输出 Word/docx"),
+        (
+            r"\bdocx\b|word|Word|以文档(?:形式|形势)|文档的?(?:形式|形势)|文档形式|"
+            r"写入文档|生成文档|做成文档|可下载的?文档|返回.{0,6}文档|文档给我",
+            "输出 Word/docx",
+        ),
         (r"\bxlsx\b|excel|Excel|表格", "输出 Excel/xlsx"),
         (r"\bpptx\b|PPT|幻灯片", "输出 PPT"),
         (r"\bpdf\b|PDF", "输出 PDF"),

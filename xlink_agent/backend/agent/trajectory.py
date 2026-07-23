@@ -117,6 +117,7 @@ INTERCEPT_TITLE: dict[str, str] = {
     "openlibrary_catalog": "用书目库补充材料",
     "file_claim_recover": "改为实际生成文件",
     "missing_file_write": "约束要求文档，先写文件",
+    "duplicate_file_write": "文档已生成，停止重复写入",
     "llm_unavailable_auto_tool": "模型中断，自动继续取数",
     "need_alt_search": "换角度补充检索",
     "need_more_bodies": "继续抓取更多正文",

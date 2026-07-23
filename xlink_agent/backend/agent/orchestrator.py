@@ -1445,6 +1445,50 @@ async def run_chat(
                     assistant_parts = [content]
                     break
 
+            # 本轮已成功写过文件：禁止重复 file_write_* 空转（日志里曾连写 6～9 个同名 docx）
+            if tool.startswith("file_write_") and task_ctx.artifacts:
+                names = "、".join(task_ctx.artifacts[-4:])
+                tip = (
+                    f"本轮已生成文档（{names}），禁止再次 {tool}。"
+                    "请直接 finish，并在答复中提示用户下载已有文件。"
+                )
+                run_state.intercept("duplicate_file_write", round_i=round_i, tool=tool)
+                yield _emit_traj(
+                    intercept_step("duplicate_file_write", round_i=round_i, detail=names[:120])
+                )
+                scratchpad.add_thought_action(think, tool, args, round_i)
+                scratchpad.set_observation(tip)
+                yield sse("react.action", {"round": round_i, "tool": tool, "args": args, "thought": think})
+                yield sse("react.observation", {"round": round_i, "observation": tip, "tool": tool})
+                async for chunk in _emit_think(f"Observation: {tip}\n"):
+                    yield chunk
+                task_ctx.add_step(tip)
+                # 有产物则直接收束交付，避免模型继续循环写文件
+                content = (
+                    getattr(run_state, "react_finish_draft", "")
+                    or think
+                    or f"文档已生成：{names}，可点击下载。"
+                )
+                if names and names not in content:
+                    content = content.rstrip() + f"\n\n文件 {names} 已准备好，可点击下方下载。"
+                content = await _finalize_user_answer(
+                    model, task_ctx, content, round_i=round_i, thought=think, run_state=run_state
+                )
+                citations = build_citations(task_ctx.facts)
+                if citations:
+                    yield sse("citations", {"items": citations})
+                yield _emit_traj(finish_step(round_i=round_i, detail="文档已就绪"))
+                scratchpad.add_thought_action(think, "finish", content, round_i)
+                run_state.record_delivered(content)
+                yield sse(
+                    "react.finish",
+                    {"round": round_i, "thought": "duplicate_file_write", "content": content[:500]},
+                )
+                async for chunk in _emit_answer(content):
+                    yield chunk
+                assistant_parts = [content]
+                break
+
             # 写文件：先补全正文，避免生成空文件
             if tool.startswith("file_write_"):
                 args = await _ensure_file_write_content(
