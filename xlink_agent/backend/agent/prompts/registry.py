@@ -13,6 +13,7 @@ _TEMPLATE_FILES: dict[str, str] = {
     "synthesize_grounded": "synthesize_grounded.md",
     "synthesize_expand": "synthesize_expand.md",
     "finalize_list": "finalize_list.md",
+    "anti_hallucination_list": "anti_hallucination_list.md",
     "fallback_honest": "fallback_honest.md",
 }
 

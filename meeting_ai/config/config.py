@@ -57,6 +57,10 @@ deepseek_base_url = _env("DEEPSEEK_BASE_URL", "https://api.deepseek.com") or "ht
 
 # 图文速览（与 Markdown 并行生成，每场必生成）
 visual_summary_retry_max = int(_env("VISUAL_SUMMARY_RETRY_MAX", "2") or "2")
+# Markdown 速览网络/连接失败重试次数（不含首次）；默认与图文一致
+markdown_summary_retry_max = int(
+    _env("MARKDOWN_SUMMARY_RETRY_MAX", str(visual_summary_retry_max)) or str(visual_summary_retry_max)
+)
 visual_chunk_chars = int(_env("VISUAL_CHUNK_CHARS", "6000") or "6000")
 visual_chunk_overlap = int(_env("VISUAL_CHUNK_OVERLAP", "400") or "400")
 visual_json_repair = _env_bool("VISUAL_JSON_REPAIR", "true")

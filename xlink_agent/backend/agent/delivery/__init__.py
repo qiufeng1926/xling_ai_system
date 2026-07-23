@@ -4,6 +4,7 @@ from agent.delivery.types import (
     DeliveryIntent,
     DeliveryResult,
     FactRisk,
+    FactTier,
     MaterialStrength,
     RequestProfile,
 )
@@ -12,6 +13,7 @@ __all__ = [
     "DeliveryIntent",
     "DeliveryResult",
     "FactRisk",
+    "FactTier",
     "MaterialStrength",
     "RequestProfile",
 ]

@@ -265,11 +265,51 @@ def test_dialog_followup_expansion() -> CaseResult:
     ok_follow = is_dialog_followup(cur, "推荐7本经济类型的书籍给我")
     expanded = expand_dialog_followup(cur, hist, sanitize_fn=lambda x: x)
     ok = ok_follow and expanded is not None and "经济" in expanded
+    clarify = is_dialog_followup("是ai相关的token", "帮我调研一下token的市场情况")
+    if not clarify:
+        return CaseResult("dialog_followup_why_fail", False, "clarify followup missed")
     return CaseResult(
         "dialog_followup_why_fail",
         ok,
         f"expanded={expanded!r}" if expanded else "expanded=None",
     )
+
+
+def test_research_doc_gates() -> CaseResult:
+    """调研+文档：不得因 docx 跳过强制检索；约束须落到 file_write。"""
+    from agent.orchestrator import _skip_premature_auto_search
+    from agent.research_policy import is_deep_research_goal, next_research_tool
+    from agent.task_binding import required_file_write_tool
+
+    goal = (
+        "帮我调研一下token的市场情况，然后给一份详细的调研报告，以文档形式给我\n"
+        "任务约束：输出 Word/docx；需要较详细展开"
+    )
+    if _skip_premature_auto_search(goal):
+        return CaseResult("research_doc_gates", False, "should not skip search for research+doc")
+    if not is_deep_research_goal(goal):
+        return CaseResult("research_doc_gates", False, "should be deep research")
+    if required_file_write_tool(goal) != "file_write_docx":
+        return CaseResult("research_doc_gates", False, "docx required")
+    more = next_research_tool(goal=goal, facts=[], steps=[], round_i=0, max_rounds=12)
+    if not more or more.get("tool") != "web_search":
+        return CaseResult("research_doc_gates", False, f"expected auto search: {more}")
+    return CaseResult("research_doc_gates", True, more.get("reason") or "ok")
+
+
+def test_url_dedupe_normalize() -> CaseResult:
+    from agent.context import TaskContext, normalize_url
+
+    ctx = TaskContext(goal="测试")
+    ctx.mark_fetched_url("https://example.com/a/b/")
+    if not ctx.url_already_seen("https://example.com/a/b"):
+        return CaseResult("url_dedupe_normalize", False, "slash normalize failed")
+    ctx.mark_failed_url("https://news.example.com/p/1#section")
+    if not ctx.url_already_seen("https://news.example.com/p/1"):
+        return CaseResult("url_dedupe_normalize", False, "fragment normalize failed")
+    if normalize_url("https://x.com/y/#z") != "https://x.com/y":
+        return CaseResult("url_dedupe_normalize", False, normalize_url("https://x.com/y/#z"))
+    return CaseResult("url_dedupe_normalize", True)
 
 
 def test_fact_cross_topic_filter() -> CaseResult:
@@ -662,6 +702,29 @@ def test_task_binding() -> CaseResult:
         return CaseResult("task_binding", False, f"new failed: {t1}")
     if "数量约 5本" not in t1.constraints:
         return CaseResult("task_binding", False, f"constraints={t1.constraints}")
+
+    from agent.task_binding import expand_goal_with_task, required_file_write_tool
+
+    merged = expand_goal_with_task(
+        "是ai相关的token",
+        type(t1)(
+            task_id=t1.task_id,
+            goal="帮我调研一下token的市场情况，然后给一份详细的调研报告，以文档形式给我",
+            status=t1.status,
+            constraints=["输出 Word/docx", "需要较详细展开"],
+            summary="最近交付摘要：错误草稿…",
+            artifacts=[],
+            bind_mode=BIND_CONTINUE,
+        ),
+    )
+    if "任务根目标" not in merged or "Word/docx" not in merged:
+        return CaseResult("task_binding", False, f"goal merge weak: {merged[:200]}")
+    if required_file_write_tool(merged) != "file_write_docx":
+        return CaseResult(
+            "task_binding",
+            False,
+            f"required write={required_file_write_tool(merged)}",
+        )
 
     update_task_after_turn(
         db,
@@ -1471,32 +1534,113 @@ async def test_finalize_keeps_econ_finish_list() -> CaseResult:
 
 
 def test_delivery_preprocess_profile() -> CaseResult:
-    """意图 / 风险预处理：清单、方案、高事实风险。"""
-    from agent.delivery.types import DeliveryIntent, FactRisk
+    """意图 / 风险 / A·B·C 档位预处理。"""
+    from agent.delivery.types import DeliveryIntent, FactRisk, FactTier
+    from agent.inference.param_policy import params_for_profile
     from agent.preprocess import build_request_profile
+    from agent.prompts.assembler import assemble_synthesize_system
     from agent.prompts.registry import load_template
+    from agent.research_policy import next_research_tool
 
     p1 = build_request_profile("推荐10款适合办公的笔记软件")
     if p1.intent != DeliveryIntent.LIST_RECOMMEND:
         return CaseResult("delivery_preprocess", False, f"list intent={p1.intent}")
+    if p1.tier != FactTier.B:
+        return CaseResult("delivery_preprocess", False, f"software list should be B got={p1.tier}")
+
+    p_a = build_request_profile("给我推荐20本历史相关的书籍")
+    if p_a.tier != FactTier.A or p_a.risk != FactRisk.HIGH:
+        return CaseResult(
+            "delivery_preprocess",
+            False,
+            f"book list tier/risk={p_a.tier}/{p_a.risk}",
+        )
+    sys_a = assemble_synthesize_system(profile=p_a)
+    if "防幻觉" not in sys_a and "可查证" not in sys_a:
+        return CaseResult("delivery_preprocess", False, "A anti-hallucination missing")
+    params_a = params_for_profile(p_a, phase="synthesize")
+    if params_a.temperature > 0.2 or not params_a.force_search or not params_a.post_scan:
+        return CaseResult("delivery_preprocess", False, f"A params={params_a}")
+    nxt = next_research_tool(
+        goal=p_a.goal, facts=[], steps=[], round_i=0, max_rounds=8, profile=p_a
+    )
+    if not nxt or nxt.get("tool") not in {"web_search", "openlibrary_lookup"}:
+        return CaseResult("delivery_preprocess", False, f"A force search nxt={nxt}")
+
+    p_b = build_request_profile("介绍一下什么是向量数据库")
+    if p_b.tier != FactTier.B:
+        return CaseResult("delivery_preprocess", False, f"qa tier={p_b.tier}")
+    if p_b.intent not in {DeliveryIntent.OPEN_QA, DeliveryIntent.RESEARCH}:
+        return CaseResult("delivery_preprocess", False, f"qa intent={p_b.intent}")
+
+    p_c = build_request_profile("讲个笑话放松一下")
+    if p_c.tier != FactTier.C:
+        return CaseResult("delivery_preprocess", False, f"chitchat tier={p_c.tier}")
+    nxt_c = next_research_tool(
+        goal=p_c.goal, facts=[], steps=[], round_i=0, max_rounds=8, profile=p_c
+    )
+    if nxt_c is not None:
+        return CaseResult("delivery_preprocess", False, f"C should skip search nxt={nxt_c}")
+
     p2 = build_request_profile("写一份季度营销方案提纲")
     if p2.intent != DeliveryIntent.PLAN_WRITE:
         return CaseResult("delivery_preprocess", False, f"plan intent={p2.intent}")
-    p3 = build_request_profile("介绍一下什么是向量数据库")
-    if p3.intent not in {DeliveryIntent.OPEN_QA, DeliveryIntent.RESEARCH}:
-        return CaseResult("delivery_preprocess", False, f"qa intent={p3.intent}")
     p4 = build_request_profile("今天上海气温多少度")
-    if p4.risk != FactRisk.HIGH:
-        return CaseResult("delivery_preprocess", False, f"risk={p4.risk}")
+    if p4.risk != FactRisk.HIGH or p4.tier != FactTier.A:
+        return CaseResult("delivery_preprocess", False, f"weather risk/tier={p4.risk}/{p4.tier}")
     if not p1.search_queries:
         return CaseResult("delivery_preprocess", False, "no search queries")
     if not load_template("synthesize_grounded") or not load_template("finalize_list"):
         return CaseResult("delivery_preprocess", False, "templates missing")
+    if not load_template("anti_hallucination_list"):
+        return CaseResult("delivery_preprocess", False, "anti_hallucination template missing")
     return CaseResult(
         "delivery_preprocess",
         True,
-        f"list={p1.intent.value} plan={p2.intent.value} risk={p4.risk.value}",
+        f"A={p_a.tier.value} B={p_b.tier.value} C={p_c.tier.value} list={p1.intent.value}",
     )
+
+
+def test_fact_tier_light_scan() -> CaseResult:
+    """A 类后置扫描应清洗模板硬凑；B/C 不触发。"""
+    from agent.delivery.stages.fact_scan import light_fact_scan
+    from agent.delivery.types import FactTier
+    from agent.preprocess import build_request_profile
+
+    goal = "推荐20本历史相关的书籍"
+    fabricated = (
+        "1. 《历史与记忆》\n说明足够长足够长足够长足够长。\n"
+        "2. 《历史与历史学》\n说明足够长足够长足够长足够长。\n"
+        "3. 《历史与政治》\n说明足够长足够长足够长足够长。\n"
+        "4. 《历史与历史学家》\n说明足够长足够长足够长足够长。\n"
+    )
+    pa = build_request_profile(goal)
+    if pa.tier != FactTier.A:
+        return CaseResult("fact_tier_scan", False, f"tier={pa.tier}")
+    scanned = light_fact_scan(fabricated, goal=goal, profile=pa, facts=[])
+    if not scanned.reasons:
+        return CaseResult("fact_tier_scan", False, "A scan missed fabricated")
+    pb = build_request_profile("推荐10款办公笔记软件")
+    scanned_b = light_fact_scan(fabricated, goal=pb.goal, profile=pb, facts=[])
+    if scanned_b.cleaned or scanned_b.reasons:
+        return CaseResult("fact_tier_scan", False, "B should not post-scan")
+    return CaseResult("fact_tier_scan", True, f"A reasons={scanned.reasons}")
+
+
+def test_openlibrary_lookup_mock() -> CaseResult:
+    """兼容入口：实际逻辑见 scripts/test_openlibrary_lookup.py。"""
+    import asyncio
+    import concurrent.futures
+
+    from test_openlibrary_lookup import test_openlibrary_lookup_mock as _t
+
+    try:
+        asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            r = pool.submit(_t).result()
+    except RuntimeError:
+        r = _t()
+    return CaseResult(r.name, r.ok, r.detail)
 
 
 def test_composed_safety_gate() -> CaseResult:
@@ -1749,6 +1893,8 @@ async def run_all() -> list[CaseResult]:
         test_run_code_sandbox,
         test_delivery_quality_gate,
         test_task_binding,
+        test_research_doc_gates,
+        test_url_dedupe_normalize,
         test_entity_match,
         test_session_memory,
         test_thin_source_list_rejected,
@@ -1758,9 +1904,11 @@ async def run_all() -> list[CaseResult]:
         test_draft_survives_offtopic_materials,
         test_safety_gate,
         test_delivery_preprocess_profile,
+        test_fact_tier_light_scan,
         test_composed_safety_gate,
         test_count_shortfall_detection,
         test_rich_sectioned_list_not_wiped,
+        test_openlibrary_lookup_mock,
     ]
     for fn in sync_tests:
         try:

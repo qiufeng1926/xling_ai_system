@@ -1000,6 +1000,10 @@ def build_citations(facts: list[str], *, max_n: int = 8) -> list[dict[str, str]]
 def _fact_looks_like_list_source(fact: str) -> bool:
     """是否像「清单/盘点/选型」来源，而非叙事页里偶尔出现的《题名》。"""
     f = fact or ""
+    if f.startswith("书目核验(Open Library)") or f.startswith("书目发现(Open Library)"):
+        return True
+    if "书目核验(Open Library)" in f[:40] or "书目发现(Open Library)" in f[:80]:
+        return True
     if f.startswith("搜索结果"):
         return any(k in f for k in ("推荐", "书单", "清单", "盘点", "必读", "选型", "对比", "本 ", "款 ", "个 "))
     if any(k in f[:80] for k in ("书单", "清单", "盘点", "推荐", "选型指南", "对比评测")):
@@ -1413,6 +1417,8 @@ async def synthesize_rich_answer(
     draft: str = "",
     thought: str = "",
     force_expand: bool = False,
+    profile: Any | None = None,
+    temperature: float | None = None,
 ) -> str:
     """可读交付：总起 + 分板块/编号 + 短评；有材料时接地，禁止臆造细节。"""
     draft_clean = sanitize_public_answer(draft or "")
@@ -1449,16 +1455,29 @@ async def synthesize_rich_answer(
 
     n_hint = ""
     n_want = requested_list_count(goal)
+    tier_a = False
+    try:
+        from agent.delivery.types import FactTier
+
+        tier_a = bool(profile and getattr(profile, "tier", None) == FactTier.A)
+    except Exception:
+        tier_a = False
     if n_want:
         draft_n = count_list_items_in_text(draft_clean, goal=goal)
-        n_hint = (
-            f"用户明确要求约 {n_want} 条；终稿条目数应接近 {n_want}"
-            f"（至少约 {min_acceptable_list_count(goal)} 条）。\n"
-            f"当前草稿约有 {draft_n} 条。"
-            "若草稿/材料不足目标条数：须用常识补齐到接近目标条数，并为每条写 2～3 句简介；"
-            "文首标明未充分联网核实；禁止只交 1～2 条详写交差；"
-            "禁止编造冷门具体数据/虚假出处。\n"
-        )
+        if tier_a:
+            n_hint = (
+                f"用户希望约 {n_want} 条；当前草稿约 {draft_n} 条。"
+                f"优先保证每条可查证；无法确认的条目直接舍弃，宁可少于 {n_want}，禁止臆造凑数。\n"
+            )
+        else:
+            n_hint = (
+                f"用户明确要求约 {n_want} 条；终稿条目数应接近 {n_want}"
+                f"（至少约 {min_acceptable_list_count(goal)} 条）。\n"
+                f"当前草稿约有 {draft_n} 条。"
+                "若草稿/材料不足目标条数：须用常识补齐到接近目标条数，并为每条写 2～3 句简介；"
+                "文首标明未充分联网核实；禁止只交 1～2 条详写交差；"
+                "禁止编造冷门具体数据/虚假出处。\n"
+            )
 
     expand_hint = ""
     if materials:
@@ -1468,24 +1487,40 @@ async def synthesize_rich_answer(
             "可概括材料；禁止补充材料与草稿都未出现的冷门具体数据。\n"
             "禁止把「以下N本/条」「N个高质量…」等清单套话当成具体条目。\n"
         )
+        if tier_a:
+            expand_hint += (
+                "A 类：禁止脱离检索材料自由扩充具名条目；简介须贴合主体，禁止脑补。\n"
+            )
         if (
             is_thin_list_draft(draft_clean)
             or force_expand
             or is_title_only_list_answer(draft_clean, goal=goal)
             or is_count_shortfall(draft_clean, goal)
         ):
-            expand_hint += (
-                "草稿若偏标题清单或条数不足：用材料为已有条目补写 2～4 句；"
-                "条数仍不足目标时，用常识补齐条目并文首标明未充分核实；"
-                "禁止把整篇答案缩成材料里能核验的一两项。\n"
-            )
+            if tier_a:
+                expand_hint += (
+                    "草稿若偏标题清单：仅为材料与草稿中可确认的条目补写 2～4 句；"
+                    "条数不足时诚实说明，禁止注水假条目。\n"
+                )
+            else:
+                expand_hint += (
+                    "草稿若偏标题清单或条数不足：用材料为已有条目补写 2～4 句；"
+                    "条数仍不足目标时，用常识补齐条目并文首标明未充分核实；"
+                    "禁止把整篇答案缩成材料里能核验的一两项。\n"
+                )
     elif force_expand or is_thin_list_draft(draft_clean) or not materials:
-        expand_hint = (
-            "特别要求：当前几乎无检索正文。若草稿已有条目，必须扩写成可读详答，"
-            f"文首必须写「{_KNOWLEDGE_DISCLAIMER}」；"
-            "禁止只输出编号标题清单。\n"
-        )
-        if is_count_list_goal(goal) and n_want:
+        if tier_a:
+            expand_hint = (
+                "特别要求（A 类）：几乎无检索正文时，只保留可确认的知名条目并短评；"
+                f"文首写「{_KNOWLEDGE_DISCLAIMER}」；无法确认则舍弃，禁止臆造凑数。\n"
+            )
+        else:
+            expand_hint = (
+                "特别要求：当前几乎无检索正文。若草稿已有条目，必须扩写成可读详答，"
+                f"文首必须写「{_KNOWLEDGE_DISCLAIMER}」；"
+                "禁止只输出编号标题清单。\n"
+            )
+        if is_count_list_goal(goal) and n_want and not tier_a:
             expand_hint += (
                 "计数清单详写要求（通用，不限垂类）：\n"
                 f"- 条目数须接近用户要求的 {n_want} 条（可常识补齐，须声明未充分核实）；\n"
@@ -1526,7 +1561,16 @@ async def synthesize_rich_answer(
         )
 
     messages = [
-        {"role": "system", "content": _synth_system_prompt()},
+        {
+            "role": "system",
+            "content": (
+                __import__(
+                    "agent.prompts.assembler", fromlist=["assemble_synthesize_system"]
+                ).assemble_synthesize_system(profile=profile)
+                if profile is not None
+                else _synth_system_prompt()
+            ),
+        },
         {
             "role": "user",
             "content": (
@@ -1542,7 +1586,8 @@ async def synthesize_rich_answer(
         },
     ]
     try:
-        text = await model.chat(messages, temperature=0.35)
+        temp = 0.35 if temperature is None else float(temperature)
+        text = await model.chat(messages, temperature=temp)
     except Exception:
         if is_substantive_draft(draft_clean, goal, facts=facts):
             return draft_clean if materials else ensure_knowledge_disclaimer(draft_clean)
@@ -1573,7 +1618,10 @@ async def synthesize_rich_answer(
             },
         ]
         try:
-            text2 = await model.chat(retry_messages, temperature=0.45)
+            text2 = await model.chat(
+                retry_messages,
+                temperature=min(0.45, (temperature if temperature is not None else 0.35) + 0.1),
+            )
             out2 = sanitize_public_answer(text2 or "")
             out2 = strip_pick_number_prompts(out2)
             if out2:
@@ -2260,7 +2308,14 @@ def pick_fetch_url(
     skip = skip or set()
     scored: list[tuple[int, int, str]] = []
     for i, u in enumerate(first_content_urls_from_facts(facts, limit=10)):
-        if u in skip:
+        from agent.context import normalize_url
+
+        nu = normalize_url(u)
+        if not nu:
+            continue
+        if nu in skip or u in skip:
+            continue
+        if any(normalize_url(s) == nu for s in skip):
             continue
         if any(x in u for x in ("unhuman", "captcha", "challenge", "verify")):
             continue

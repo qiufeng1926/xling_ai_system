@@ -515,6 +515,19 @@ TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
         },
         "example": {"query": "上次那个销售周报结论", "mode": "auto"},
     },
+    "openlibrary_lookup": {
+        "desc": (
+            "Open Library 书目核验/发现：queries 批量核验书名；"
+            "q/subject 发现补齐。未命中不代表书不存在。勿替代通用 web_search。"
+        ),
+        "input": {
+            "queries": ["书名或 书名 作者"],
+            "q": "可选主题发现",
+            "subject": "可选英文主题",
+            "limit": "可选≤12",
+        },
+        "example": {"queries": ["史记", "人类简史"], "q": "world history", "limit": 8},
+    },
 }
 
 
@@ -541,6 +554,10 @@ def validate_and_normalize_args(tool: str, args: Any) -> tuple[dict[str, Any] | 
             return {"selector": "input[name=q], input[type=search], #kw", "text": args}, None
         if tool == "web_search":
             return {"query": args}, None
+        if tool == "openlibrary_lookup":
+            from tools.openlibrary import normalize_openlibrary_args
+
+            return normalize_openlibrary_args({"queries": [args], "q": args})
         if tool in {"web_fetch", "browser_navigate", "http_request"}:
             return {"url": args, "method": "GET"}, None
         try:
@@ -630,6 +647,11 @@ def validate_and_normalize_args(tool: str, args: Any) -> tuple[dict[str, Any] | 
         if q:
             out["query"] = q
         return out, None
+
+    if tool == "openlibrary_lookup":
+        from tools.openlibrary import normalize_openlibrary_args
+
+        return normalize_openlibrary_args(args)
 
     if tool.startswith("file_write_"):
         return _normalize_file_write_args(tool, args)

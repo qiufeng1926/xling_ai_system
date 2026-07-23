@@ -9,6 +9,17 @@ from agent.answer import summarize_http_or_extract_for_memory
 from typing import Any
 
 
+def normalize_url(url: str) -> str:
+    """URL 去噪，便于 failed/fetched 去重（忽略 fragment / 尾斜杠）。"""
+    u = (url or "").strip()
+    if not u:
+        return ""
+    u = u.split("#", 1)[0].strip()
+    if len(u) > 8 and u.endswith("/") and u.count("/") >= 3:
+        u = u.rstrip("/")
+    return u
+
+
 @dataclass
 class TaskContext:
     goal: str
@@ -25,6 +36,7 @@ class TaskContext:
     last_error: str = ""
     task_id: str = ""
     task_bind_mode: str = ""
+    request_profile: Any | None = None
 
     def add_step(self, text: str) -> None:
         text = (text or "").strip()
@@ -46,7 +58,7 @@ class TaskContext:
             self.artifacts.append(name)
 
     def mark_failed_url(self, url: str) -> None:
-        url = (url or "").strip()
+        url = normalize_url(url)
         if url and url not in self.failed_urls:
             self.failed_urls.append(url)
             if len(self.failed_urls) > 10:
@@ -54,17 +66,26 @@ class TaskContext:
 
     def mark_fetched_url(self, url: str) -> None:
         """成功抓取过的 URL，禁止本轮再抓同一页空转。"""
-        url = (url or "").strip()
+        url = normalize_url(url)
         if url and url not in self.fetched_urls:
             self.fetched_urls.append(url)
             if len(self.fetched_urls) > 16:
                 self.fetched_urls = self.fetched_urls[-16:]
 
     def urls_to_skip(self) -> set[str]:
-        return set(self.failed_urls or []) | set(self.fetched_urls or [])
+        return {normalize_url(u) for u in (self.failed_urls or []) + (self.fetched_urls or []) if u}
+
+    def url_already_seen(self, url: str) -> bool:
+        nu = normalize_url(url)
+        if not nu:
+            return False
+        skip = self.urls_to_skip()
+        if nu in skip:
+            return True
+        return any(nu.rstrip("/") == normalize_url(x).rstrip("/") for x in skip)
 
     def call_key(self, tool: str, args: dict[str, Any]) -> str:
-        url = str(args.get("url") or "")
+        url = normalize_url(str(args.get("url") or ""))
         return f"{tool}|{url}|{json.dumps(args, ensure_ascii=False, sort_keys=True)[:180]}"
 
     def record_call(self, tool: str, args: dict[str, Any], ok: bool) -> int:
@@ -95,7 +116,7 @@ class TaskContext:
             for u in self.failed_urls[-6:]:
                 lines.append(f"  · {u}")
             lines.append(
-                "  → 对这些 URL 不要再次 browser_navigate；改用 http_request 抓取，或换其他公开站点。"
+                "  → 对这些 URL 禁止再 browser_navigate / web_fetch / http_request；请换其他公开站点或换关键词搜索。"
             )
         if self.fetched_urls:
             lines.append("- 本轮已成功抓取过的 URL（勿重复打开同一页）:")
@@ -183,6 +204,21 @@ def summarize_tool_result(tool: str, result: dict[str, Any]) -> tuple[bool, str,
         prefix = f"搜索结果({src}): " if src else "搜索结果: "
         return True, prefix + text[:2800], {}
 
+    if tool == "openlibrary_lookup":
+        if result.get("error") and not result.get("ok"):
+            return False, f"书目核验失败: {result['error']}", {}
+        text = str(result.get("text") or "").strip()
+        if not text:
+            try:
+                from tools.openlibrary import format_lookup_text
+
+                text = format_lookup_text(result)
+            except Exception:
+                text = ""
+        if not text or text == "书目核验(Open Library):":
+            return False, "书目核验无有效结果", {}
+        return True, text[:3200], {}
+
     if tool == "web_fetch":
         text = str(result.get("text") or "").strip()
         if result.get("error") or result.get("ok") is False:
@@ -259,7 +295,11 @@ def apply_result_to_context(
             if final_u and final_u != url_hit:
                 ctx.mark_fetched_url(final_u)
 
-        if tool.startswith("file_write_") or tool in {"web_search", "web_fetch"} or fact_relevant_to_goal(
+        if tool.startswith("file_write_") or tool in {
+            "web_search",
+            "web_fetch",
+            "openlibrary_lookup",
+        } or fact_relevant_to_goal(
             summary, ctx.goal
         ):
             if tool in {"web_fetch", "browser_extract", "http_request"} and is_off_topic_body_for_goal(

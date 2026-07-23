@@ -27,6 +27,9 @@ _DEEP_MARKERS = (
     "展开",
     "解读",
     "分析",
+    "调研",
+    "研究报告",
+    "市场情况",
     "综述",
     "概览",
     "全书",
@@ -178,6 +181,92 @@ def prior_search_queries(steps: list[Any]) -> list[str]:
     return qs
 
 
+def prefers_openlibrary_catalog(goal: str) -> bool:
+    """目标像书籍/作品清单时，可用 Open Library 核验或发现。"""
+    g = goal or ""
+    return any(k in g for k in ("书", "书籍", "书单", "小说", "著作", "阅读"))
+
+
+def openlibrary_discover_args(goal: str, *, want: int = 10) -> dict[str, Any]:
+    """从用户目标抽出发现检索参数。"""
+    from agent.answer import requested_list_count
+
+    g = (goal or "").strip()
+    core = re.sub(
+        r"(给我|请|帮我)?(推荐|介绍|盘点|整理|列出)?\s*\d*\s*(本|部|册|种)?",
+        "",
+        g,
+    )
+    core = re.sub(
+        r"(相关的?)?(书籍|书单|图书|小说|著作|读物|书)(推荐|清单)?",
+        "",
+        core,
+    ).strip(" ：:，,。.")
+    if not core or len(core) < 2:
+        core = g[:40]
+    n = requested_list_count(g) or want
+    limit = max(5, min(12, int(n)))
+    subject = ""
+    subject_map = {
+        "历史": "history",
+        "经济": "economics",
+        "哲学": "philosophy",
+        "科学": "science",
+        "计算机": "computers",
+        "心理": "psychology",
+    }
+    for zh, en in subject_map.items():
+        if zh in core:
+            subject = en
+            break
+    args: dict[str, Any] = {"q": core[:80], "limit": limit}
+    if subject:
+        args["subject"] = subject
+    return args
+
+
+def prior_openlibrary_fingerprints(steps: list[Any]) -> list[str]:
+    out: list[str] = []
+    for s in steps or []:
+        action = getattr(s, "action", None) or (s.get("action") if isinstance(s, dict) else "")
+        if action != "openlibrary_lookup":
+            continue
+        ain = getattr(s, "action_input", None)
+        if ain is None and isinstance(s, dict):
+            ain = s.get("action_input")
+        if not isinstance(ain, dict):
+            continue
+        qs = ain.get("queries") or []
+        if isinstance(qs, list):
+            key = "|".join(sorted(str(x).strip().lower() for x in qs if str(x).strip()))
+        else:
+            key = ""
+        topic = str(ain.get("subject") or ain.get("q") or "").strip().lower()
+        fp = f"q={key};t={topic}"
+        if fp not in out:
+            out.append(fp)
+    return out
+
+
+def openlibrary_args_fingerprint(args: dict[str, Any] | None) -> str:
+    ain = args or {}
+    qs = ain.get("queries") or []
+    if isinstance(qs, list):
+        key = "|".join(sorted(str(x).strip().lower() for x in qs if str(x).strip()))
+    else:
+        key = ""
+    topic = str(ain.get("subject") or ain.get("q") or "").strip().lower()
+    return f"q={key};t={topic}"
+
+
+def has_openlibrary_facts(facts: list[str]) -> bool:
+    return any(
+        (f or "").startswith("书目核验(Open Library)")
+        or "书目发现(Open Library)" in (f or "")[:80]
+        for f in (facts or [])
+    )
+
+
 # 搜索词噪声：去掉后用于近义重复判定（「…影响」vs「…具体影响」）
 _SEARCH_QUERY_NOISE = re.compile(
     r"(具体|详细|深入|进一步|全面|系统|完整|简要|简介|"
@@ -255,33 +344,75 @@ def next_research_tool(
     failed_urls: list[str] | None = None,
     round_i: int = 0,
     max_rounds: int = 12,
+    profile: Any | None = None,
 ) -> dict[str, Any] | None:
     """若材料不足以支撑充分答复，返回下一步应执行的 tool 动作；否则 None。"""
     if round_i >= max_rounds - 1:
         return None
 
+    from agent.delivery.types import FactTier
     from agent.delivery_gate import get_default_delivery_gate
 
-    deep = is_deep_research_goal(goal)
+    tier = getattr(profile, "tier", None) if profile is not None else None
+    # C 类：不强制检索
+    if tier == FactTier.C:
+        return None
+
+    deep = is_deep_research_goal(goal, profile=profile)
     searches = count_search_steps(steps)
     bodies = count_body_facts(facts, goal=goal)
     min_b = min_bodies_for_goal(goal)
     skip = set(failed_urls or [])
 
+    # A 类：尚无任何检索 → 强制先搜（可用 profile.search_queries）
+    if tier == FactTier.A and searches < 1 and not facts:
+        q = goal
+        sq = getattr(profile, "search_queries", None) or []
+        if sq:
+            q = sq[0]
+        return {
+            "tool": "web_search",
+            "args": {"query": q},
+            "think": "A 类高事实清单，强制先检索",
+            "reason": "fact_tier_a_force_search",
+        }
+
+    # A 类荐书：Open Library 发现（仅开关开启时）
+    if tier == FactTier.A and prefers_openlibrary_catalog(goal) and not has_openlibrary_facts(facts):
+        try:
+            from config import config as cfg
+
+            ol_on = bool(getattr(cfg, "openlibrary_enabled", False))
+        except Exception:
+            ol_on = False
+        if ol_on:
+            ol_args = openlibrary_discover_args(goal)
+            if openlibrary_args_fingerprint(ol_args) not in prior_openlibrary_fingerprints(steps):
+                return {
+                    "tool": "openlibrary_lookup",
+                    "args": ol_args,
+                    "think": "A 类：用书目库发现/核验，禁止脱离材料扩条",
+                    "reason": "openlibrary_catalog",
+                }
+
     verdict = get_default_delivery_gate().check_research(
         goal=goal, facts=facts, steps=steps, failed_urls=failed_urls
     )
-    # 允许 finish（含 weak_materials）→ 不再强制取数
-    if verdict.ok:
+    # 允许 finish（含 weak_materials）→ 不再强制取数；但 A 类无搜索时仍强制
+    if verdict.ok and not (tier == FactTier.A and searches < 1):
         return None
 
     reason = verdict.reason or "need_more_research"
 
     if reason in {"no_search_yet", "need_alt_search"} or searches < 1:
         if searches < 1:
+            q = goal
+            sq = getattr(profile, "search_queries", None) or []
+            if sq:
+                q = sq[0]
             return {
                 "tool": "web_search",
-                "args": {"query": goal},
+                "args": {"query": q},
                 "think": "自动补搜索",
                 "reason": "no_search_yet",
             }

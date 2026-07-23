@@ -130,6 +130,8 @@ async def run_delivery_pipeline(
         draft=draft,
         thought=thought,
         force_expand=bool(force_expand),
+        profile=profile,
+        temperature=params.temperature,
     )
     text = _reject_internal(rich, goal)
     text = format_normalize(
@@ -164,6 +166,8 @@ async def run_delivery_pipeline(
                 draft=draft,
                 thought=thought,
                 force_expand=True,
+                profile=profile,
+                temperature=params.temperature,
             )
             cand = format_normalize(_reject_internal(rich2, goal), materials=MaterialStrength.EMPTY)
             cand, r2 = await format_retry_expand(
@@ -210,6 +214,8 @@ async def run_delivery_pipeline(
             draft=draft or text,
             thought=thought,
             force_expand=True,
+            profile=profile,
+            temperature=params.temperature,
         )
         text = format_normalize(_reject_internal(rich3, goal), materials=materials)
         text, r3 = await format_retry_expand(
@@ -247,7 +253,14 @@ async def run_delivery_pipeline(
             )
         # 再尝试详写；失败才交标题抢救
         rich4 = await synthesize_rich_answer(
-            model, goal=goal, facts=[], draft=draft, thought=thought, force_expand=True
+            model,
+            goal=goal,
+            facts=[],
+            draft=draft,
+            thought=thought,
+            force_expand=True,
+            profile=profile,
+            temperature=params.temperature,
         )
         cand = format_normalize(_reject_internal(rich4, goal), materials=MaterialStrength.EMPTY)
         cand, r4 = await format_retry_expand(
@@ -288,6 +301,22 @@ async def run_delivery_pipeline(
     # 清洗：充实答复不得压薄
     before = text
     text = sanitize_hallucinated_list_answer(text, goal=goal, facts=task_ctx.facts)
+    if params.post_scan:
+        from agent.delivery.stages.fact_scan import light_fact_scan
+
+        scanned = light_fact_scan(
+            text, goal=goal, profile=profile, facts=task_ctx.facts
+        )
+        text = scanned.text
+        if scanned.cleaned and run_state is not None:
+            try:
+                run_state.intercept(
+                    "fact_tier_post_scan",
+                    round_i=round_i,
+                    reasons=",".join(scanned.reasons or []),
+                )
+            except Exception:
+                pass
     if (
         listish
         and before.count("《") >= 5

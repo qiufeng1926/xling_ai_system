@@ -26,6 +26,55 @@ from aliyunsdkcore.client import AcsClient
 
 from aliyunsdkcore.request import CommonRequest
 
+# 使用 legacy 客户端：新版 asyncio ClientConnection 在 TCP 握手未完成就
+# ConnectionReset 时，connection_lost 会访问尚未初始化的 recv_messages
+#（websockets#1629），污染事件循环并刷 ERROR。
+try:
+    from websockets.legacy.client import connect as ws_connect
+except ImportError:  # pragma: no cover
+    ws_connect = websockets.connect
+
+
+def _patch_websockets_connection_lost_guard() -> None:
+    """兜底：若仍走新版 asyncio API，避免 connection_lost AttributeError。"""
+    try:
+        from websockets.asyncio.connection import Connection
+    except ImportError:
+        return
+    original = Connection.connection_lost
+    if getattr(original, "_meeting_ai_guarded", False):
+        return
+
+    def connection_lost(self, exc):  # type: ignore[no-untyped-def]
+        if not hasattr(self, "recv_messages"):
+            try:
+                self.protocol.receive_eof()
+            except Exception:
+                pass
+            try:
+                self.set_recv_exc(exc)
+            except Exception:
+                pass
+            try:
+                if getattr(self, "keepalive_task", None) is not None:
+                    self.keepalive_task.cancel()
+            except Exception:
+                pass
+            try:
+                waiter = getattr(self, "connection_lost_waiter", None)
+                if waiter is not None and not waiter.done():
+                    waiter.set_result(None)
+            except Exception:
+                pass
+            return
+        return original(self, exc)
+
+    connection_lost._meeting_ai_guarded = True  # type: ignore[attr-defined]
+    Connection.connection_lost = connection_lost  # type: ignore[method-assign]
+
+
+_patch_websockets_connection_lost_guard()
+
 
 
 from utils.executors import run_io
@@ -609,7 +658,7 @@ class TingwuStreamingSession:
         max_attempts = max(1, tingwu_ws_connect_max_attempts)
         for attempt in range(1, max_attempts + 1):
             try:
-                ws = await websockets.connect(
+                ws = await ws_connect(
                     url,
                     ping_interval=20,
                     ping_timeout=20,
@@ -624,8 +673,10 @@ class TingwuStreamingSession:
                 return ws
             except Exception as exc:
                 last_exc = exc
+                # 让失败握手的 connection_lost 回调先跑完，避免刷未处理异常
+                await asyncio.sleep(0)
                 logger.warning(
-                    "听悟 WebSocket 连接失败",
+                    f"听悟 WebSocket 连接失败 ({type(exc).__name__}: {exc})",
                     extra={
                         "output_params": {
                             "attempt": attempt,

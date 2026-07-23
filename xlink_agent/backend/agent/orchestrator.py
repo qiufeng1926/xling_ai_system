@@ -102,9 +102,14 @@ from agent.memory_pipeline import assemble_memory_context
 from agent.session_memory import maybe_compact_conversation
 from agent.task_binding import (
     expand_goal_with_task,
+    required_file_write_tool,
     resolve_task_binding,
     update_task_after_turn,
 )
+from agent.preprocess import build_request_profile
+from agent.prompts.assembler import assemble_react_base_addon
+from agent.inference.param_policy import params_for_profile
+from agent.delivery.types import FactTier
 from agent.trajectory import (
     action_step,
     confirm_tool_label,
@@ -267,6 +272,67 @@ def _claims_file_without_artifact(text: str) -> bool:
     return bool(_FILE_CLAIM_RE.search(text or ""))
 
 
+def _skip_premature_auto_search(goal: str) -> bool:
+    """纯写作类（无调研意图）可不强制先搜；含调研/报告则必须搜。"""
+    g = goal or ""
+    if any(
+        k in g
+        for k in (
+            "调研",
+            "检索",
+            "搜索",
+            "查一下",
+            "市场情况",
+            "研究报告",
+            "详细报告",
+            "联网",
+        )
+    ):
+        return False
+    return any(k in g for k in ("写日报", "写周报", "写邮件", "起草", "润色"))
+
+
+def _force_file_write_action(
+    *,
+    tool: str,
+    goal: str,
+    think: str = "",
+    content: str = "",
+    facts: list[str] | None = None,
+) -> dict[str, Any]:
+    """约束要求落盘时，用已有草稿/材料拼出 file_write_* 调用。"""
+    suffix = {
+        "file_write_docx": ".docx",
+        "file_write_markdown": ".md",
+        "file_write_xlsx": ".xlsx",
+        "file_write_pptx": ".pptx",
+        "file_write_pdf": ".pdf",
+        "file_write_html": ".html",
+    }.get(tool, ".docx")
+    safe = re.sub(r'[\\/:*?"<>|]+', "_", (goal or "document").split("\n", 1)[0][:24]) or "document"
+    args = _fill_file_write_args(
+        tool,
+        {
+            "filename": f"{safe}{suffix}",
+            "title": (goal or "报告").split("\n", 1)[0][:40],
+        },
+        goal=goal,
+        think=think or content,
+        facts=facts,
+    )
+    if len(str(args.get("content") or "").strip()) < 40:
+        body = (content if content and not content.strip().startswith("{") else "") or "\n".join(
+            [goal, *(facts or [])]
+        )
+        args["content"] = (body or "（自动补写正文）")[:8000]
+    return {
+        "action": "tool",
+        "tool": tool,
+        "args": args,
+        "think": "用户约束要求输出文档，先落盘再交付",
+    }
+
+
 def _recover_file_tool(
     raw: str,
     think: str,
@@ -275,6 +341,7 @@ def _recover_file_tool(
     *,
     goal: str = "",
     facts: list[str] | None = None,
+    preferred_tool: str | None = None,
 ) -> dict[str, Any] | None:
     """模型空喊「已生成」时，尝试从本轮输出里找回 file_write_* 调用。"""
     for blob in (raw, think, content):
@@ -293,27 +360,25 @@ def _recover_file_tool(
             if not args.get("title"):
                 args = {**args, "title": (goal or "报告")[:40]}
             return {"action": "tool", "tool": tool, "args": args, "think": "补执行写文件"}
-    write_tools = [t for t in ("file_write_docx", "file_write_markdown") if t in tools or t in KNOWN_TOOLS]
-    if write_tools and _claims_file_without_artifact(f"{think}\n{content}\n{raw}"):
-        tool = "file_write_docx" if "file_write_docx" in write_tools else write_tools[0]
-        args = _fill_file_write_args(
-            tool,
-            {"filename": "报告.docx" if "docx" in tool else "报告.md", "title": (goal or "报告")[:40]},
-            goal=goal,
-            think=think or content,
-            facts=facts,
+    write_tools: list[str] = []
+    for t in (
+        preferred_tool,
+        "file_write_docx",
+        "file_write_markdown",
+        "file_write_xlsx",
+        "file_write_pptx",
+        "file_write_pdf",
+    ):
+        if t and (t in tools or t in KNOWN_TOOLS) and t not in write_tools:
+            write_tools.append(t)
+    if write_tools and (
+        preferred_tool
+        or _claims_file_without_artifact(f"{think}\n{content}\n{raw}")
+    ):
+        tool = write_tools[0]
+        return _force_file_write_action(
+            tool=tool, goal=goal, think=think, content=content, facts=facts
         )
-        if len(str(args.get("content") or "").strip()) < 40:
-            body = (content if content and not content.strip().startswith("{") else "") or "\n".join(
-                [goal, *(facts or [])]
-            )
-            args["content"] = (body or "（自动补写：请在下一轮提供完整正文）")[:8000]
-        return {
-            "action": "tool",
-            "tool": tool,
-            "args": args,
-            "think": "用户要文档但模型未真正写文件，自动补写",
-        }
     return None
 
 
@@ -372,6 +437,18 @@ def _merge_tools(skills: list[Skill]) -> tuple[list[str], str]:
     ]:
         if base not in tools:
             tools.append(base)
+    # Open Library 默认关闭：不暴露给模型；技能里若带了也剔除
+    try:
+        from config import config as cfg
+
+        ol_on = bool(getattr(cfg, "openlibrary_enabled", False))
+    except Exception:
+        ol_on = False
+    if ol_on:
+        if "openlibrary_lookup" not in tools:
+            tools.append("openlibrary_lookup")
+    else:
+        tools = [t for t in tools if t != "openlibrary_lookup"]
     return tools, "\n\n".join(bodies)
 
 
@@ -616,6 +693,14 @@ async def _answer_after_llm_failure(
     run_state: Any | None = None,
 ) -> str:
     """模型重试耗尽后：尽量用已有材料收束，避免 ASGI/SSE 直接崩掉。"""
+    from agent.research_policy import is_deep_research_goal
+
+    # 深度调研且几乎无材料：禁止用常识编造「详细报告」交差
+    if is_deep_research_goal(task_ctx.goal or "") and not (task_ctx.facts or []):
+        return (
+            "模型服务暂时超时，且本轮尚未完成检索，无法交付可靠的调研结论。"
+            "请再发一次同样的请求，我会重新联网调研后再答复。"
+        )
     try:
         text = await _finalize_user_answer(
             model, task_ctx, "", round_i=round_i, thought="", run_state=run_state
@@ -683,90 +768,65 @@ async def run_chat(
     )
     db.commit()
 
-    history = (
-        db.query(Message)
-        .filter(Message.conversation_id == conversation_id)
-        .order_by(Message.id.asc())
-        .limit(40)
-        .all()
-    )
-    # 「2」编号续作 / 「你为什么获取不了」类追问：展开为带上下文的目标
-    expanded = expand_selection_followup(user_text, history)
-    if not expanded:
-        expanded = expand_dialog_followup(user_text, history, sanitize_fn=sanitize_public_answer)
-    effective_goal = (expanded or user_text).strip()
-    if expanded:
-        logger.info("followup expanded: %r -> %r", user_text[:40], effective_goal[:160])
+    # —— 调度层：会话 / 预处理 / 检索 / 上下文 / 任务状态 / 工具 / 组装 ——
+    from agent.dispatch import DispatchRequest, get_dispatch_layer
 
-    # TaskID 强绑定：追问续绑 / 换题切断（方案第一步）
-    active_task = resolve_task_binding(
-        db,
-        user_id=user_id,
-        conversation_id=conversation_id,
-        user_text=user_text,
-        history=history,
-        effective_goal=effective_goal,
-        forced_followup=bool(expanded),
-    )
-    effective_goal = expand_goal_with_task(effective_goal, active_task)
+    def _merge_tools_for_user(sess: Session, uid: int) -> tuple[list[str], str]:
+        return _merge_tools(_active_skills(sess, uid))
 
-    # 五级记忆调度：意图 → 实体 → Task → 向量 → 权重注入
-    memory_asm = await assemble_memory_context(
+    dispatch = get_dispatch_layer()
+    turn = await dispatch.prepare_turn(
         db,
-        user_id=user_id,
-        conversation_id=conversation_id,
-        user_text=user_text,
-        history=history,
-        active_task=active_task,
-        effective_goal=effective_goal,
+        DispatchRequest(
+            user_id=user_id,
+            session_id=conversation_id,
+            message=user_text,
+            run_id=run_id,
+        ),
+        merge_tools_fn=_merge_tools_for_user,
+        sanitize_fn=sanitize_public_answer,
+        looks_internal_fn=looks_like_internal,
     )
+    active_task = turn.active_task
+    effective_goal = turn.effective_goal
+    memory_asm = turn.memory_asm
     entity_result = memory_asm.entity_result
-    effective_goal = expand_goal_with_entities(effective_goal, entity_result)
-    if entity_result.ok:
-        active_task.artifacts = merge_entity_hits_into_task_artifacts(
-            active_task.artifacts, entity_result
-        )
-        # 实体合并后刷新任务注入（pipeline 已渲染旧 artifacts；约束仍以 active_task 为准）
-    window_history = memory_asm.window_history
     summary_views = memory_asm.summary_views
     vector_hit_count = int(memory_asm.debug.get("vector_hits") or 0)
+    tools = turn.tools
+    req_profile = turn.request_profile
+    react_params = params_for_profile(req_profile, phase="react")
+    expanded = turn.query.is_followup
 
-    skills = _active_skills(db, user_id)
-    tools, skill_body = _merge_tools(skills)
-    memory_raw = build_memory_context(db, user_id)
-    memory_ctx = filter_long_term_memory_lines(memory_raw, effective_goal)
-
-    # 本轮任务记忆：全新开始，不继承上轮 facts / 浏览器残留页
     task_ctx = TaskContext(
         goal=effective_goal,
         browser_url="about:blank",
         task_id=active_task.task_id,
         task_bind_mode=active_task.bind_mode,
+        request_profile=req_profile,
     )
     run_state = AgentRunState(run_id=run_id, goal=effective_goal)
-    run_state.transition(RunPhase.INIT, reason="task_context_ready")
-
-    system = SYSTEM_PROMPT + f"\n\n可用工具: {json.dumps(tools, ensure_ascii=False)}\n\n"
-    system += render_tool_contracts(tools) + "\n\n" + skill_body
-    if memory_ctx:
-        system += f"\n\n# 长期用户记忆（已按当前目标过滤）\n{memory_ctx}"
-    system += "\n\n" + memory_asm.system_memory_block + "\n"
-    system += f"\n\n{SAFETY_POLICY_PROMPT}\n"
-    logger.info(
-        "======== system prompt preview run=%s len=%s ========\n%s",
-        run_id[:8],
-        len(system),
-        system,
+    run_state.transition(
+        RunPhase.INIT,
+        reason="dispatch_prepared",
+        detail={
+            "fact_tier": req_profile.tier.value,
+            "intent": req_profile.intent.value,
+            "transition": turn.transition.value,
+            "dispatch": True,
+        },
     )
 
-    base_messages: list[dict[str, str]] = [{"role": "system", "content": system}]
-    base_messages.extend(
-        build_dialog_messages(
-            window_history,
-            current_goal=effective_goal,
-            sanitize_fn=sanitize_public_answer,
-            looks_internal_fn=looks_like_internal,
-        )
+    system = turn.prompt.system if turn.prompt else ""
+    logger.info(
+        "======== system prompt preview run=%s len=%s transition=%s ========\n%s",
+        run_id[:8],
+        len(system),
+        turn.transition.value,
+        system,
+    )
+    base_messages: list[dict[str, str]] = (
+        list(turn.prompt.messages) if turn.prompt else [{"role": "system", "content": system}]
     )
 
     model = get_chat_model()
@@ -788,21 +848,26 @@ async def run_chat(
         {
             "run_id": run_id,
             "architecture": "react",
+            "dispatch": True,
             "task_id": active_task.task_id,
             "task_bind_mode": active_task.bind_mode,
+            "task_transition": turn.transition.value,
             "entity_hits": [h.to_dict() for h in entity_result.hits[:6]],
             "session_summaries": len(summary_views),
             "vector_hits": vector_hit_count,
             "memory_debug": memory_asm.debug,
+            "context_soft": bool(turn.context and turn.context.soft_triggered),
+            "context_hard": bool(turn.context and turn.context.hard_triggered),
         },
     )
     yield sse("think.open", {"title": "ReAct 推理"})
     async for chunk in _emit_think(
-        f"任务绑定 TaskID={active_task.task_id[:8]}… 模式={active_task.bind_mode} "
-        f"意图={memory_asm.intent}\n"
+        f"调度层就绪 TaskID={active_task.task_id[:8]}… 模式={active_task.bind_mode}/"
+        f"{turn.transition.value} 意图={memory_asm.intent}\n"
     ):
         yield chunk
         think_parts.append(f"task:{active_task.bind_mode}")
+        think_parts.append(f"transition:{turn.transition.value}")
         think_parts.append(f"intent:{memory_asm.intent}")
     if entity_result.ok:
         async for chunk in _emit_think(
@@ -907,50 +972,89 @@ async def run_chat(
         )
 
         try:
-            raw = await model.chat(messages, temperature=0.2)
+            raw = await model.chat(messages, temperature=react_params.temperature)
         except (LLMCallError, Exception) as exc:
             logger.warning("react llm failed round=%s: %s", round_i, exc)
-            run_state.intercept("llm_unavailable", round_i=round_i)
-            yield _emit_traj(intercept_step("llm_unavailable", round_i=round_i))
-            yield sse(
-                "error",
-                {
-                    "message": "模型连接暂时中断，正在基于已有结果收束…",
-                    "recoverable": True,
-                },
+            # 模型挂了但还有轮次：自动执行下一步取数，避免空材料编造报告
+            more = next_research_tool(
+                goal=task_ctx.goal or "",
+                facts=task_ctx.facts,
+                steps=scratchpad.steps,
+                failed_urls=list(task_ctx.urls_to_skip()),
+                round_i=round_i,
+                max_rounds=agent_max_tool_rounds,
+                profile=getattr(task_ctx, "request_profile", None),
             )
-            async for chunk in _emit_think(
-                f"模型调用失败（已重试）：{str(exc)[:120]}。改为基于已有 Observation 收束答案…\n"
-            ):
-                yield chunk
-                think_parts.append("llm_unavailable")
-            content = await _answer_after_llm_failure(
-                model, task_ctx, round_i=round_i, run_state=run_state
+            if more and round_i < agent_max_tool_rounds - 1:
+                run_state.intercept(
+                    "llm_unavailable_auto_tool",
+                    round_i=round_i,
+                    tool=str(more.get("tool") or ""),
+                )
+                yield _emit_traj(
+                    intercept_step(
+                        "llm_unavailable_auto_tool",
+                        round_i=round_i,
+                        detail=f"{more.get('tool')}: {str(more.get('args') or '')[:100]}",
+                    )
+                )
+                async for chunk in _emit_think(
+                    f"模型调用失败，自动继续取数（{more.get('reason')}）…\n"
+                ):
+                    yield chunk
+                    think_parts.append("llm_unavailable_auto_tool")
+                parsed = {
+                    "action": "tool",
+                    "tool": str(more["tool"]),
+                    "args": more.get("args") or {},
+                    "think": str(more.get("think") or "模型中断后自动取数"),
+                }
+                think = str(parsed["think"])
+                action = "tool"
+                raw = ""
+            else:
+                run_state.intercept("llm_unavailable", round_i=round_i)
+                yield _emit_traj(intercept_step("llm_unavailable", round_i=round_i))
+                yield sse(
+                    "error",
+                    {
+                        "message": "模型连接暂时中断，正在基于已有结果收束…",
+                        "recoverable": True,
+                    },
+                )
+                async for chunk in _emit_think(
+                    f"模型调用失败（已重试）：{str(exc)[:120]}。改为基于已有 Observation 收束答案…\n"
+                ):
+                    yield chunk
+                    think_parts.append("llm_unavailable")
+                content = await _answer_after_llm_failure(
+                    model, task_ctx, round_i=round_i, run_state=run_state
+                )
+                citations = build_citations(task_ctx.facts)
+                if citations:
+                    yield sse("citations", {"items": citations})
+                yield _emit_traj(finish_step(round_i=round_i))
+                scratchpad.add_thought_action("模型不可用，材料收束", "finish", content, round_i)
+                run_state.record_delivered(content)
+                yield sse(
+                    "react.finish",
+                    {"round": round_i, "thought": "llm_unavailable", "content": content[:500]},
+                )
+                async for chunk in _emit_answer(content):
+                    yield chunk
+                assistant_parts = [content]
+                break
+        else:
+            logger.info("react round=%s: %s", round_i, raw[:500])
+            parsed = parse_agent_output(raw, tools)
+            think = str(parsed.get("think") or "")
+            action = parsed.get("action")
+            run_state.record_react_parsed(
+                round_i=round_i,
+                action=str(action or ""),
+                tool=str(parsed.get("tool") or ""),
+                thought=think,
             )
-            citations = build_citations(task_ctx.facts)
-            if citations:
-                yield sse("citations", {"items": citations})
-            yield _emit_traj(finish_step(round_i=round_i))
-            scratchpad.add_thought_action("模型不可用，材料收束", "finish", content, round_i)
-            run_state.record_delivered(content)
-            yield sse(
-                "react.finish",
-                {"round": round_i, "thought": "llm_unavailable", "content": content[:500]},
-            )
-            async for chunk in _emit_answer(content):
-                yield chunk
-            assistant_parts = [content]
-            break
-        logger.info("react round=%s: %s", round_i, raw[:500])
-        parsed = parse_agent_output(raw, tools)
-        think = str(parsed.get("think") or "")
-        action = parsed.get("action")
-        run_state.record_react_parsed(
-            round_i=round_i,
-            action=str(action or ""),
-            tool=str(parsed.get("tool") or ""),
-            thought=think,
-        )
         if think:
             yield sse("react.thought", {"round": round_i, "thought": think})
             async for chunk in _emit_think(f"Thought: {think}\n"):
@@ -975,6 +1079,7 @@ async def run_chat(
                     tools,
                     goal=task_ctx.goal,
                     facts=task_ctx.facts,
+                    preferred_tool=required_file_write_tool(task_ctx.goal or ""),
                 )
                 if recovered:
                     run_state.intercept("file_claim_recover", round_i=round_i)
@@ -991,27 +1096,48 @@ async def run_chat(
                     task_ctx.add_step("拦截未写文件的 final")
                     continue
             else:
-                # 过早 finish 且本轮无任何有效事实：概念题可直接答；其它引导 web_search
+                # 过早 finish：按 A/B/C 档位路由（C 不强制检索；A 强制检索）
+                tier = getattr(
+                    getattr(task_ctx, "request_profile", None), "tier", FactTier.B
+                )
                 if (
                     not task_ctx.facts
                     and round_i < agent_max_tool_rounds - 1
-                    and not any(k in (task_ctx.goal or "") for k in ("写", "生成文档", "docx", "日报"))
-                    and not re.match(r"^\s*(什么是|什么叫|何为|谁是)", task_ctx.goal or "")
+                    and tier != FactTier.C
+                    and not _skip_premature_auto_search(task_ctx.goal or "")
+                    and (
+                        tier == FactTier.A
+                        or not re.match(r"^\s*(什么是|什么叫|何为|谁是)", task_ctx.goal or "")
+                    )
                 ):
                     run_state.intercept("premature_finish_auto_search", round_i=round_i)
                     yield _emit_traj(
                         intercept_step(
                             "premature_finish_auto_search",
                             round_i=round_i,
-                            detail="尚未拿到有效材料，先搜索",
+                            detail=(
+                                "A 类高事实清单，先检索再答"
+                                if tier == FactTier.A
+                                else "尚未拿到有效材料，先搜索"
+                            ),
                         )
                     )
-                    async for chunk in _emit_think("尚未拿到有效 Observation，先 web_search 再决策…\n"):
+                    async for chunk in _emit_think(
+                        (
+                            "A 类请求：强制先检索再 finish…\n"
+                            if tier == FactTier.A
+                            else "尚未拿到有效 Observation，先 web_search 再决策…\n"
+                        )
+                    ):
                         yield chunk
+                    q = task_ctx.goal
+                    prof = getattr(task_ctx, "request_profile", None)
+                    if prof and getattr(prof, "search_queries", None):
+                        q = prof.search_queries[0]
                     parsed = {
                         "action": "tool",
                         "tool": "web_search",
-                        "args": {"query": task_ctx.goal},
+                        "args": {"query": q},
                         "think": "自动补搜索",
                     }
                     action = "tool"
@@ -1033,6 +1159,7 @@ async def run_chat(
                         failed_urls=list(task_ctx.urls_to_skip()),
                         round_i=round_i,
                         max_rounds=agent_max_tool_rounds,
+                        profile=getattr(task_ctx, "request_profile", None),
                     )
                     # 硬门控：有 hits 无 body / 深度材料不足 → 禁止 finish
                     if not more:
@@ -1088,7 +1215,7 @@ async def run_chat(
                                 "think": "搜索后自动抓取内容页",
                                 "reason": "auto_web_fetch",
                             }
-                    # 计数清单：finish 条数明显不足目标 → 优先补搜，不把「1 条详写」当完成
+                    # 计数清单：条数不足 → A 类荐书优先 Open Library，否则补搜
                     if (
                         not more
                         and is_count_list_goal(task_ctx.goal or "")
@@ -1097,30 +1224,61 @@ async def run_chat(
                         )
                         and round_i < agent_max_tool_rounds - 1
                     ):
-                        alts = alt_search_queries(
-                            task_ctx.goal or "",
-                            prior_search_queries(scratchpad.steps),
+                        from agent.research_policy import (
+                            openlibrary_args_fingerprint,
+                            openlibrary_discover_args,
+                            prefers_openlibrary_catalog,
+                            prior_openlibrary_fingerprints,
                         )
-                        if alts:
-                            more = {
-                                "tool": "web_search",
-                                "args": {"query": alts[0]},
-                                "think": "清单条数不足目标，继续检索具体条目",
-                                "reason": "count_shortfall",
-                            }
-                        else:
-                            next_url = pick_fetch_url(
-                                task_ctx.facts,
-                                skip=task_ctx.urls_to_skip(),
-                                goal=task_ctx.goal or "",
-                            )
-                            if next_url:
+
+                        prof = getattr(task_ctx, "request_profile", None)
+                        tier = getattr(prof, "tier", None)
+                        ol_on = False
+                        try:
+                            from config import config as cfg
+
+                            ol_on = bool(getattr(cfg, "openlibrary_enabled", False))
+                        except Exception:
+                            ol_on = False
+                        if (
+                            ol_on
+                            and tier == FactTier.A
+                            and prefers_openlibrary_catalog(task_ctx.goal or "")
+                        ):
+                            ol_args = openlibrary_discover_args(task_ctx.goal or "")
+                            fp = openlibrary_args_fingerprint(ol_args)
+                            if fp not in prior_openlibrary_fingerprints(scratchpad.steps):
                                 more = {
-                                    "tool": "web_fetch",
-                                    "args": {"url": next_url},
-                                    "think": "清单条数不足，再抓一页提炼条目",
+                                    "tool": "openlibrary_lookup",
+                                    "args": ol_args,
+                                    "think": "A 类清单条数不足，用书目库发现补齐",
                                     "reason": "count_shortfall",
                                 }
+                        if not more:
+                            alts = alt_search_queries(
+                                task_ctx.goal or "",
+                                prior_search_queries(scratchpad.steps),
+                            )
+                            if alts:
+                                more = {
+                                    "tool": "web_search",
+                                    "args": {"query": alts[0]},
+                                    "think": "清单条数不足目标，继续检索具体条目",
+                                    "reason": "count_shortfall",
+                                }
+                            else:
+                                next_url = pick_fetch_url(
+                                    task_ctx.facts,
+                                    skip=task_ctx.urls_to_skip(),
+                                    goal=task_ctx.goal or "",
+                                )
+                                if next_url:
+                                    more = {
+                                        "tool": "web_fetch",
+                                        "args": {"url": next_url},
+                                        "think": "清单条数不足，再抓一页提炼条目",
+                                        "reason": "count_shortfall",
+                                    }
                     if more:
                         tool_n = str(more["tool"])
                         args_n = more.get("args") or {}
@@ -1152,53 +1310,98 @@ async def run_chat(
                         }
                         action = "tool"
                     else:
-                        ok_f, br = can_finish_research(
-                            goal=task_ctx.goal or "",
-                            facts=task_ctx.facts,
-                            steps=scratchpad.steps,
-                            failed_urls=list(task_ctx.urls_to_skip()),
-                        )
-                        if br == "weak_materials":
-                            run_state.intercept("weak_materials", round_i=round_i)
+                        # 材料已尽：若约束要求文档且尚未落盘，先写文件再交付
+                        req_write = required_file_write_tool(task_ctx.goal or "")
+                        if (
+                            req_write
+                            and not task_ctx.artifacts
+                            and round_i < agent_max_tool_rounds - 1
+                        ):
+                            recovered = _recover_file_tool(
+                                raw,
+                                think,
+                                content,
+                                tools,
+                                goal=task_ctx.goal,
+                                facts=task_ctx.facts,
+                                preferred_tool=req_write,
+                            ) or _force_file_write_action(
+                                tool=req_write,
+                                goal=task_ctx.goal or "",
+                                think=think,
+                                content=content,
+                                facts=task_ctx.facts,
+                            )
+                            run_state.intercept(
+                                "missing_file_write",
+                                round_i=round_i,
+                                tool=str(recovered.get("tool") or req_write),
+                            )
                             yield _emit_traj(
-                                intercept_step("weak_materials", round_i=round_i)
+                                intercept_step(
+                                    "missing_file_write",
+                                    round_i=round_i,
+                                    detail=str(recovered.get("tool") or req_write),
+                                )
                             )
                             async for chunk in _emit_think(
-                                "材料偏弱且无更多可抓来源，强制充实成稿后再交付…\n"
+                                f"约束要求输出文档，自动调用 {recovered.get('tool')}…\n"
                             ):
                                 yield chunk
-                        run_state.react_finish_draft = content
-                        run_state.snapshot_answer(
-                            "react_finish",
-                            content,
-                            round_i=round_i,
-                            fact_count=len(task_ctx.facts),
-                            path=br or "",
-                        )
-                        content = await _finalize_user_answer(
-                            model, task_ctx, content, round_i=round_i, thought=think, run_state=run_state
-                        )
-                        # 去掉残留的「告诉我编号」类话术
-                        content = re.sub(
-                            r"\n*如需某一条的详细内容[^\n]*\n?",
-                            "\n",
-                            content,
-                        ).strip()
-                        citations = build_citations(task_ctx.facts)
-                        if citations:
-                            yield sse("citations", {"items": citations})
-                        yield _emit_traj(finish_step(round_i=round_i, detail="已交付"))
-                        scratchpad.add_thought_action(think, "finish", content, round_i)
-                        scratchpad.set_observation("（已向用户交付最终答案）")
-                        run_state.record_delivered(content)
-                        yield sse(
-                            "react.finish",
-                            {"round": round_i, "thought": think, "content": content[:500]},
-                        )
-                        async for chunk in _emit_answer(content):
-                            yield chunk
-                        assistant_parts = [content]
-                        break
+                            if content and is_substantive_draft(
+                                content, task_ctx.goal or "", facts=task_ctx.facts
+                            ):
+                                run_state.react_finish_draft = content
+                            parsed = recovered
+                            action = "tool"
+                        else:
+                            ok_f, br = can_finish_research(
+                                goal=task_ctx.goal or "",
+                                facts=task_ctx.facts,
+                                steps=scratchpad.steps,
+                                failed_urls=list(task_ctx.urls_to_skip()),
+                            )
+                            if br == "weak_materials":
+                                run_state.intercept("weak_materials", round_i=round_i)
+                                yield _emit_traj(
+                                    intercept_step("weak_materials", round_i=round_i)
+                                )
+                                async for chunk in _emit_think(
+                                    "材料偏弱且无更多可抓来源，强制充实成稿后再交付…\n"
+                                ):
+                                    yield chunk
+                            run_state.react_finish_draft = content
+                            run_state.snapshot_answer(
+                                "react_finish",
+                                content,
+                                round_i=round_i,
+                                fact_count=len(task_ctx.facts),
+                                path=br or "",
+                            )
+                            content = await _finalize_user_answer(
+                                model, task_ctx, content, round_i=round_i, thought=think, run_state=run_state
+                            )
+                            # 去掉残留的「告诉我编号」类话术
+                            content = re.sub(
+                                r"\n*如需某一条的详细内容[^\n]*\n?",
+                                "\n",
+                                content,
+                            ).strip()
+                            citations = build_citations(task_ctx.facts)
+                            if citations:
+                                yield sse("citations", {"items": citations})
+                            yield _emit_traj(finish_step(round_i=round_i, detail="已交付"))
+                            scratchpad.add_thought_action(think, "finish", content, round_i)
+                            scratchpad.set_observation("（已向用户交付最终答案）")
+                            run_state.record_delivered(content)
+                            yield sse(
+                                "react.finish",
+                                {"round": round_i, "thought": think, "content": content[:500]},
+                            )
+                            async for chunk in _emit_answer(content):
+                                yield chunk
+                            assistant_parts = [content]
+                            break
 
         if action == "tool":
             tool = str(parsed.get("tool") or "")
@@ -1359,35 +1562,58 @@ async def run_chat(
                 continue
 
             # 禁止对已失败 / 已成功抓取的 URL 死循环重试
-            nav_url = str(args.get("url") or "")
-            if (
-                tool in {"web_fetch", "browser_navigate", "http_request"}
-                and nav_url
-                and nav_url in task_ctx.fetched_urls
-            ):
-                tip = f"URL 本轮已抓取过，跳过重复打开: {nav_url[:120]}"
-                scratchpad.add_thought_action(think, tool, args, round_i)
-                scratchpad.set_observation(tip)
-                yield sse("react.observation", {"round": round_i, "observation": tip, "tool": tool})
-                async for chunk in _emit_think(f"Observation: {tip}\n"):
-                    yield chunk
-                task_ctx.add_step(tip)
-                next_u = pick_fetch_url(task_ctx.facts, skip=task_ctx.urls_to_skip(), goal=task_ctx.goal or "")
-                if next_u and next_u != nav_url and round_i < agent_max_tool_rounds - 1:
-                    async for chunk in _emit_think(f"改抓下一来源: {next_u[:80]}\n"):
+            from agent.context import normalize_url
+
+            nav_url = normalize_url(str(args.get("url") or ""))
+            if tool in {"web_fetch", "browser_navigate", "http_request"} and nav_url:
+                if task_ctx.url_already_seen(nav_url):
+                    tip = f"URL 本轮已抓取/失败过，跳过重复打开: {nav_url[:120]}"
+                    scratchpad.add_thought_action(think, tool, args, round_i)
+                    scratchpad.set_observation(tip)
+                    yield sse(
+                        "react.observation",
+                        {"round": round_i, "observation": tip, "tool": tool},
+                    )
+                    async for chunk in _emit_think(f"Observation: {tip}\n"):
                         yield chunk
-                    tool = "web_fetch"
-                    args = {"url": next_u}
-                    nav_url = next_u
-                else:
+                    task_ctx.add_step(tip)
+                    next_u = pick_fetch_url(
+                        task_ctx.facts,
+                        skip=task_ctx.urls_to_skip(),
+                        goal=task_ctx.goal or "",
+                    )
+                    if next_u and normalize_url(next_u) != nav_url and round_i < agent_max_tool_rounds - 1:
+                        async for chunk in _emit_think(f"改抓下一来源: {next_u[:80]}\n"):
+                            yield chunk
+                        tool = "web_fetch"
+                        args = {"url": next_u}
+                        nav_url = normalize_url(next_u)
+                    else:
+                        alts = alt_search_queries(
+                            task_ctx.goal or "",
+                            prior_search_queries(scratchpad.steps),
+                        )
+                        if alts and round_i < agent_max_tool_rounds - 1:
+                            async for chunk in _emit_think(
+                                f"无更多可抓链接，换关键词搜索: {alts[0][:60]}\n"
+                            ):
+                                yield chunk
+                            tool = "web_search"
+                            args = {"query": alts[0]}
+                            nav_url = ""
+                        else:
+                            continue
+                elif task_ctx.already_failed(tool, args, limit=1):
+                    tip = f"检测到重复失败调用 {tool}，已拦截。请换策略或直接总结已有信息。"
+                    scratchpad.set_observation(tip)
+                    yield sse(
+                        "react.observation",
+                        {"round": round_i, "observation": tip, "tool": tool},
+                    )
+                    async for chunk in _emit_think(f"Observation: {tip}\n"):
+                        yield chunk
+                    task_ctx.add_step(f"拦截重复失败: {tool} {nav_url}")
                     continue
-            elif tool == "browser_navigate" and nav_url and nav_url in task_ctx.failed_urls:
-                async for chunk in _emit_think(
-                    f"URL 已失败过，跳过重复 navigate，改用 http_request 抓取: {nav_url}\n"
-                ):
-                    yield chunk
-                tool = "http_request"
-                args = {"method": "GET", "url": nav_url}
             elif task_ctx.already_failed(tool, args, limit=1):
                 tip = f"检测到重复失败调用 {tool}，已拦截。请换策略或直接总结已有信息。"
                 scratchpad.set_observation(tip)
@@ -1875,20 +2101,23 @@ async def run_chat(
     )
     db.commit()
     if task_ctx.task_id:
-        update_task_after_turn(
+        await dispatch.archiver.archive_turn_await(
             db,
-            task_id=task_ctx.task_id,
             user_id=user_id,
+            session_id=conversation_id,
+            task_id=task_ctx.task_id,
             run_id=run_id,
-            artifacts=list(task_ctx.artifacts),
+            user_text=user_text,
             answer_preview=final_text[:500],
+            artifacts=list(task_ctx.artifacts),
         )
-    await _compact_session_after_turn(
-        db,
-        user_id=user_id,
-        conversation_id=conversation_id,
-        task_id=task_ctx.task_id,
-    )
+    else:
+        await _compact_session_after_turn(
+            db,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            task_id=task_ctx.task_id,
+        )
     yield sse(
         "done",
         {
@@ -2130,47 +2359,85 @@ async def resume_chat_after_confirmation(
             raw = await model.chat(messages, temperature=0.2)
         except (LLMCallError, Exception) as exc:
             logger.warning("resume react llm failed round=%s: %s", round_i, exc)
-            run_state.intercept("llm_unavailable", round_i=round_i)
-            yield _emit_traj(intercept_step("llm_unavailable", round_i=round_i))
-            yield sse(
-                "error",
-                {
-                    "message": "模型连接暂时中断，正在基于已有结果收束…",
-                    "recoverable": True,
-                },
+            more = next_research_tool(
+                goal=task_ctx.goal or "",
+                facts=task_ctx.facts,
+                steps=scratchpad.steps,
+                failed_urls=list(task_ctx.urls_to_skip()),
+                round_i=round_i,
+                max_rounds=agent_max_tool_rounds,
+                profile=getattr(task_ctx, "request_profile", None),
             )
-            async for chunk in _emit_think(
-                f"模型调用失败（已重试）：{str(exc)[:120]}。改为基于已有 Observation 收束答案…\n"
-            ):
-                yield chunk
-                think_parts.append("llm_unavailable")
-            content = await _answer_after_llm_failure(
-                model, task_ctx, round_i=round_i, run_state=run_state
+            if more and round_i < agent_max_tool_rounds - 1:
+                run_state.intercept(
+                    "llm_unavailable_auto_tool",
+                    round_i=round_i,
+                    tool=str(more.get("tool") or ""),
+                )
+                yield _emit_traj(
+                    intercept_step(
+                        "llm_unavailable_auto_tool",
+                        round_i=round_i,
+                        detail=f"{more.get('tool')}: {str(more.get('args') or '')[:100]}",
+                    )
+                )
+                async for chunk in _emit_think(
+                    f"模型调用失败，自动继续取数（{more.get('reason')}）…\n"
+                ):
+                    yield chunk
+                    think_parts.append("llm_unavailable_auto_tool")
+                parsed = {
+                    "action": "tool",
+                    "tool": str(more["tool"]),
+                    "args": more.get("args") or {},
+                    "think": str(more.get("think") or "模型中断后自动取数"),
+                }
+                think = str(parsed["think"])
+                action = "tool"
+                raw = ""
+            else:
+                run_state.intercept("llm_unavailable", round_i=round_i)
+                yield _emit_traj(intercept_step("llm_unavailable", round_i=round_i))
+                yield sse(
+                    "error",
+                    {
+                        "message": "模型连接暂时中断，正在基于已有结果收束…",
+                        "recoverable": True,
+                    },
+                )
+                async for chunk in _emit_think(
+                    f"模型调用失败（已重试）：{str(exc)[:120]}。改为基于已有 Observation 收束答案…\n"
+                ):
+                    yield chunk
+                    think_parts.append("llm_unavailable")
+                content = await _answer_after_llm_failure(
+                    model, task_ctx, round_i=round_i, run_state=run_state
+                )
+                citations = build_citations(task_ctx.facts)
+                if citations:
+                    yield sse("citations", {"items": citations})
+                yield _emit_traj(finish_step(round_i=round_i))
+                scratchpad.add_thought_action("模型不可用，材料收束", "finish", content, round_i)
+                run_state.record_delivered(content)
+                yield sse(
+                    "react.finish",
+                    {"round": round_i, "thought": "llm_unavailable", "content": content[:500]},
+                )
+                async for chunk in _emit_answer(content):
+                    yield chunk
+                assistant_parts = [content]
+                break
+        else:
+            logger.info("resume react round=%s: %s", round_i, raw[:500])
+            parsed = parse_agent_output(raw, tools)
+            think = str(parsed.get("think") or "")
+            action = parsed.get("action")
+            run_state.record_react_parsed(
+                round_i=round_i,
+                action=str(action or ""),
+                tool=str(parsed.get("tool") or ""),
+                thought=think,
             )
-            citations = build_citations(task_ctx.facts)
-            if citations:
-                yield sse("citations", {"items": citations})
-            yield _emit_traj(finish_step(round_i=round_i))
-            scratchpad.add_thought_action("模型不可用，材料收束", "finish", content, round_i)
-            run_state.record_delivered(content)
-            yield sse(
-                "react.finish",
-                {"round": round_i, "thought": "llm_unavailable", "content": content[:500]},
-            )
-            async for chunk in _emit_answer(content):
-                yield chunk
-            assistant_parts = [content]
-            break
-        logger.info("resume react round=%s: %s", round_i, raw[:500])
-        parsed = parse_agent_output(raw, tools)
-        think = str(parsed.get("think") or "")
-        action = parsed.get("action")
-        run_state.record_react_parsed(
-            round_i=round_i,
-            action=str(action or ""),
-            tool=str(parsed.get("tool") or ""),
-            thought=think,
-        )
         if think:
             yield sse("react.thought", {"round": round_i, "thought": think})
             async for chunk in _emit_think(f"Thought: {think}\n"):

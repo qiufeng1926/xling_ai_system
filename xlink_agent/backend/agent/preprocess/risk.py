@@ -35,8 +35,13 @@ def classify_fact_risk(goal: str, *, intent: DeliveryIntent | None = None) -> Fa
     if _HIGH_FACT_RE.search(g):
         return FactRisk.HIGH
 
-    # 清单推荐：条目简介可用常识，但若强调「权威/豆瓣评分/销量」则升高
+    # 具名清单（书目/文献/法条/史实等）默认高事实风险
     if intent == DeliveryIntent.LIST_RECOMMEND:
+        if re.search(
+            r"(书|书籍|书单|著作|文献|论文|法条|法规|名人|史实|名录|作家|经典)",
+            g,
+        ):
+            return FactRisk.HIGH
         if re.search(r"(权威|官方|销量|评分必须|最新榜单|实时)", g):
             return FactRisk.HIGH
         return FactRisk.NORMAL

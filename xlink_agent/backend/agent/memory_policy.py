@@ -246,6 +246,14 @@ def is_dialog_followup(curr_user: str, prev_user: str = "") -> bool:
     # 续作推荐数量
     if re.search(r"再(来|给|推荐|找)\s*\d*|再来几|还有吗|多来几|补充几", cur):
         return True
+    # 短澄清：补充主题范围（「是ai相关的token」「指的是算力」）
+    if re.match(
+        r"^(是|指的?是|我说的是|我说|关于|针对|限定|只要|改成|换成).{1,48}$",
+        cur,
+    ):
+        return True
+    if len(cur) <= 36 and re.search(r"(相关的|方面的|那种|这类)", cur):
+        return True
     # 深挖某一实体（带书名号/引号）
     if re.search(r"(详细|展开|讲讲|说说|介绍).{0,12}《[^》]{1,40}》", cur):
         return True

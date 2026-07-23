@@ -8,6 +8,7 @@ from typing import Any
 TOOL_KIND: dict[str, str] = {
     "web_search": "search",
     "web_fetch": "fetch",
+    "openlibrary_lookup": "search",
     "http_request": "fetch",
     "browser_navigate": "browse",
     "browser_extract": "browse",
@@ -26,12 +27,14 @@ TOOL_KIND: dict[str, str] = {
     "file_list": "write",
     "http_request_write": "write",
     "run_code": "code",
+    "memory_recall": "kb",
     "finish": "finish",
 }
 
 TOOL_TITLE: dict[str, str] = {
     "web_search": "正在搜索",
     "web_fetch": "正在打开正文",
+    "openlibrary_lookup": "正在核验书目",
     "http_request": "正在抓取网页",
     "browser_navigate": "浏览器打开页面",
     "browser_extract": "提取页面内容",
@@ -50,12 +53,14 @@ TOOL_TITLE: dict[str, str] = {
     "file_delete": "删除工作区文件（需确认）",
     "http_request_write": "外呼写操作（需确认）",
     "run_code": "运行代码计算",
+    "memory_recall": "召回会话记忆",
     "finish": "整理最终答复",
 }
 
 TOOL_TITLE_DONE: dict[str, str] = {
     "web_search": "搜索完成",
     "web_fetch": "正文已打开",
+    "openlibrary_lookup": "书目核验完成",
     "http_request": "网页已抓取",
     "browser_navigate": "页面已打开",
     "browser_extract": "内容已提取",
@@ -74,12 +79,14 @@ TOOL_TITLE_DONE: dict[str, str] = {
     "file_delete": "文件已删除",
     "http_request_write": "写操作已完成",
     "run_code": "代码执行完成",
+    "memory_recall": "记忆召回完成",
     "finish": "答复已就绪",
 }
 
 TOOL_TITLE_FAIL: dict[str, str] = {
     "web_search": "搜索未拿到结果",
     "web_fetch": "正文打开失败",
+    "openlibrary_lookup": "书目核验失败",
     "http_request": "网页抓取失败",
     "browser_navigate": "页面打开失败",
     "browser_extract": "提取失败",
@@ -97,6 +104,7 @@ TOOL_TITLE_FAIL: dict[str, str] = {
     "file_delete": "删除失败",
     "http_request_write": "写操作失败",
     "run_code": "代码执行失败",
+    "memory_recall": "记忆召回失败",
 }
 
 INTERCEPT_TITLE: dict[str, str] = {
@@ -104,7 +112,12 @@ INTERCEPT_TITLE: dict[str, str] = {
     "search_hits_prefer_fetch": "已有搜索，改为抓正文",
     "auto_web_fetch": "自动打开搜索结果",
     "premature_finish_auto_search": "补充搜索后再回答",
+    "fact_tier_a_force_search": "A 类强制检索",
+    "fact_tier_post_scan": "A 类后置扫描清洗",
+    "openlibrary_catalog": "用书目库补充材料",
     "file_claim_recover": "改为实际生成文件",
+    "missing_file_write": "约束要求文档，先写文件",
+    "llm_unavailable_auto_tool": "模型中断，自动继续取数",
     "need_alt_search": "换角度补充检索",
     "need_more_bodies": "继续抓取更多正文",
     "search_for_more_sources": "再搜补充来源",
@@ -162,6 +175,12 @@ def tool_detail(tool: str, args: dict[str, Any] | str | None) -> str:
     if tool == "web_search":
         q = str(args.get("query") or "")
         return f"关键词：{q[:120]}" if q else ""
+    if tool == "openlibrary_lookup":
+        qs = args.get("queries") or []
+        if isinstance(qs, list) and qs:
+            return f"核验：{', '.join(str(x) for x in qs[:4])}"[:140]
+        topic = str(args.get("subject") or args.get("q") or "")
+        return f"发现：{topic[:120]}" if topic else "书目查询"
     if tool == "run_code":
         code = str(args.get("code") or args.get("source") or "")
         first = code.strip().splitlines()[0] if code.strip() else ""

@@ -1,11 +1,12 @@
 """
-双轨总结：Markdown 速览 + 图文 JSON（并行生成，图文失败可重试）
+双轨总结：Markdown 速览 + 图文 JSON（并行生成，均可重试）
 """
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 
 from config.config import (
+    markdown_summary_retry_max,
     visual_chunk_chars,
     visual_chunk_overlap,
     visual_json_repair,
@@ -25,6 +26,30 @@ from utils.logger import get_logger
 
 logger = get_logger("summary_service")
 
+# 瞬时网络/SSL/连接类错误：值得退避重试
+_TRANSIENT_ERROR_MARKERS = (
+    "connection error",
+    "connection reset",
+    "connection aborted",
+    "timed out",
+    "timeout",
+    "temporarily unavailable",
+    "ssl",
+    "eof occurred",
+    "broken pipe",
+    "remote end closed",
+    "server disconnected",
+    "503",
+    "502",
+    "429",
+    "rate limit",
+)
+
+
+def _is_transient_llm_error(exc: BaseException | str) -> bool:
+    text = str(exc).lower()
+    return any(m in text for m in _TRANSIENT_ERROR_MARKERS)
+
 
 @dataclass
 class DualSummaryResult:
@@ -39,6 +64,40 @@ class DualSummaryResult:
 async def _parse_raw_visual(client: BaseLLMClient, raw: str) -> VisualSummary:
     repair_fn = client.repair_json_async if visual_json_repair else None
     return await parse_visual_summary_with_repair(raw, repair_fn=repair_fn)
+
+
+async def _generate_markdown_with_retry(
+    client: BaseLLMClient,
+    transcript: str,
+    meeting_name: str | None,
+    meeting_started_at: datetime | str | None,
+    max_retries: int,
+) -> str:
+    """Markdown 速览：对连接类瞬时错误做指数退避重试。"""
+    last_error: BaseException | None = None
+    attempts = max(1, max_retries + 1)
+    for attempt in range(attempts):
+        try:
+            result = await client.summary_meeting_async(
+                transcript, meeting_name, meeting_started_at
+            )
+            if not (result or "").strip():
+                raise RuntimeError("Markdown 速览返回为空")
+            return result
+        except Exception as e:
+            last_error = e
+            transient = _is_transient_llm_error(e)
+            logger.warning(
+                f"Markdown 速览生成失败 (attempt {attempt + 1}/{attempts}): {e}",
+                extra={"output_params": {"transient": transient}},
+            )
+            if attempt >= attempts - 1:
+                break
+            if not transient:
+                break
+            await asyncio.sleep(min(2 ** attempt, 8))
+    assert last_error is not None
+    raise last_error
 
 
 async def _generate_visual_once(
@@ -137,7 +196,13 @@ async def _generate_dual_summaries_inner(
     meeting_started_at: datetime | str | None = None,
 ) -> DualSummaryResult:
     markdown_task = asyncio.create_task(
-        client.summary_meeting_async(transcript, meeting_name, meeting_started_at)
+        _generate_markdown_with_retry(
+            client,
+            transcript,
+            meeting_name,
+            meeting_started_at,
+            markdown_summary_retry_max,
+        )
     )
     visual_task = asyncio.create_task(
         _generate_visual_with_retry(client, transcript, meeting_name, visual_summary_retry_max)

@@ -96,10 +96,10 @@ def _save_resume_snapshot(session_info: dict) -> str | None:
         return None
 
     existing = _recording_resume_store.get(recording_id)
-    # 旧连接 finally 晚于新连接启动时：可补充更长文本，但不得抢回 connection 所有权
+    # 其他连接已占用快照时：更短文本禁止覆盖；不更短则更新并接管所有权（重连方）
     if existing and existing.get("connection_id") not in (None, session_info.get("connection_id")):
         existing_text = (existing.get("total_text") or "").strip()
-        if len(total_text) <= len(existing_text):
+        if len(total_text) < len(existing_text):
             existing["expires_at"] = time.time() + _RESUME_TTL_SECONDS
             if session_info.get("file_id") and not existing.get("file_id"):
                 existing["file_id"] = session_info["file_id"]
@@ -114,6 +114,10 @@ def _save_resume_snapshot(session_info: dict) -> str | None:
             int(existing.get("audio_chunks") or 0),
         )
         existing["saved"] = bool(session_info.get("saved") or existing.get("saved"))
+        existing["meeting_name"] = (
+            session_info.get("meeting_name") or existing.get("meeting_name")
+        )
+        existing["connection_id"] = session_info.get("connection_id")
         existing["expires_at"] = time.time() + _RESUME_TTL_SECONDS
         return recording_id
 
@@ -553,7 +557,7 @@ async def _process_realtime_session_background(
 
 
 def _snapshot_taken_over(session_info: dict, total_text: str) -> bool:
-    """旧连接 finally 晚于重连时，若快照已被新连接接管且文本更长，则跳过落库。"""
+    """旧连接 finally 晚于重连时，若快照已被新连接接管且文本不更长，则跳过落库。"""
     recording_id = (session_info.get("recording_id") or "").strip()
     if not recording_id:
         return False
@@ -562,14 +566,14 @@ def _snapshot_taken_over(session_info: dict, total_text: str) -> bool:
         return False
     if existing.get("connection_id") in (None, session_info.get("connection_id")):
         return False
-    if len(total_text) < len((existing.get("total_text") or "").strip()):
-        # 同步新连接已持有的 file_id，避免旧连接另起一条
-        if existing.get("file_id"):
-            session_info["file_id"] = existing["file_id"]
-        if existing.get("transcript_path"):
-            session_info["transcript_path"] = existing["transcript_path"]
-        return True
-    return False
+    # 我们文本更长：允许落库更新（例如旧连接听悟收尾拿到更完整文本）
+    if len(total_text) > len((existing.get("total_text") or "").strip()):
+        return False
+    if existing.get("file_id"):
+        session_info["file_id"] = existing["file_id"]
+    if existing.get("transcript_path"):
+        session_info["transcript_path"] = existing["transcript_path"]
+    return True
 
 
 async def _persist_realtime_session_emergency(

@@ -92,6 +92,40 @@ class ActiveTask:
         }
 
 
+_CONSTRAINT_TO_WRITE_TOOL: dict[str, str] = {
+    "输出 Word/docx": "file_write_docx",
+    "输出 Excel/xlsx": "file_write_xlsx",
+    "输出 PPT": "file_write_pptx",
+    "输出 PDF": "file_write_pdf",
+    "输出 Markdown": "file_write_markdown",
+}
+
+
+def required_file_write_tool(
+    goal: str = "",
+    constraints: list[str] | None = None,
+) -> str | None:
+    """若目标/约束要求落盘文档，返回对应 file_write_*；否则 None。"""
+    parts = [str(c) for c in (constraints or []) if c]
+    if goal:
+        parts.append(goal)
+    blob = "\n".join(parts)
+    if not blob.strip():
+        return None
+    for label, tool in _CONSTRAINT_TO_WRITE_TOOL.items():
+        if label in blob:
+            return tool
+    if re.search(r"以文档形式|word\s*文档|\bdocx\b|输出\s*Word", blob, re.I):
+        return "file_write_docx"
+    if re.search(r"\bxlsx\b|excel\s*表格", blob, re.I):
+        return "file_write_xlsx"
+    if re.search(r"\bpptx\b|幻灯片", blob, re.I):
+        return "file_write_pptx"
+    if re.search(r"\bpdf\b", blob, re.I):
+        return "file_write_pdf"
+    return None
+
+
 def extract_constraints(text: str) -> list[str]:
     """从用户话术抽出可复用约束（轻量规则，后续可扩展实体匹配）。"""
     t = (text or "").strip()
@@ -102,7 +136,7 @@ def extract_constraints(text: str) -> list[str]:
     if m:
         out.append(f"数量约 {m.group(1)}{m.group(2)}")
     for fmt, label in (
-        (r"\bdocx\b|word|Word|文档", "输出 Word/docx"),
+        (r"\bdocx\b|word|Word|以文档形式|文档形式", "输出 Word/docx"),
         (r"\bxlsx\b|excel|Excel|表格", "输出 Excel/xlsx"),
         (r"\bpptx\b|PPT|幻灯片", "输出 PPT"),
         (r"\bpdf\b|PDF", "输出 PDF"),
@@ -329,15 +363,32 @@ def update_task_after_turn(
 
 
 def expand_goal_with_task(effective_goal: str, task: ActiveTask) -> str:
-    """续作时把 Task 约束并入有效目标，便于调研/写文件门控看到同一任务。"""
+    """续作时把 Task 根目标 + 约束并入有效目标，避免短澄清覆盖调研/写文档意图。"""
     goal = (effective_goal or task.goal or "").strip()
     if task.bind_mode != BIND_CONTINUE:
         return goal
-    parts = [goal]
+    root = (task.goal or "").strip()
+    parts: list[str] = []
+    # 短追问/澄清：保留根目标为主，本轮话术作补充（否则门控只看到「是ai相关的token」）
+    if root and goal and goal != root:
+        already = root[:24] in goal or goal.startswith("任务根目标")
+        short_clarification = (not already) and (
+            len(goal) < 100 or len(goal) + 20 < len(root)
+        )
+        if short_clarification:
+            parts.append(f"任务根目标：{root}")
+            parts.append(f"本轮补充/澄清：{goal}")
+        else:
+            parts.append(goal)
+            if not already and len(root) >= 12:
+                parts.append(f"（续作自：{root[:160]}）")
+    else:
+        parts.append(goal or root)
     if task.constraints:
         parts.append("任务约束：" + "；".join(task.constraints[-6:]))
     if task.artifacts:
         parts.append("已有产物：" + "、".join(task.artifacts[-4:]))
     if task.summary:
-        parts.append(task.summary[:200])
+        # 交付摘要仅作参考，避免错误终稿污染本轮主题
+        parts.append(task.summary[:160])
     return "\n".join(parts)

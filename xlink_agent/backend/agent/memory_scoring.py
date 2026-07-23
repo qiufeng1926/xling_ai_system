@@ -108,7 +108,8 @@ def score_candidate(
     tb = task_bind_coef(cand, active_task_id)
     score = sem * sw * td * tb
     if cand.entity_hit:
-        score *= _cfg_float("memory_weight_entity_boost", 1.2)
+        # 设计稿：实体命中系数 1.8
+        score *= _cfg_float("memory_weight_entity_boost", 1.8)
     return round(score, 6)
 
 

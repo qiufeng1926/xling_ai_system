@@ -97,3 +97,14 @@ log_level = _env("LOG_LEVEL", "INFO") or "INFO"
 
 confirmation_ttl_sec = int(_env("CONFIRMATION_TTL_SEC", "600") or "600")
 agent_max_tool_rounds = int(_env("AGENT_MAX_TOOL_ROUNDS", "12") or "12")
+
+# Open Library：默认关闭；需要时设 OPENLIBRARY_ENABLED=true
+openlibrary_enabled = _env_bool("OPENLIBRARY_ENABLED", "false")
+openlibrary_user_agent = (
+    _env("OPENLIBRARY_USER_AGENT", "XlinkAgent-OpenLibrary (xlink-agent@localhost)")
+    or "XlinkAgent-OpenLibrary (xlink-agent@localhost)"
+)
+openlibrary_rps = float(_env("OPENLIBRARY_RPS", "2.5") or "2.5")
+openlibrary_cache_ttl_sec = int(
+    _env("OPENLIBRARY_CACHE_TTL_SEC", str(7 * 24 * 3600)) or str(7 * 24 * 3600)
+)

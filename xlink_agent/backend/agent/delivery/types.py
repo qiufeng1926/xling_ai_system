@@ -29,6 +29,19 @@ class FactRisk(str, Enum):
     LOW = "low"  # 闲聊 / 创意 / 主观偏好
 
 
+class FactTier(str, Enum):
+    """通用轻量事实约束档位（A/B/C），驱动检索与防幻觉路由。
+
+    A：高事实风险清单（书目/文献/名人著作/法条/史实名录等）
+    B：普通问答（可选检索，不加重核验）
+    C：闲聊 / 创意写作 / 脑洞（放宽事实约束，关闭强制检索）
+    """
+
+    A = "A"
+    B = "B"
+    C = "C"
+
+
 class MaterialStrength(str, Enum):
     """检索材料对当前意图的可用强度。"""
 
@@ -55,6 +68,7 @@ class RequestProfile:
     goal: str
     intent: DeliveryIntent = DeliveryIntent.GENERAL
     risk: FactRisk = FactRisk.NORMAL
+    tier: FactTier = FactTier.B
     entities: list[str] = field(default_factory=list)
     search_queries: list[str] = field(default_factory=list)
     office_intent: str = "general"  # 兼容 memory_policy.classify_intent

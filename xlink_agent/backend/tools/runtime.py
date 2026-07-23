@@ -13,6 +13,7 @@ from config.config import workspace_root
 from db.models import WorkspaceFile
 from rag.retrieve import search_knowledge
 from tools.web_tools import validate_and_normalize_args, web_fetch, web_search
+from tools.openlibrary import openlibrary_lookup
 from utils.logger import get_logger
 
 logger = get_logger("tools")
@@ -71,6 +72,23 @@ async def execute_tool(
         return await web_search(str(args.get("query") or ""), user_id=user_id)
     if name == "web_fetch":
         return await web_fetch(str(args.get("url") or ""))
+    if name == "openlibrary_lookup":
+        try:
+            from config import config as cfg
+
+            if not getattr(cfg, "openlibrary_enabled", False):
+                return {
+                    "ok": False,
+                    "error": "openlibrary_lookup 已关闭（OPENLIBRARY_ENABLED=false）",
+                }
+        except Exception:
+            return {"ok": False, "error": "openlibrary_lookup 已关闭"}
+        return await openlibrary_lookup(
+            queries=args.get("queries"),
+            q=str(args.get("q") or ""),
+            subject=str(args.get("subject") or ""),
+            limit=args.get("limit"),
+        )
 
     if name == "browser_extract":
         selector = args.get("selector")
