@@ -135,6 +135,8 @@ INTERCEPT_TITLE: dict[str, str] = {
     "wrong_item_type": "拒绝与目标类型不符的条目",
     "parrot_titles": "拒绝标题清单交差",
     "thin_list": "条目过薄，继续扩写",
+    "broken_list_structure": "清单结构破损，补齐条目名",
+    "count_shortfall": "条目数不足，继续补齐",
     "quality_force_expand": "质量门控强制扩写",
     "task_continue": "续作同一任务",
     "task_switch": "换题，开启新任务",

@@ -10,6 +10,7 @@ from agent.answer import (
     answer_keeps_draft_titles,
     enrich_finish_answer,
     ensure_knowledge_disclaimer,
+    is_broken_count_list_structure,
     is_count_list_goal,
     is_hollow_answer,
     is_substantive_draft,
@@ -140,7 +141,7 @@ async def run_delivery_pipeline(
         force_disclaimer=materials != MaterialStrength.USABLE,
     )
 
-    # 格式重试（含条数不足补齐）
+    # 格式重试（含条数不足 / 结构破损补齐）
     from agent.answer import is_count_shortfall
 
     text, retries = await format_retry_expand(
@@ -149,7 +150,15 @@ async def run_delivery_pipeline(
         draft=draft,
         current=text,
         profile=profile,
-        max_retries=max(params.retry_budget, 2 if is_count_shortfall(text, goal) else params.retry_budget),
+        max_retries=max(
+            params.retry_budget,
+            2
+            if (
+                is_count_shortfall(text, goal)
+                or is_broken_count_list_structure(text, goal=goal)
+            )
+            else params.retry_budget,
+        ),
     )
     text = format_normalize(text, materials=materials)
 
@@ -190,6 +199,7 @@ async def run_delivery_pipeline(
             not is_title_only_list_answer(text, goal=goal)
             and not is_thin_list_draft(text)
             and not is_count_shortfall(text, goal)
+            and not is_broken_count_list_structure(text, goal=goal)
             and answer_relevant_to_goal(text, goal)
         ):
             verdict = type(verdict)(True, "structure_ok_override", verdict.hint)
@@ -239,6 +249,7 @@ async def run_delivery_pipeline(
             and not is_title_only_list_answer(text, goal=goal)
             and not is_thin_list_draft(text)
             and not is_count_shortfall(text, goal)
+            and not is_broken_count_list_structure(text, goal=goal)
             and answer_relevant_to_goal(text, goal)
         ):
             return _track_deliver(

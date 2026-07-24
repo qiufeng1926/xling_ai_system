@@ -6,7 +6,9 @@ from dataclasses import dataclass
 
 from agent.answer import (
     ensure_knowledge_disclaimer,
+    is_broken_count_list_structure,
     is_count_list_goal,
+    is_count_shortfall,
     is_honest_shortfall_answer,
     is_thin_list_draft,
     is_title_only_list_answer,
@@ -56,8 +58,8 @@ def decide_output(
             )
         return Decision(OutputAction.PASS, text, path="pass", reason=verdict.reason or "ok")
 
-    # 结构薄清单 / 条数不足 → 触发重试扩写
-    if verdict.reason in {"thin_list", "hollow", "count_shortfall"}:
+    # 结构薄清单 / 条数不足 / 结构破损 → 触发重试扩写
+    if verdict.reason in {"thin_list", "hollow", "count_shortfall", "broken_list_structure"}:
         return Decision(
             OutputAction.RETRY_EXPAND,
             text or draft,
@@ -79,6 +81,7 @@ def decide_output(
             text
             and not is_title_only_list_answer(text, goal=goal)
             and not is_thin_list_draft(text)
+            and not is_broken_count_list_structure(text, goal=goal)
             and answer_relevant_to_goal(text, goal)
         ):
             return Decision(

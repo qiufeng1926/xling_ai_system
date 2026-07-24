@@ -1859,6 +1859,71 @@ def test_count_shortfall_detection() -> CaseResult:
     return CaseResult("count_shortfall", True, "ok")
 
 
+def test_broken_count_list_structure() -> CaseResult:
+    """通用：计数清单出现孤儿说明行 / 缺名编号项 → 结构破损（餐厅/电影探针）。"""
+    from agent.answer import (
+        is_broken_count_list_structure,
+        is_count_list_goal,
+    )
+    from agent.delivery_gate import get_default_delivery_gate
+    from agent.inference.format_retry import needs_format_retry
+
+    # 目标识别：餐厅 / 电影也是计数清单
+    if not is_count_list_goal("推荐10家好吃的餐厅"):
+        return CaseResult("broken_list_structure", False, "restaurant goal not list")
+    if not is_count_list_goal("推荐几部好看的电影"):
+        return CaseResult("broken_list_structure", False, "movie goal not list")
+
+    # 餐厅：前几条正常，后半只有「简介」孤儿行
+    broken_rest = (
+        "以下是10家餐厅推荐：\n"
+        "1. 老巷小馆\n简介：本帮菜，分量足，适合家庭聚餐，招牌红烧肉很入味。\n"
+        "2. 海边渔火\n简介：鲜活海鲜现点现做，人均适中，适合请客。\n"
+        "3. 面起食堂\n简介：手工面与浇头丰富，午市人气高。\n"
+        "简介：本帮菜，分量足，适合家庭聚餐，招牌红烧肉很入味。\n"
+        "简介：鲜活海鲜现点现做，人均适中，适合请客。\n"
+        "简介：手工面与浇头丰富，午市人气高。\n"
+        "简介：创意融合菜，摆盘精致，适合约会。\n"
+    )
+    goal_r = "推荐10家好吃的餐厅"
+    if not is_broken_count_list_structure(broken_rest, goal=goal_r):
+        return CaseResult("broken_list_structure", False, "orphan blurbs not caught")
+
+    gate = get_default_delivery_gate()
+    v = gate.check_final(goal=goal_r, answer=broken_rest, facts=[])
+    if v.ok or v.reason != "broken_list_structure":
+        return CaseResult("broken_list_structure", False, f"gate={v.reason}")
+    if not needs_format_retry(broken_rest, goal=goal_r, profile=None):
+        return CaseResult("broken_list_structure", False, "needs_format_retry false")
+
+    # 电影：编号项只有说明标签、无片名
+    headless = (
+        "以下是8部电影：\n"
+        "1. 肖申克的救赎\n简介：经典剧情片，主题是希望与自由，适合反复观看。\n"
+        "2. 简介：一部关于时间旅行的科幻作品，节奏紧凑、反转多。\n"
+        "3. 简介：家庭伦理题材，情感细腻，适合周末慢看。\n"
+    )
+    if not is_broken_count_list_structure(headless, goal="推荐8部好看的电影"):
+        return CaseResult("broken_list_structure", False, "headless numbered not caught")
+
+    # 正常充实清单不得误伤
+    ok_list = (
+        "以下是5家餐厅推荐：\n"
+        "1. 老巷小馆：本帮菜馆，红烧肉与腌笃鲜分量足，适合家庭聚餐，周末建议提前等位。\n"
+        "2. 海边渔火：鲜活海鲜现点现做，清蒸与椒盐口味稳，人均适中，适合请客。\n"
+        "3. 面起食堂：手工面与浇头丰富，午市人气高，出餐快，适合上班族快速用餐。\n"
+        "4. 绿意轻食：沙拉碗与低脂套餐选择多，配料新鲜，适合健身与轻负担饮食。\n"
+        "5. 火锅码头：锅底选择多，涮品新鲜，服务节奏好，适合多人聚餐长时间坐。\n"
+    )
+    if is_broken_count_list_structure(ok_list, goal="推荐5家好吃的餐厅"):
+        return CaseResult("broken_list_structure", False, "false positive on good list")
+    v_ok = gate.check_final(goal="推荐5家好吃的餐厅", answer=ok_list, facts=[])
+    if not v_ok.ok and v_ok.reason == "broken_list_structure":
+        return CaseResult("broken_list_structure", False, f"good list broken: {v_ok.reason}")
+    # thin/shortfall 由既有用例覆盖；本用例只保证结构闸门不误杀
+    return CaseResult("broken_list_structure", True, "ok")
+
+
 def test_rich_sectioned_list_not_wiped() -> CaseResult:
     """分板块+短评+选用建议的充实清单不得被判重复/薄清单/硬凑，也不得被 sanitize 压薄。"""
     from agent.answer import (
@@ -2018,6 +2083,7 @@ async def run_all() -> list[CaseResult]:
         test_fact_tier_light_scan,
         test_composed_safety_gate,
         test_count_shortfall_detection,
+        test_broken_count_list_structure,
         test_rich_sectioned_list_not_wiped,
         test_openlibrary_lookup_mock,
     ]

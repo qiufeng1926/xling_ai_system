@@ -1,4 +1,4 @@
-"""格式 / 薄清单 / 条数不足 重试控制器。"""
+"""格式 / 薄清单 / 条数不足 / 结构破损 重试控制器。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable
 from agent.answer import (
     answer_keeps_draft_titles,
     count_list_items_in_text,
+    is_broken_count_list_structure,
     is_count_list_goal,
     is_count_shortfall,
     is_thin_list_draft,
@@ -32,7 +33,7 @@ def needs_format_retry(text: str, *, goal: str, profile: RequestProfile | None) 
         return True
     intent = profile.intent if profile else None
     if intent == DeliveryIntent.LIST_RECOMMEND or is_count_list_goal(goal):
-        if is_count_shortfall(t, goal):
+        if is_count_shortfall(t, goal) or is_broken_count_list_structure(t, goal=goal):
             return True
         return is_title_only_list_answer(t, goal=goal) or is_thin_list_draft(t)
     return is_thin_list_draft(t) and len(t) < 120
@@ -50,8 +51,10 @@ async def format_retry_expand(
     """薄清单 / 缺结构 / 条数不足时自动重试；返回 (text, retries_used)。"""
     params = params_for_profile(profile, phase="expand_retry")
     budget = max_retries if max_retries is not None else params.retry_budget
-    # 条数不足时至少再试 2 轮
-    if is_count_shortfall(current or "", goal):
+    # 条数不足 / 结构破损时至少再试 2 轮
+    if is_count_shortfall(current or "", goal) or is_broken_count_list_structure(
+        current or "", goal=goal
+    ):
         budget = max(budget, 2)
     out = sanitize_public_answer(current or "")
     used = 0
@@ -63,12 +66,25 @@ async def format_retry_expand(
     min_n = min_acceptable_list_count(goal) or 0
     list_hint = load_template("finalize_list") or "请把标题清单扩写成带短评的可读答复。"
     shortfall = is_count_shortfall(out, goal)
+    broken = is_broken_count_list_structure(out, goal=goal)
 
     for _ in range(max(0, budget)):
         if not needs_format_retry(out, goal=goal, profile=profile):
             break
         used += 1
-        if is_count_shortfall(out, goal) or shortfall:
+        if broken or is_broken_count_list_structure(out, goal=goal):
+            retry_body = (
+                f"用户目标：{goal}\n"
+                "上一版清单结构破损：出现无条目名的说明行，或编号项缺少名称。\n"
+                "请重写：每一条必须是「编号 + 具体名称 + 1～2 句说明」；"
+                "禁止只写「简介：…」而无名称；条目数尽量接近用户要求；"
+                "可分板块，文首可写未充分联网核实声明。\n\n"
+                f"{list_hint}\n\n"
+                f"草稿/线索：\n{(draft or out)[:2500]}\n\n"
+                f"不合格的上一版：\n{out[:1800]}\n\n"
+                "请输出合格的详细中文答案。"
+            )
+        elif is_count_shortfall(out, goal) or shortfall:
             retry_body = (
                 f"用户目标：{goal}\n"
                 f"上一版条目数不足（当前约 {count_list_items_in_text(out, goal=goal)} 条，"
@@ -99,6 +115,15 @@ async def format_retry_expand(
             break
         cand = strip_pick_number_prompts(sanitize_public_answer(text2 or ""))
         if not cand:
+            continue
+        # 结构破损：接受修好结构且条数不更差的候选
+        if broken or is_broken_count_list_structure(out, goal=goal):
+            if not is_broken_count_list_structure(cand, goal=goal) and (
+                count_list_items_in_text(cand, goal=goal)
+                >= count_list_items_in_text(out, goal=goal)
+            ):
+                out = cand
+                broken = False
             continue
         # 补齐条数场景：以条数提升为准，不要求「只保留草稿旧条目」
         if is_count_shortfall(out, goal) or shortfall:

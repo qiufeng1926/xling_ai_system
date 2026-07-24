@@ -601,20 +601,70 @@ def is_likely_source_title(name: str, search_titles: list[str] | None = None) ->
     return False
 
 
+# 清单条目后的说明标签（跨场景：书/餐/影/工具…），不得当成条目标题
+_LIST_BLURB_LABELS = (
+    "简介",
+    "介绍",
+    "推荐理由",
+    "理由",
+    "说明",
+    "亮点",
+    "看点",
+    "特色",
+    "地址",
+    "人均",
+    "价格",
+    "评分",
+    "主演",
+    "导演",
+    "作者",
+    "出品",
+    "类型",
+    "适合",
+    "为什么推荐",
+    "推荐指数",
+)
+_LIST_BLURB_LINE = re.compile(
+    r"^(?:" + "|".join(_LIST_BLURB_LABELS) + r")[：:]\s*\S",
+)
+
+_LIST_COUNT_UNITS = r"本|个|条|款|篇|首|部|家|种|项|份|套|道|家店"
+
+
 def is_count_list_goal(goal: str) -> bool:
-    """用户明确要「N 条/个/本/…」或「推荐一份清单」类目标（跨场景通用）。"""
+    """用户明确要「N 条/个/本/家/部…」或「推荐一份清单」类目标（跨场景通用）。"""
     g = goal or ""
-    if re.search(r"\d+\s*(本|个|条|款|篇|首|部|家|种|项|份|套)", g):
+    if re.search(rf"\d+\s*(?:{_LIST_COUNT_UNITS})", g):
+        return True
+    if re.search(rf"几\s*(?:{_LIST_COUNT_UNITS})", g) and any(
+        k in g for k in ("推荐", "盘点", "清单", "列表", "列举", "给出", "找", "有哪些")
+    ):
         return True
     if any(k in g for k in ("推荐", "盘点", "清单", "列表", "列举", "给出")) and any(
-        k in g for k in ("本", "个", "条", "款", "篇", "部", "种", "项", "一些", "几个")
+        k in g
+        for k in (
+            "本",
+            "个",
+            "条",
+            "款",
+            "篇",
+            "部",
+            "种",
+            "项",
+            "家",
+            "道",
+            "一些",
+            "几个",
+            "几家",
+            "几部",
+        )
     ):
         return True
     return False
 
 
 def requested_list_count(goal: str) -> int | None:
-    m = re.search(r"(\d+)\s*(本|个|条|款|篇|首|部|家|种|项|份|套)", goal or "")
+    m = re.search(rf"(\d+)\s*(?:{_LIST_COUNT_UNITS})", goal or "")
     if not m:
         return None
     try:
@@ -624,7 +674,7 @@ def requested_list_count(goal: str) -> int | None:
 
 
 def requested_list_unit(goal: str) -> str:
-    m = re.search(r"\d+\s*(本|个|条|款|篇|首|部|家|种|项|份|套)", goal or "")
+    m = re.search(rf"\d+\s*({_LIST_COUNT_UNITS})", goal or "")
     return m.group(1) if m else "条"
 
 
@@ -662,6 +712,95 @@ def is_count_shortfall(text: str, goal: str) -> bool:
     if not need:
         return False
     return count_list_items_in_text(text or "", goal=goal) < need
+
+
+def _is_blurb_label_name(name: str) -> bool:
+    n = (name or "").strip().strip("《》* ").rstrip("：:")
+    return n in _LIST_BLURB_LABELS
+
+
+def is_broken_count_list_structure(text: str, *, goal: str = "") -> bool:
+    """计数清单结构破损：无条目名的说明行、或编号项只有说明标签。
+
+    典型：声称 N 条后，后半只剩「简介：…」孤儿行（书/餐厅/电影等探针均会出现）。
+    领域无关——只看编号与说明标签形态。
+    """
+    if goal and not is_count_list_goal(goal):
+        # 无明确计数目标时，仅当正文已是明显编号清单才检查
+        if not re.search(r"(?m)^\s*\d+[\.、．]\s*\S", text or ""):
+            return False
+    t = _strip_advice_section(text or "")
+    if not t.strip():
+        return False
+
+    numbered_titled = 0
+    headless_numbered = 0
+    consecutive_blurbs = 0
+    orphan_blurbs = 0
+    last_was_titled_item = False
+
+    for ln in t.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        # 板块标题 / 收束套话：切断与上一条的附着
+        if re.match(r"^[一二三四五六七八九十]+[、．.]", s) or re.match(
+            r"^(以上|综上|总之|选用建议|阅读建议|使用建议|如需)", s
+        ):
+            last_was_titled_item = False
+            consecutive_blurbs = 0
+            continue
+
+        m = re.match(r"^\d+[\.、．]\s*(.+)$", s)
+        if m:
+            raw = m.group(1).strip()
+            mm = re.match(r"(?:\*\*)?《([^》]{1,40})》", raw)
+            if mm:
+                name = mm.group(1).strip()
+            else:
+                name = re.split(r"[：:\—–\-]", raw, 1)[0].strip().strip("《》* ")
+            if _LIST_BLURB_LINE.match(raw) or _is_blurb_label_name(name):
+                headless_numbered += 1
+                last_was_titled_item = False
+                consecutive_blurbs = 0
+            elif 2 <= len(name) <= 40 and not is_junk_entity_name(name):
+                numbered_titled += 1
+                last_was_titled_item = True
+                consecutive_blurbs = 0
+            else:
+                headless_numbered += 1
+                last_was_titled_item = False
+                consecutive_blurbs = 0
+            continue
+
+        if _LIST_BLURB_LINE.match(s):
+            consecutive_blurbs += 1
+            # 每条至多一条「标签：说明」；第二条起视为孤儿
+            if not last_was_titled_item or consecutive_blurbs >= 2:
+                orphan_blurbs += 1
+            continue
+
+        # 其它正文：若不是紧跟条目的短续写，切断附着
+        if last_was_titled_item and len(s) >= 12 and not s.startswith(("（", "(", "注")):
+            consecutive_blurbs = 0
+        else:
+            last_was_titled_item = False
+            consecutive_blurbs = 0
+
+    if headless_numbered >= 1 and (numbered_titled + headless_numbered) >= 2:
+        return True
+    if orphan_blurbs >= 2:
+        return True
+    # 正文自称「以下是 N 本/家/部」却标题条目明显不够
+    claim = re.search(rf"以下(?:是|为)?\s*(\d+)\s*(?:{_LIST_COUNT_UNITS})", t[:120])
+    if claim and numbered_titled >= 3:
+        try:
+            claimed = int(claim.group(1))
+        except Exception:
+            claimed = 0
+        if claimed >= 5 and numbered_titled < max(3, (claimed * 8 + 9) // 10):
+            return True
+    return False
 
 
 def prefers_title_marks(goal: str) -> bool:
@@ -1954,7 +2093,7 @@ def _list_item_titles(text: str) -> list[str]:
             name = re.sub(r"^\*\*|\*\*$", "", name).strip().strip("《》")
         if not (2 <= len(name) <= 40):
             continue
-        if is_junk_entity_name(name):
+        if _is_blurb_label_name(name) or is_junk_entity_name(name):
             continue
         key = _norm_item(name)
         if not key or key in seen:
@@ -1967,7 +2106,7 @@ def _list_item_titles(text: str) -> list[str]:
     for m in re.finditer(r"《([^》]{1,40})》", t):
         name = m.group(1).strip()
         key = _norm_item(name)
-        if not key or key in seen or is_junk_entity_name(name):
+        if not key or key in seen or _is_blurb_label_name(name) or is_junk_entity_name(name):
             continue
         seen.add(key)
         titles.append(name)

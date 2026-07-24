@@ -6,6 +6,7 @@ from typing import Any
 
 from agent.answer import (
     answer_parrots_search_titles,
+    is_broken_count_list_structure,
     is_count_list_goal,
     is_count_shortfall,
     is_duplicate_heavy_list,
@@ -81,6 +82,12 @@ class StructureGate:
                 bad = sum(1 for it in items if is_off_type_list_item(it, goal))
                 if bad >= max(1, (len(items) + 1) // 2):
                     return DeliveryVerdict(False, "wrong_item_type", hint="条目类型不符")
+            if is_broken_count_list_structure(t, goal=goal):
+                return DeliveryVerdict(
+                    False,
+                    "broken_list_structure",
+                    hint="清单结构破损：缺条目名或孤儿说明行",
+                )
             if is_title_only_list_answer(t, goal=goal) or is_thin_list_draft(t):
                 return DeliveryVerdict(False, "thin_list", hint="条目过薄，仅有标题")
             if is_count_shortfall(t, goal):
