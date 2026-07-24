@@ -85,7 +85,11 @@ class JsonLineFormatter(logging.Formatter):
 
 
 class TimestampSizeRotatingHandler(logging.Handler):
-    """按体积轮转：超过阈值后关闭当前文件并以新时间戳创建 .log。"""
+    """按启动时刻创建 ``{service}_{时间}_p{pid}.log``；超过体积再切新时间戳文件。
+
+    每次进程启动独立文件，便于按会话排查；不再复用「最近 120 秒内」的旧文件，
+    避免业务日志写到你没打开的那个文件里。
+    """
 
     def __init__(
         self,
@@ -108,30 +112,13 @@ class TimestampSizeRotatingHandler(logging.Handler):
 
     def _new_filepath(self) -> Path:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return self.log_dir / f"{self.service_name}_{ts}.log"
-
-    def _find_reusable_file(self) -> Path | None:
-        """uvicorn --reload 重启时复用刚创建的日志，避免一次启动多个文件"""
-        candidates = sorted(
-            self.log_dir.glob(f"{self.service_name}_*.log"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        now = datetime.now()
-        for path in candidates:
-            if path.stat().st_size >= self.max_bytes:
-                continue
-            mtime = datetime.fromtimestamp(path.stat().st_mtime)
-            if (now - mtime).total_seconds() <= 120:
-                return path
-        return None
+        return self.log_dir / f"{self.service_name}_{ts}_p{os.getpid()}.log"
 
     def _open_new_file(self) -> None:
         if self.stream:
             self.stream.close()
             self.stream = None
-        reusable = self._find_reusable_file()
-        self.base_path = reusable if reusable else self._new_filepath()
+        self.base_path = self._new_filepath()
         self.stream = open(self.base_path, "a", encoding="utf-8")
 
     def _purge_old_files(self) -> None:
@@ -141,11 +128,11 @@ class TimestampSizeRotatingHandler(logging.Handler):
             for path in self.log_dir.glob(pattern):
                 if current and path.name == current:
                     continue
-            try:
-                if datetime.fromtimestamp(path.stat().st_mtime) < cutoff:
-                    path.unlink(missing_ok=True)
-            except OSError:
-                continue
+                try:
+                    if datetime.fromtimestamp(path.stat().st_mtime) < cutoff:
+                        path.unlink(missing_ok=True)
+                except OSError:
+                    continue
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -228,6 +215,59 @@ def _install_exception_hooks(logger: logging.Logger) -> None:
         threading.excepthook = _thread_excepthook
 
 
+class ConsoleFlushHandler(logging.StreamHandler):
+    """写到 stdout 并立即 flush，避免被 uvicorn --reload / 缓冲吞掉。"""
+
+    def __init__(self, level: int = logging.INFO):
+        super().__init__(stream=sys.stdout)
+        self.setLevel(level)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            super().emit(record)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+
+_CONSOLE_FMT = (
+    "%(asctime)s | %(levelname)s | %(name)s | %(filename)s:%(lineno)d | %(message)s"
+)
+
+
+def ensure_console_handler(
+    logger: logging.Logger | None = None,
+    level: int = logging.INFO,
+) -> logging.Logger:
+    """保证 meeting_ai 控制台 handler 仍在（uvicorn 配置 logging 后可能被清掉）。"""
+    lg = logger or logging.getLogger(_DEFAULT_LOGGER_NAME)
+    lg.disabled = False
+    lg.setLevel(level)
+    lg.propagate = False
+
+    env_lvl = os.getenv("LOG_LEVEL", "").strip().upper()
+    if env_lvl:
+        level = getattr(logging, env_lvl, level)
+        lg.setLevel(level)
+
+    has_console = any(isinstance(h, ConsoleFlushHandler) for h in lg.handlers)
+    if not has_console:
+        # 清掉失效的普通 StreamHandler（stream 可能已被关闭）
+        for h in list(lg.handlers):
+            if isinstance(h, logging.StreamHandler) and not isinstance(
+                h, (TimestampSizeRotatingHandler, ConsoleFlushHandler)
+            ):
+                try:
+                    lg.removeHandler(h)
+                    h.close()
+                except Exception:
+                    pass
+        ch = ConsoleFlushHandler(level=level)
+        ch.setFormatter(logging.Formatter(_CONSOLE_FMT))
+        lg.addHandler(ch)
+    return lg
+
+
 def setup_logging(
     service_name: str | None = None,
     log_dir: str | Path | None = None,
@@ -252,12 +292,8 @@ def setup_logging(
 
     logger = logging.getLogger(logger_name)
     logger.setLevel(level)
+    logger.disabled = False
     logger.propagate = False
-
-    # 详细格式，包含源码位置，便于对齐 traceback
-    _detail_fmt = (
-        "%(asctime)s | %(levelname)s | %(name)s | %(filename)s:%(lineno)d | %(message)s"
-    )
 
     has_file_handler = any(
         isinstance(h, TimestampSizeRotatingHandler) for h in logger.handlers
@@ -273,15 +309,8 @@ def setup_logging(
         fh.setLevel(level)
         logger.addHandler(fh)
 
-    ch: logging.StreamHandler | None = None
-    if console and not any(
-        isinstance(h, logging.StreamHandler) and not isinstance(h, TimestampSizeRotatingHandler)
-        for h in logger.handlers
-    ):
-        ch = logging.StreamHandler()
-        ch.setLevel(level)
-        ch.setFormatter(logging.Formatter(_detail_fmt))
-        logger.addHandler(ch)
+    if console:
+        ensure_console_handler(logger, level=level)
 
     # 未捕获异常、warnings 也写入同一批 handler
     _install_exception_hooks(logger)
@@ -295,7 +324,22 @@ def setup_logging(
         if h not in wlog.handlers:
             wlog.addHandler(h)
 
+    active_log = get_active_log_path(logger_name)
+    if active_log and not has_file_handler:
+        # 仅新建 handler 时提示一次，方便打开正确文件排查
+        print(f"[meeting_ai] 日志文件: {active_log}", flush=True)
+        logger.info("日志文件已就绪", extra={"output_params": {"log_file": active_log}})
+
     return logger
+
+
+def get_active_log_path(logger_name: str = _DEFAULT_LOGGER_NAME) -> str | None:
+    """返回当前进程正在写入的日志文件路径。"""
+    lg = logging.getLogger(logger_name)
+    for h in lg.handlers:
+        if isinstance(h, TimestampSizeRotatingHandler) and h.base_path is not None:
+            return str(h.base_path)
+    return None
 
 
 def get_logger(name: str | None = None) -> logging.Logger:

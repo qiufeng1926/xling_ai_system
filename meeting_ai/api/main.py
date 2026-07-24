@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from utils.logger import setup_logging
+from utils.logger import setup_logging, ensure_console_handler, get_active_log_path
 from utils.startup import validate_startup_config
 from config.config import app_env, cors_origins
 
@@ -32,8 +32,14 @@ from api.routes.internal_offboard import router as internal_offboard_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # uvicorn 完成自身 logging 配置后再挂控制台，避免只剩 import 阶段那几行启动日志
+    ensure_console_handler(logger)
     validate_startup_config()
-    logger.info("Meeting AI 配置校验通过", extra={"output_params": {"app_env": app_env}})
+    log_path = get_active_log_path()
+    logger.info(
+        "Meeting AI 配置校验通过",
+        extra={"output_params": {"app_env": app_env, "log_file": log_path}},
+    )
     yield
 
 

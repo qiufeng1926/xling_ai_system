@@ -106,6 +106,13 @@ from agent.task_binding import (
     resolve_task_binding,
     update_task_after_turn,
 )
+from agent.file_delivery import (
+    FileDeliveryAction,
+    decide_on_finish,
+    decide_on_tool,
+    finish_content_with_download_hint,
+    seed_write_content,
+)
 from agent.preprocess import build_request_profile
 from agent.prompts.assembler import assemble_react_base_addon
 from agent.inference.param_policy import params_for_profile
@@ -1310,17 +1317,27 @@ async def run_chat(
                         }
                         action = "tool"
                     else:
-                        # 材料已尽：若约束要求文档且尚未落盘，先写文件再交付
-                        req_write = required_file_write_tool(task_ctx.goal or "")
+                        # 材料已尽：文档交付状态机 —— 缺文件强制写，有文件才允许交付
+                        file_dec = decide_on_finish(
+                            goal=task_ctx.goal or "",
+                            artifacts=list(task_ctx.artifacts),
+                            can_still_tool=round_i < agent_max_tool_rounds - 1,
+                        )
                         if (
-                            req_write
-                            and not task_ctx.artifacts
-                            and round_i < agent_max_tool_rounds - 1
+                            file_dec.action == FileDeliveryAction.FORCE_WRITE
+                            and file_dec.required_tool
                         ):
+                            req_write = file_dec.required_tool
+                            seed = seed_write_content(
+                                draft=content,
+                                think=think,
+                                facts=task_ctx.facts,
+                                goal=task_ctx.goal or "",
+                            )
                             recovered = _recover_file_tool(
                                 raw,
                                 think,
-                                content,
+                                content or seed,
                                 tools,
                                 goal=task_ctx.goal,
                                 facts=task_ctx.facts,
@@ -1328,10 +1345,15 @@ async def run_chat(
                             ) or _force_file_write_action(
                                 tool=req_write,
                                 goal=task_ctx.goal or "",
-                                think=think,
-                                content=content,
+                                think=think or seed,
+                                content=content or seed,
                                 facts=task_ctx.facts,
                             )
+                            # 确保 content 种子写入 args
+                            if isinstance(recovered.get("args"), dict):
+                                args0 = recovered["args"]
+                                if len(str(args0.get("content") or "").strip()) < 40:
+                                    args0["content"] = seed
                             run_state.intercept(
                                 "missing_file_write",
                                 round_i=round_i,
@@ -1345,7 +1367,7 @@ async def run_chat(
                                 )
                             )
                             async for chunk in _emit_think(
-                                f"约束要求输出文档，自动调用 {recovered.get('tool')}…\n"
+                                f"{file_dec.tip}；自动调用 {recovered.get('tool')}…\n"
                             ):
                                 yield chunk
                             if content and is_substantive_draft(
@@ -1381,6 +1403,18 @@ async def run_chat(
                             content = await _finalize_user_answer(
                                 model, task_ctx, content, round_i=round_i, thought=think, run_state=run_state
                             )
+                            content = finish_content_with_download_hint(
+                                content, list(task_ctx.artifacts)
+                            )
+                            if (
+                                file_dec.phase.value == "need_file"
+                                and not task_ctx.artifacts
+                                and "未生成" not in content
+                            ):
+                                content = (
+                                    content.rstrip()
+                                    + "\n\n（说明：本轮未能成功生成可下载附件，以上为文字版内容。）"
+                                )
                             # 去掉残留的「告诉我编号」类话术
                             content = re.sub(
                                 r"\n*如需某一条的详细内容[^\n]*\n?",
@@ -1445,12 +1479,16 @@ async def run_chat(
                     assistant_parts = [content]
                     break
 
-            # 本轮已成功写过文件：禁止重复 file_write_* 空转（日志里曾连写 6～9 个同名 docx）
-            if tool.startswith("file_write_") and task_ctx.artifacts:
+            # 文档交付状态机：已有产物禁止重复 file_write
+            tool_dec = decide_on_tool(
+                tool=tool,
+                goal=task_ctx.goal or "",
+                artifacts=list(task_ctx.artifacts),
+            )
+            if tool_dec.action == FileDeliveryAction.FORCE_FINISH:
                 names = "、".join(task_ctx.artifacts[-4:])
-                tip = (
-                    f"本轮已生成文档（{names}），禁止再次 {tool}。"
-                    "请直接 finish，并在答复中提示用户下载已有文件。"
+                tip = tool_dec.tip or (
+                    f"本轮已生成文档（{names}），禁止再次 {tool}。请直接 finish。"
                 )
                 run_state.intercept("duplicate_file_write", round_i=round_i, tool=tool)
                 yield _emit_traj(
@@ -1463,17 +1501,16 @@ async def run_chat(
                 async for chunk in _emit_think(f"Observation: {tip}\n"):
                     yield chunk
                 task_ctx.add_step(tip)
-                # 有产物则直接收束交付，避免模型继续循环写文件
                 content = (
                     getattr(run_state, "react_finish_draft", "")
                     or think
                     or f"文档已生成：{names}，可点击下载。"
                 )
-                if names and names not in content:
-                    content = content.rstrip() + f"\n\n文件 {names} 已准备好，可点击下方下载。"
+                content = finish_content_with_download_hint(content, list(task_ctx.artifacts))
                 content = await _finalize_user_answer(
                     model, task_ctx, content, round_i=round_i, thought=think, run_state=run_state
                 )
+                content = finish_content_with_download_hint(content, list(task_ctx.artifacts))
                 citations = build_citations(task_ctx.facts)
                 if citations:
                     yield sse("citations", {"items": citations})

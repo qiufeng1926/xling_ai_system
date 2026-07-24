@@ -16,7 +16,8 @@ def _resolve_user_id(token: str) -> int:
     payload = decode_access_token(token)
     db = SessionFactory()
     try:
-        user = resolve_user_from_payload(db, payload)
+        # SSE 只需 user_id；跳过同步拉取门户，避免阻塞事件循环
+        user = resolve_user_from_payload(db, payload, sync_live_profile=False)
         if not user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已禁用")
         return user.id

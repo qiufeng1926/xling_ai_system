@@ -538,10 +538,10 @@ function handleLogout() {
 
 .layout-main {
   background: #f5f7fa;
-  /* 限制主区高度，让子页面（如智能体聊天）内部滚动，而不是把整页撑破 */
+  /* 限制主区高度；列表页在此滚动，智能体等全高页自行内部滚动 */
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .layout-main :deep(.agent-hub) {

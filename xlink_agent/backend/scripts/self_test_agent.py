@@ -561,6 +561,116 @@ def test_file_claim_recover() -> CaseResult:
     )
 
 
+def test_file_delivery_state_machine() -> CaseResult:
+    """文档交付状态机：多场景契约（识别 / 强制写 / 禁重写 / 根目标升级）。"""
+    from types import SimpleNamespace
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from agent.file_delivery import (
+        FileDeliveryAction,
+        FileDeliveryPhase,
+        decide_on_finish,
+        decide_on_tool,
+        finish_content_with_download_hint,
+        resolve_phase,
+        should_promote_root_goal,
+    )
+    from agent.task_binding import (
+        BIND_CONTINUE,
+        extract_constraints,
+        required_file_write_tool,
+        resolve_task_binding,
+    )
+    from db.models import Base
+
+    # 1) 错别字「形势」与口语「可下载」
+    g1 = "做一份关于token的市场调研，然后以文档的形势给我"
+    if required_file_write_tool(g1) != "file_write_docx":
+        return CaseResult("file_delivery_sm", False, f"形势 missed: {required_file_write_tool(g1)}")
+    if "输出 Word/docx" not in extract_constraints(g1):
+        return CaseResult("file_delivery_sm", False, f"constraints: {extract_constraints(g1)}")
+    g2 = "将上述内容写入文档，然后返回一个可以下载的文档给我"
+    if required_file_write_tool(g2) != "file_write_docx":
+        return CaseResult("file_delivery_sm", False, "可下载 missed")
+
+    # 2) 无文档意图不误伤
+    if required_file_write_tool("什么是 Token"):
+        return CaseResult("file_delivery_sm", False, "false positive on QA")
+    if resolve_phase("深圳天气怎么样") != FileDeliveryPhase.NONE:
+        return CaseResult("file_delivery_sm", False, "phase should be NONE")
+
+    # 3) finish：缺文件 → FORCE_WRITE；有文件 → ALLOW
+    d_need = decide_on_finish(goal=g1, artifacts=[], can_still_tool=True)
+    if d_need.action != FileDeliveryAction.FORCE_WRITE or d_need.required_tool != "file_write_docx":
+        return CaseResult("file_delivery_sm", False, f"need write: {d_need}")
+    d_ready = decide_on_finish(goal=g1, artifacts=["Token市场调研.docx"], can_still_tool=True)
+    if d_ready.action != FileDeliveryAction.ALLOW or d_ready.phase != FileDeliveryPhase.FILE_READY:
+        return CaseResult("file_delivery_sm", False, f"ready: {d_ready}")
+
+    # 4) 已有产物再写 → FORCE_FINISH
+    d_dup = decide_on_tool(
+        tool="file_write_docx",
+        goal=g2,
+        artifacts=["Token市场调研.docx"],
+    )
+    if d_dup.action != FileDeliveryAction.FORCE_FINISH:
+        return CaseResult("file_delivery_sm", False, f"dup: {d_dup}")
+    d_ok_tool = decide_on_tool(tool="web_search", goal=g1, artifacts=[])
+    if d_ok_tool.action != FileDeliveryAction.ALLOW:
+        return CaseResult("file_delivery_sm", False, "search should allow")
+
+    # 5) 下载提示
+    hinted = finish_content_with_download_hint("调研结论如下。", ["a.docx"])
+    if "a.docx" not in hinted or "下载" not in hinted:
+        return CaseResult("file_delivery_sm", False, f"hint: {hinted}")
+
+    # 6) 根目标升级启发式
+    promo = should_promote_root_goal("怎么是token", g1)
+    if not promo or "调研" not in promo:
+        return CaseResult("file_delivery_sm", False, f"promote: {promo}")
+    if should_promote_root_goal(g1, "再详细一点"):
+        return CaseResult("file_delivery_sm", False, "should not promote soft followup")
+
+    # 7) DB：续作升级根目标
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    hist1 = [SimpleNamespace(role="user", content="怎么是token")]
+    t1 = resolve_task_binding(
+        db,
+        user_id=1,
+        conversation_id=42,
+        user_text="怎么是token",
+        history=hist1,
+        effective_goal="怎么是token",
+    )
+    hist2 = [
+        SimpleNamespace(role="user", content="怎么是token"),
+        SimpleNamespace(role="assistant", content="Token是令牌……"),
+        SimpleNamespace(role="user", content=g1),
+    ]
+    t2 = resolve_task_binding(
+        db,
+        user_id=1,
+        conversation_id=42,
+        user_text=g1,
+        history=hist2,
+        effective_goal=g1,
+        forced_followup=True,
+    )
+    if t2.bind_mode != BIND_CONTINUE or t2.task_id != t1.task_id:
+        return CaseResult("file_delivery_sm", False, f"continue fail: {t2}")
+    if "调研" not in (t2.goal or "") or required_file_write_tool(t2.goal) != "file_write_docx":
+        return CaseResult("file_delivery_sm", False, f"root not promoted: {t2.goal!r}")
+    if "输出 Word/docx" not in t2.constraints:
+        return CaseResult("file_delivery_sm", False, f"constraints lost: {t2.constraints}")
+
+    return CaseResult("file_delivery_sm", True, f"promoted={t2.goal[:40]}")
+
+
 def test_run_code_sandbox() -> CaseResult:
     from pathlib import Path
     import tempfile
@@ -1890,6 +2000,7 @@ async def run_all() -> list[CaseResult]:
         test_search_hits_no_body_gate,
         test_strip_pick_number,
         test_file_claim_recover,
+        test_file_delivery_state_machine,
         test_run_code_sandbox,
         test_delivery_quality_gate,
         test_task_binding,

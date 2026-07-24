@@ -113,7 +113,7 @@ const iframeModeClass = computed(() => {
 const meetingAppUrl = computed(() => {
   const base = import.meta.env.VITE_MEETING_APP_PATH || '/meeting-app/'
   const sep = base.includes('?') ? '&' : '?'
-  return `${base}${sep}embedded=1&portal_host=1&v=20260706c`
+  return `${base}${sep}embedded=1&portal_host=1&v=20260724a`
 })
 
 const pipState = computed(() => ({

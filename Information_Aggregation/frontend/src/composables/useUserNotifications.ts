@@ -17,20 +17,34 @@ function connectStream(url: string, onMessage: () => void): () => void {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let stopped = false
   let retryDelay = 5000
+  let connecting = false
 
   function connect() {
     const token = localStorage.getItem('token')
-    if (!token || stopped) return
+    if (!token || stopped || connecting) return
+    connecting = true
+
+    // 先关掉旧连接，避免 Vite 代理下僵尸 SSE 把 meeting_ai 拖死
+    if (source) {
+      source.close()
+      source = null
+    }
 
     source = new EventSource(`${url}?token=${encodeURIComponent(token)}`)
+    source.onopen = () => {
+      connecting = false
+      retryDelay = 5000
+    }
     source.onmessage = () => {
       retryDelay = 5000
       onMessage()
     }
     source.onerror = () => {
+      connecting = false
       source?.close()
       source = null
       if (!stopped) {
+        if (reconnectTimer) clearTimeout(reconnectTimer)
         reconnectTimer = setTimeout(() => {
           retryDelay = Math.min(retryDelay * 2, 60000)
           connect()
@@ -43,8 +57,10 @@ function connectStream(url: string, onMessage: () => void): () => void {
 
   return () => {
     stopped = true
+    connecting = false
     if (reconnectTimer) clearTimeout(reconnectTimer)
     source?.close()
+    source = null
   }
 }
 

@@ -294,7 +294,22 @@ def resolve_task_binding(
             if c not in merged:
                 merged.append(c)
         open_row.constraints_json = json.dumps(merged, ensure_ascii=False)
-        if goal and goal != open_row.goal and len(goal) > len(open_row.goal or ""):
+        # 追问明显升级任务（补调研/文档）→ 提升根目标，避免短句根污染整条任务链
+        from agent.file_delivery import should_promote_root_goal
+
+        promoted = should_promote_root_goal(open_row.goal or "", raw)
+        if promoted:
+            old = (open_row.goal or "")[:80]
+            open_row.goal = promoted[:1000]
+            tip = f"根目标已升级：{old} → {promoted[:160]}"
+            open_row.summary = ((open_row.summary or "") + "\n" + tip).strip()[:800]
+            logger.info(
+                "task root promoted id=%s %r -> %r",
+                open_row.task_id[:8],
+                old[:40],
+                promoted[:40],
+            )
+        elif goal and goal != open_row.goal and len(goal) > len(open_row.goal or ""):
             tip = f"最近追问展开：{goal[:240]}"
             open_row.summary = ((open_row.summary or "") + "\n" + tip).strip()[:800]
         db.commit()

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 import httpx
 from sqlalchemy.orm import Session
 
@@ -14,6 +17,11 @@ logger = get_logger("portal_auth")
 
 PORTAL_ISSUER = "xling"
 PORTAL_ROLES = frozenset({"super_admin", "admin", "user"})
+
+# 短缓存，避免每个 API/SSE 鉴权都同步打门户、阻塞 uvicorn 事件循环
+_PORTAL_PROFILE_TTL_SEC = 30.0
+_portal_profile_cache: dict[str, tuple[float, dict | None]] = {}
+_portal_profile_lock = threading.Lock()
 
 ROLE_TO_MEETING = {
     "super_admin": "root",
@@ -89,28 +97,41 @@ def fetch_live_portal_profile(bearer_token: str) -> dict | None:
     base = (portal_api_url or "").strip().rstrip("/")
     if not base or not bearer_token:
         return None
+
+    now = time.monotonic()
+    with _portal_profile_lock:
+        cached = _portal_profile_cache.get(bearer_token)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    profile: dict | None = None
     try:
         with httpx.Client(timeout=3.0) as client:
             resp = client.get(
                 f"{base}/api/v1/auth/me",
                 headers={"Authorization": f"Bearer {bearer_token}"},
             )
-        if resp.status_code != 200:
-            return None
-        body = resp.json()
-        data = body.get("data")
-        if not isinstance(data, dict):
-            return None
-        perms = data.get("permissions")
-        if not isinstance(perms, dict):
-            return None
-        return {
-            "role": data.get("role") or "user",
-            "nickname": data.get("nickname"),
-            "permissions": {k: bool(v) for k, v in perms.items()},
-        }
+        if resp.status_code == 200:
+            body = resp.json()
+            data = body.get("data")
+            if isinstance(data, dict):
+                perms = data.get("permissions")
+                if isinstance(perms, dict):
+                    profile = {
+                        "role": data.get("role") or "user",
+                        "nickname": data.get("nickname"),
+                        "permissions": {k: bool(v) for k, v in perms.items()},
+                    }
     except Exception:
-        return None
+        profile = None
+
+    with _portal_profile_lock:
+        _portal_profile_cache[bearer_token] = (now + _PORTAL_PROFILE_TTL_SEC, profile)
+        if len(_portal_profile_cache) > 256:
+            expired = [k for k, (exp, _) in _portal_profile_cache.items() if exp <= now]
+            for k in expired:
+                _portal_profile_cache.pop(k, None)
+    return profile
 
 
 def fetch_live_portal_permissions(bearer_token: str) -> dict[str, bool] | None:
@@ -139,6 +160,7 @@ def get_or_create_user_from_portal_token(
     payload: dict,
     *,
     bearer_token: str | None = None,
+    sync_live_profile: bool = True,
 ) -> User | None:
     username = _normalize_portal_username(payload)
     if not username:
@@ -148,7 +170,11 @@ def get_or_create_user_from_portal_token(
     meeting_role = ROLE_TO_MEETING.get(portal_role, "user")
     nickname = (payload.get("nickname") or username).strip() or username
     perms = _portal_permissions(payload)
-    live_profile = fetch_live_portal_profile(bearer_token) if bearer_token else None
+    live_profile = (
+        fetch_live_portal_profile(bearer_token)
+        if bearer_token and sync_live_profile
+        else None
+    )
     if live_profile is not None:
         perms = live_profile["permissions"]
         portal_role = live_profile.get("role") or portal_role
@@ -205,9 +231,15 @@ def resolve_user_from_payload(
     payload: dict,
     *,
     bearer_token: str | None = None,
+    sync_live_profile: bool = True,
 ) -> User | None:
     if is_portal_token(payload):
-        return get_or_create_user_from_portal_token(db, payload, bearer_token=bearer_token)
+        return get_or_create_user_from_portal_token(
+            db,
+            payload,
+            bearer_token=bearer_token,
+            sync_live_profile=sync_live_profile,
+        )
 
     sub = payload.get("sub")
     if sub is not None and str(sub).isdigit():

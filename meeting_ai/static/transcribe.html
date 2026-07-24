@@ -4650,7 +4650,8 @@
             fileSize.textContent = formatFileSize(file.size);
             
             fileInfo.classList.add('show');
-            uploadBtn.disabled = file.size <= maxUploadBytes;
+            // 仅过大时禁用；原先写成 size <= max 会把正常文件也禁用
+            uploadBtn.disabled = file.size > maxUploadBytes;
             if (file.size > maxUploadBytes) {
                 showErrorAlert(
                     `文件过大（${formatFileSize(file.size)}），最大允许 ${formatFileSize(maxUploadBytes)}`
