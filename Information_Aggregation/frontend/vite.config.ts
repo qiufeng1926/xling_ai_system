@@ -36,6 +36,9 @@ export default defineConfig(({ mode }) => {
       target: agentApiTarget,
       changeOrigin: true,
       ws: true,
+      // 商单筛库 / 通用 ReAct 可能数分钟；默认代理超时会导致前端断流、后端半截中止
+      timeout: 7200000,
+      proxyTimeout: 7200000,
     },
     '/meeting-app': {
       target: meetingApiTarget,

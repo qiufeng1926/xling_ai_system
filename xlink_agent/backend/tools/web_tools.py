@@ -547,16 +547,16 @@ TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
         "example": {"query": "美ONE"},
     },
     "influencer_search": {
-        "desc": "【仅商单筛库专用运行时】按条件筛达人库。",
+        "desc": "【仅商单筛库专用运行时】按条件筛达人库。platform 只能是单个枚举值；tag_ids 必须来自 list_tags，禁止编造。",
         "input": {
-            "platform": "可选 douyin|xiaohongshu",
-            "keyword": "可选",
-            "follower_min": "可选",
-            "follower_max": "可选",
-            "tag_ids": [1, 2],
+            "platform": "可选，仅 douyin 或 xiaohongshu 其一；省略=不限。禁止写成 douyin|xiaohongshu",
+            "keyword": "可选短主题词（会匹配昵称/资料/标签名）",
+            "follower_min": "可选整数",
+            "follower_max": "可选整数",
+            "tag_ids": "可选，真实标签 id 数组（先 list_tags）",
             "page_size": 20,
         },
-        "example": {"platform": "douyin", "follower_min": 10000, "page_size": 30},
+        "example": {"platform": "douyin", "follower_min": 50000, "keyword": "探店", "page_size": 30},
     },
     "influencer_get": {
         "desc": "【仅商单筛库专用运行时】按 ID 拉达人详情。",
@@ -715,7 +715,14 @@ def validate_and_normalize_args(tool: str, args: Any) -> tuple[dict[str, Any] | 
 
     if tool == "influencer_search":
         out_s: dict[str, Any] = {}
-        for key in ("platform", "keyword", "q", "source", "profile_keyword"):
+        # platform：拒绝契约抄写与多值，归一到单枚举或省略
+        if args.get("platform") is not None and str(args.get("platform")).strip():
+            from tools.influencer_tools import _normalize_platform
+
+            plat, _warn = _normalize_platform(args.get("platform"))
+            if plat:
+                out_s["platform"] = plat
+        for key in ("keyword", "q", "source", "profile_keyword"):
             if args.get(key) is not None and str(args.get(key)).strip():
                 out_s[key] = str(args.get(key)).strip()
         for key in ("follower_min", "follower_max", "agency_id", "page", "page_size", "limit"):
@@ -726,16 +733,17 @@ def validate_and_normalize_args(tool: str, args: Any) -> tuple[dict[str, Any] | 
                     return None, f"influencer_search 的 {key} 必须是整数"
         tag_ids = args.get("tag_ids") or args.get("required_tag_ids")
         if isinstance(tag_ids, list):
-            cleaned = []
-            for x in tag_ids:
-                try:
-                    cleaned.append(int(x))
-                except Exception:
-                    continue
+            from tools.influencer_tools import _clean_tag_ids
+
+            cleaned, _ = _clean_tag_ids(tag_ids)
             if cleaned:
                 out_s["tag_ids"] = cleaned
         elif tag_ids is not None and str(tag_ids).strip().isdigit():
-            out_s["tag_ids"] = [int(tag_ids)]
+            from tools.influencer_tools import _clean_tag_ids
+
+            cleaned, _ = _clean_tag_ids([tag_ids])
+            if cleaned:
+                out_s["tag_ids"] = cleaned
         return out_s, None
 
     if tool == "influencer_get":

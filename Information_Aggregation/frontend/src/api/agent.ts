@@ -32,6 +32,51 @@ function detailMessage(detail: unknown, fallback: string): string {
   return fallback
 }
 
+/** 解析 SSE；流结束时冲刷残留 buffer，避免丢掉最后的 done / match.cards */
+async function consumeSseStream(
+  body: ReadableStream<Uint8Array>,
+  onEvent: (event: string, data: unknown) => void,
+) {
+  const reader = body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+  let eventName = 'message'
+
+  const feed = (chunk: string) => {
+    buffer += chunk
+    const parts = buffer.split('\n')
+    buffer = parts.pop() || ''
+    for (const line of parts) {
+      if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim()
+      } else if (line.startsWith('data:')) {
+        const raw = line.slice(5).trim()
+        let data: unknown = raw
+        try {
+          data = JSON.parse(raw)
+        } catch {
+          /* keep string */
+        }
+        onEvent(eventName, data)
+      } else if (line.trim() === '') {
+        eventName = 'message'
+      }
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) {
+      feed(decoder.decode())
+      if (buffer.trim()) {
+        feed('\n')
+      }
+      break
+    }
+    feed(decoder.decode(value, { stream: true }))
+  }
+}
+
 agentRequest.interceptors.response.use(
   (response) => response.data,
   (error) => {
@@ -133,6 +178,41 @@ export function listMatchMessages(id: number) {
   return agentRequest.get(`/v1/match/conversations/${id}/messages`) as Promise<{ items: ChatMessage[] }>
 }
 
+export async function downloadMatchConversationExport(
+  conversationId: number,
+  messageId?: number,
+  filename?: string,
+) {
+  const token = localStorage.getItem('token') || ''
+  const qs =
+    messageId != null ? `?message_id=${encodeURIComponent(String(messageId))}` : ''
+  const resp = await fetch(
+    `/api/agent/v1/match/conversations/${conversationId}/export${qs}`,
+    {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    },
+  )
+  if (!resp.ok) {
+    let detail = `导出失败: ${resp.status}`
+    try {
+      const errBody = await resp.json()
+      if (typeof errBody?.detail === 'string') detail = errBody.detail
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail)
+  }
+  const blob = await resp.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename || `match_export_${conversationId}.xlsx`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
 export function streamMatchChat(
   conversationId: number,
   message: string,
@@ -172,33 +252,7 @@ export function streamMatchChat(
         throw new Error(detail)
       }
       if (!resp.body) throw new Error('商单筛库响应为空')
-      const reader = resp.body.getReader()
-      const decoder = new TextDecoder('utf-8')
-      let buffer = ''
-      let eventName = 'message'
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const parts = buffer.split('\n')
-        buffer = parts.pop() || ''
-        for (const line of parts) {
-          if (line.startsWith('event:')) {
-            eventName = line.slice(6).trim()
-          } else if (line.startsWith('data:')) {
-            const raw = line.slice(5).trim()
-            let data: unknown = raw
-            try {
-              data = JSON.parse(raw)
-            } catch {
-              /* keep string */
-            }
-            handlers.onEvent(eventName, data)
-          } else if (line.trim() === '') {
-            eventName = 'message'
-          }
-        }
-      }
+      await consumeSseStream(resp.body, handlers.onEvent)
       handlers.onDone?.()
     } catch (e) {
       if ((e as Error).name === 'AbortError') return
@@ -329,33 +383,7 @@ export function streamResumeConfirmation(
         throw new Error(detail)
       }
       if (!resp.body) throw new Error('确认续跑响应为空')
-      const reader = resp.body.getReader()
-      const decoder = new TextDecoder('utf-8')
-      let buffer = ''
-      let eventName = 'message'
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const parts = buffer.split('\n')
-        buffer = parts.pop() || ''
-        for (const line of parts) {
-          if (line.startsWith('event:')) {
-            eventName = line.slice(6).trim()
-          } else if (line.startsWith('data:')) {
-            const raw = line.slice(5).trim()
-            let data: unknown = raw
-            try {
-              data = JSON.parse(raw)
-            } catch {
-              /* keep string */
-            }
-            handlers.onEvent(eventName, data)
-          } else if (line.trim() === '') {
-            eventName = 'message'
-          }
-        }
-      }
+      await consumeSseStream(resp.body, handlers.onEvent)
       handlers.onDone?.()
     } catch (e) {
       if ((e as Error).name === 'AbortError') return
@@ -413,33 +441,7 @@ export function streamChat(
       if (!resp.body) {
         throw new Error('聊天响应为空（请确认代理已指向 :8003）')
       }
-      const reader = resp.body.getReader()
-      const decoder = new TextDecoder('utf-8')
-      let buffer = ''
-      let eventName = 'message'
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const parts = buffer.split('\n')
-        buffer = parts.pop() || ''
-        for (const line of parts) {
-          if (line.startsWith('event:')) {
-            eventName = line.slice(6).trim()
-          } else if (line.startsWith('data:')) {
-            const raw = line.slice(5).trim()
-            let data: unknown = raw
-            try {
-              data = JSON.parse(raw)
-            } catch {
-              /* keep string */
-            }
-            handlers.onEvent(eventName, data)
-          } else if (line.trim() === '') {
-            eventName = 'message'
-          }
-        }
-      }
+      await consumeSseStream(resp.body, handlers.onEvent)
       handlers.onDone?.()
     } catch (e) {
       if ((e as Error).name === 'AbortError') return

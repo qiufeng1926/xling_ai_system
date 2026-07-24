@@ -71,6 +71,7 @@ def test_openapi_has_match() -> None:
         "/api/agent/v1/match/conversations",
         "/api/agent/v1/match/conversations/{conversation_id}/chat",
         "/api/agent/v1/match/conversations/{conversation_id}/messages",
+        "/api/agent/v1/match/conversations/{conversation_id}/export",
     }
     missing = need - paths
     if missing:
@@ -211,6 +212,73 @@ def test_grounding() -> None:
     _ok("grounded 总起 + 卡片载荷仅含库记录")
 
 
+def test_search_sanitization(token: str) -> None:
+    """坏 platform / 假 tag_ids 不得把检索打成永久 0；keyword 应能命中标签名。"""
+    import asyncio
+
+    from tools.portal_context import reset_portal_bearer, set_portal_bearer
+    from tools.influencer_tools import (
+        _normalize_platform,
+        _clean_tag_ids,
+        influencer_search,
+    )
+
+    plat, warn = _normalize_platform("douyin|xiaohongshu")
+    if plat is not None:
+        _fail(f"多值 platform 应被忽略, got {plat}")
+    if not warn:
+        _fail("多值 platform 应有 warning")
+    plat2, _ = _normalize_platform("抖音")
+    if plat2 != "douyin":
+        _fail(f"抖音应归一为 douyin, got {plat2}")
+    ids, tw = _clean_tag_ids([123, 456, 9])
+    if 123 in ids or 456 in ids:
+        _fail(f"示例 tag_ids 应丢弃: {ids}")
+    if 9 not in ids:
+        _fail(f"真实 tag_id=9 应保留: {ids}")
+    _ok("platform/tag_ids 规范化")
+
+    tok = set_portal_bearer(token)
+
+    async def _run():
+        # 复现线上坏参：应自动放宽并仍能检出粉丝达标达人
+        bad = await influencer_search(
+            {
+                "platform": "douyin|xiaohongshu",
+                "follower_min": 50000,
+                "tag_ids": [123, 456],
+                "page_size": 10,
+            }
+        )
+        # keyword=游戏 应能通过标签名命中（门户侧已含 tag LIKE）
+        by_kw = await influencer_search(
+            {
+                "platform": "douyin",
+                "follower_min": 50000,
+                "keyword": "游戏",
+                "page_size": 10,
+            }
+        )
+        return bad, by_kw
+
+    try:
+        bad, by_kw = asyncio.run(_run())
+    finally:
+        reset_portal_bearer(tok)
+
+    if not bad.get("ok"):
+        _fail(f"坏参 search 失败: {bad}")
+    if int(bad.get("count") or 0) <= 0 and int(bad.get("total") or 0) <= 0:
+        _fail(f"坏参自动放宽后仍 0 人: {bad}")
+    _ok(f"坏参自动放宽命中 count={bad.get('count')} widen={ (bad.get('applied') or {}).get('widen') }")
+
+    if not by_kw.get("ok"):
+        _fail(f"keyword=游戏 search 失败: {by_kw}")
+    if int(by_kw.get("count") or 0) <= 0 and int(by_kw.get("total") or 0) <= 0:
+        _fail(f"keyword=游戏 应命中标签达人，got 0: {by_kw}")
+    _ok(f"keyword=游戏 命中 count={by_kw.get('count')} total={by_kw.get('total')}")
+
+
 def test_match_messages(token: str, cid: int) -> None:
     headers = {"Authorization": f"Bearer {token}"}
     with _client(timeout=15.0) as c:
@@ -218,6 +286,118 @@ def test_match_messages(token: str, cid: int) -> None:
         if r.status_code != 200:
             _fail(f"messages {r.status_code} {r.text[:200]}")
         _ok("match messages 可读")
+
+
+def test_history_cards_and_export(token: str, cid: int) -> None:
+    """历史回看卡片 + 一键导出闭环（不依赖 LLM）。"""
+    import json
+
+    from openpyxl import load_workbook
+
+    from db.models import Conversation, Message
+    from db.session import SessionLocal
+    from match_agent.grounding import build_influencer_cards, ingest_observation_catalog
+
+    headers = {"Authorization": f"Bearer {token}"}
+    db = SessionLocal()
+    try:
+        conv = db.get(Conversation, cid)
+        if not conv:
+            _fail(f"conversation {cid} 不存在")
+        cat: dict = {}
+        ingest_observation_catalog(
+            cat,
+            {
+                "ok": True,
+                "items": [
+                    {
+                        "id": 101,
+                        "nickname": "导出测试达人",
+                        "platform": "douyin",
+                        "platform_uid": "uid101",
+                        "follower_count": 52000,
+                        "agency_name": "测试MCN",
+                        "tags": ["探店"],
+                        "persona_traits": ["亲和"],
+                        "shooting_style": ["口播"],
+                        "cooperation_policy": "可议",
+                        "contact": {"phone": "13900000101", "wechat": "wx101"},
+                        "match_score": 88,
+                        "match_reasons": ["粉丝量达标"],
+                    }
+                ],
+            },
+        )
+        cards = build_influencer_cards(cat)
+        msg = Message(
+            conversation_id=cid,
+            user_id=conv.user_id,
+            role="assistant",
+            content="筛选出 1 位达人（自测）",
+            metadata_json=json.dumps(
+                {"mode": "influencer-match", "influencers": cards},
+                ensure_ascii=False,
+            ),
+        )
+        db.add(msg)
+        db.commit()
+        db.refresh(msg)
+        mid = int(msg.id)
+    finally:
+        db.close()
+
+    with _client(timeout=20.0) as c:
+        r = c.get(f"{AGENT}/api/agent/v1/match/conversations/{cid}/messages", headers=headers)
+        if r.status_code != 200:
+            _fail(f"messages hydrate {r.status_code}")
+        found = None
+        for it in r.json().get("items") or []:
+            if it.get("id") == mid:
+                found = it
+                break
+        if not found:
+            _fail("messages 未返回刚写入的助手消息")
+        infl = found.get("influencers") or []
+        if len(infl) != 1 or infl[0].get("id") != 101:
+            _fail(f"历史卡片未 hydrate: {infl}")
+        _ok("历史 messages 回看含 influencers 卡片")
+
+        r = c.get(
+            f"{AGENT}/api/agent/v1/match/conversations/{cid}/export",
+            headers=headers,
+        )
+        if r.status_code != 200:
+            _fail(f"export latest -> {r.status_code} {r.text[:200]}")
+        ctype = r.headers.get("content-type", "")
+        if "spreadsheetml" not in ctype and "octet-stream" not in ctype:
+            _fail(f"export content-type 异常: {ctype}")
+        if len(r.content) < 800:
+            _fail(f"export 体积过小: {len(r.content)}")
+        from io import BytesIO
+
+        wb = load_workbook(BytesIO(r.content))
+        rows = list(wb.active.iter_rows(values_only=True))
+        if len(rows) < 2 or rows[1][2] != "导出测试达人":
+            _fail(f"export xlsx 内容异常: {rows[:3]}")
+        _ok("export 默认导出最近一轮 xlsx")
+
+        r = c.get(
+            f"{AGENT}/api/agent/v1/match/conversations/{cid}/export",
+            headers=headers,
+            params={"message_id": mid},
+        )
+        if r.status_code != 200:
+            _fail(f"export by message_id -> {r.status_code}")
+        _ok(f"export 指定 message_id={mid}")
+
+        r = c.get(
+            f"{AGENT}/api/agent/v1/match/conversations/{cid}/export",
+            headers=headers,
+            params={"message_id": 999999999},
+        )
+        if r.status_code != 404:
+            _fail(f"无卡片 export 应 404, got {r.status_code}")
+        _ok("无结果 export 返回 404")
 
 
 def main() -> None:
@@ -236,8 +416,10 @@ def main() -> None:
     test_runtime_blocks_direct_influencer()
     test_grounding()
     token = login_portal()
+    test_search_sanitization(token)
     cid = test_match_crud(token)
     test_match_messages(token, cid)
+    test_history_cards_and_export(token, cid)
     print("=== ALL PASSED ===")
 
 

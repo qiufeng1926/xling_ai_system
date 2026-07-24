@@ -127,28 +127,57 @@ class InfluencerService:
         if filters.follower_max is not None:
             query = query.filter(Influencer.follower_count <= filters.follower_max)
         if filters.keyword:
-            keyword = f"%{filters.keyword}%"
             from sqlalchemy import or_, cast, String, exists
 
-            from app.models import InfluencerProfile
+            from app.models import InfluencerProfile, Tag
+            from app.utils.keyword_match import split_keyword_terms
 
-            profile_hit = exists().where(
-                InfluencerProfile.influencer_id == Influencer.id,
-                or_(
-                    cast(InfluencerProfile.cooperation_policy, String).like(keyword),
-                    cast(InfluencerProfile.internal_notes, String).like(keyword),
-                    cast(InfluencerProfile.shooting_style, String).like(keyword),
-                    cast(InfluencerProfile.persona_traits, String).like(keyword),
-                    cast(InfluencerProfile.contact_info, String).like(keyword),
-                ),
-            )
-            query = query.filter(
-                or_(
-                    Influencer.nickname.like(keyword),
-                    Influencer.platform_uid.like(keyword),
-                    profile_hit,
+            # 整句 + 分词：任一词命中昵称/UID/资料/标签名即可（标签是垂类主信号）
+            terms = split_keyword_terms(filters.keyword)
+            if filters.keyword.strip() and filters.keyword.strip() not in terms:
+                terms = [filters.keyword.strip(), *terms]
+            # 去重保序；过短单字分词噪音大，保留整句即可
+            seen: set[str] = set()
+            clean_terms: list[str] = []
+            for t in terms:
+                t = (t or "").strip()
+                if not t or t in seen:
+                    continue
+                if len(t) == 1 and t != filters.keyword.strip():
+                    continue
+                seen.add(t)
+                clean_terms.append(t)
+            if not clean_terms:
+                clean_terms = [filters.keyword.strip()]
+
+            keyword_clauses = []
+            for term in clean_terms[:8]:
+                pattern = f"%{term}%"
+                profile_hit = exists().where(
+                    InfluencerProfile.influencer_id == Influencer.id,
+                    or_(
+                        cast(InfluencerProfile.cooperation_policy, String).like(pattern),
+                        cast(InfluencerProfile.internal_notes, String).like(pattern),
+                        cast(InfluencerProfile.shooting_style, String).like(pattern),
+                        cast(InfluencerProfile.persona_traits, String).like(pattern),
+                        cast(InfluencerProfile.contact_info, String).like(pattern),
+                    ),
                 )
-            )
+                tag_hit = exists().where(
+                    InfluencerTag.influencer_id == Influencer.id,
+                    InfluencerTag.tag_id == Tag.id,
+                    Tag.name.like(pattern),
+                )
+                keyword_clauses.append(
+                    or_(
+                        Influencer.nickname.like(pattern),
+                        Influencer.platform_uid.like(pattern),
+                        profile_hit,
+                        tag_hit,
+                    )
+                )
+            if keyword_clauses:
+                query = query.filter(or_(*keyword_clauses))
         if filters.tag_ids:
             query = query.join(InfluencerTag).filter(InfluencerTag.tag_id.in_(filters.tag_ids))
         if filters.agency_id is not None:

@@ -10,6 +10,7 @@ export const INFLUENCER_ROUTES = {
   influencerDetail: (id: number | string) => `${INFLUENCER_BASE}/influencers/${id}`,
   tags: `${INFLUENCER_BASE}/tags`,
   match: `${INFLUENCER_BASE}/match`,
+  matchHistory: `${INFLUENCER_BASE}/match-history`,
   matchDetail: (id: number | string) => `${INFLUENCER_BASE}/match/${id}`,
   agencies: `${INFLUENCER_BASE}/agencies`,
   agencyDetail: (id: number | string) => `${INFLUENCER_BASE}/agencies/${id}`,

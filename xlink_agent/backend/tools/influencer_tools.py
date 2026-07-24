@@ -6,6 +6,69 @@ from typing import Any
 
 from services.portal_influencer_client import PortalInfluencerClient
 
+# 模型常把契约里的「douyin|xiaohongshu」整段抄进 platform；统一归一
+_PLATFORM_ALIASES = {
+    "douyin": "douyin",
+    "抖音": "douyin",
+    "dy": "douyin",
+    "tiktok": "douyin",
+    "xiaohongshu": "xiaohongshu",
+    "小红书": "xiaohongshu",
+    "xhs": "xiaohongshu",
+    "red": "xiaohongshu",
+}
+_PLACEHOLDER_TAG_IDS = {1, 2, 12, 123, 456, 1234, 111, 222, 999}
+
+
+def _normalize_platform(raw: Any) -> tuple[str | None, str | None]:
+    """返回 (platform|None, warning)。非法/多平台写法 → 省略平台（不限）。"""
+    if raw is None:
+        return None, None
+    text = str(raw).strip()
+    if not text:
+        return None, None
+    lower = text.lower().replace(" ", "")
+    # 契约抄写 / 多选：一律视为不限，避免精确等值把结果打成 0
+    if any(sep in text for sep in ("|", "/", ",", "，", "或", "和", "&")):
+        return None, f"platform「{text}」不是单值枚举，已忽略（按不限平台检索）"
+    if lower in _PLATFORM_ALIASES:
+        return _PLATFORM_ALIASES[lower], None
+    # 尝试拆出单个已知别名
+    for alias, code in _PLATFORM_ALIASES.items():
+        if alias in lower:
+            return code, f"platform 已归一为 {code}"
+    return None, f"未知 platform「{text}」，已忽略（按不限平台检索）"
+
+
+def _clean_tag_ids(raw: Any) -> tuple[list[int], list[str]]:
+    warnings: list[str] = []
+    ids: list[int] = []
+    if isinstance(raw, list):
+        src = raw
+    elif raw is not None and str(raw).strip().isdigit():
+        src = [raw]
+    else:
+        return [], warnings
+    for x in src:
+        try:
+            n = int(x)
+        except Exception:
+            continue
+        if n <= 0:
+            continue
+        if n in _PLACEHOLDER_TAG_IDS:
+            warnings.append(f"疑似示例 tag_id={n} 已丢弃；请先 influencer_list_tags 取真实 id")
+            continue
+        ids.append(n)
+    # 去重保序
+    seen: set[int] = set()
+    out: list[int] = []
+    for n in ids:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out, warnings
+
 
 def _brief_item(item: dict[str, Any]) -> dict[str, Any]:
     profile = item.get("profile") if isinstance(item.get("profile"), dict) else {}
@@ -108,40 +171,115 @@ async def influencer_search(args: dict[str, Any]) -> dict[str, Any]:
     client = PortalInfluencerClient()
     page = max(1, int(args.get("page") or 1))
     page_size = max(1, min(int(args.get("page_size") or args.get("limit") or 20), 100))
-    params: dict[str, Any] = {
-        "page": page,
-        "page_size": page_size,
-        "status": 1,
-    }
-    if args.get("platform"):
-        params["platform"] = str(args["platform"]).strip()
-    if args.get("keyword") or args.get("q"):
-        params["keyword"] = str(args.get("keyword") or args.get("q") or "").strip()
-    if args.get("follower_min") is not None:
-        params["follower_min"] = int(args["follower_min"])
-    if args.get("follower_max") is not None:
-        params["follower_max"] = int(args["follower_max"])
-    if args.get("agency_id") is not None:
-        params["agency_id"] = int(args["agency_id"])
-    if args.get("source"):
-        params["source"] = str(args["source"]).strip()
-    tag_ids = args.get("tag_ids") or args.get("required_tag_ids")
-    if isinstance(tag_ids, list) and tag_ids:
-        # FastAPI list query: tag_ids=1&tag_ids=2
-        params["tag_ids"] = [int(x) for x in tag_ids if str(x).isdigit() or isinstance(x, int)]
-    elif tag_ids is not None and str(tag_ids).strip().isdigit():
-        params["tag_ids"] = [int(tag_ids)]
+    warnings: list[str] = []
 
-    res = await client._get("/api/v1/influencers", params)
-    if not res.get("ok"):
-        return res
+    platform, plat_warn = _normalize_platform(args.get("platform"))
+    if plat_warn:
+        warnings.append(plat_warn)
+
+    keyword = str(args.get("keyword") or args.get("q") or "").strip()
+    # 过长 brief 整句 like 几乎必空；截成短检索词
+    if len(keyword) > 40:
+        warnings.append("keyword 过长，已截断为前 40 字；建议用短主题词或 tag_ids")
+        keyword = keyword[:40]
+
+    tag_ids, tag_warns = _clean_tag_ids(args.get("tag_ids") or args.get("required_tag_ids"))
+    warnings.extend(tag_warns)
+
+    follower_min = None
+    follower_max = None
+    if args.get("follower_min") is not None:
+        try:
+            follower_min = int(args["follower_min"])
+        except Exception:
+            warnings.append("follower_min 非法，已忽略")
+    if args.get("follower_max") is not None:
+        try:
+            follower_max = int(args["follower_max"])
+        except Exception:
+            warnings.append("follower_max 非法，已忽略")
+
+    agency_id = None
+    if args.get("agency_id") is not None:
+        try:
+            agency_id = int(args["agency_id"])
+        except Exception:
+            warnings.append("agency_id 非法，已忽略")
+
+    async def _once(
+        *,
+        use_platform: bool,
+        use_keyword: bool,
+        use_tags: bool,
+        use_followers: bool,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "page_size": page_size,
+            "status": 1,
+        }
+        if use_platform and platform:
+            params["platform"] = platform
+        if use_keyword and keyword:
+            params["keyword"] = keyword
+        if use_followers and follower_min is not None:
+            params["follower_min"] = follower_min
+        if use_followers and follower_max is not None:
+            params["follower_max"] = follower_max
+        if agency_id is not None:
+            params["agency_id"] = agency_id
+        if use_tags and tag_ids:
+            params["tag_ids"] = tag_ids
+        if args.get("source"):
+            params["source"] = str(args["source"]).strip()
+        return await client._get("/api/v1/influencers", params)
+
+    # 逐步放宽：完整条件 → 丢标签 → 丢关键词 → 仅粉丝 → 不限
+    attempts = [
+        (True, True, True, True, "full"),
+        (True, True, False, True, "drop_tags"),
+        (True, False, False, True, "followers_platform"),
+        (False, False, False, True, "followers_only"),
+        (False, False, False, False, "unfiltered"),
+    ]
+    # 若调用方本来就没有某条件，跳过等价重复尝试
+    res: dict[str, Any] = {"ok": False, "error": "未执行检索"}
+    used_attempt = "full"
+    for use_plat, use_kw, use_tags, use_fol, name in attempts:
+        if name != "full":
+            # 仅在上一轮 0 命中时放宽
+            if res.get("ok") and int((res.get("data") or {}).get("total") or 0) > 0:
+                break
+            if name == "drop_tags" and not tag_ids:
+                continue
+            if name == "followers_platform" and not keyword and not tag_ids:
+                continue
+            if name == "followers_only" and follower_min is None and follower_max is None:
+                continue
+            if name == "unfiltered" and follower_min is None and not keyword and not tag_ids and not platform:
+                continue
+        res = await _once(
+            use_platform=use_plat,
+            use_keyword=use_kw,
+            use_tags=use_tags,
+            use_followers=use_fol,
+        )
+        used_attempt = name
+        if not res.get("ok"):
+            return res
+        total_try = int((res.get("data") or {}).get("total") or 0)
+        if total_try > 0:
+            if name != "full":
+                warnings.append(f"原条件 0 命中，已自动放宽策略={name}")
+            break
+
     data = res.get("data") or {}
     if not isinstance(data, dict):
         return {"ok": False, "error": "达人列表格式异常"}
     raw_items = data.get("items") if isinstance(data.get("items"), list) else []
     items = [_brief_item(x) for x in raw_items if isinstance(x, dict)]
 
-    # 可选：按运营资料关键词二次过滤（门户 keyword 已覆盖 nickname/uid/profile 文本）
+    # 可选：按运营资料关键词二次过滤（含 tags）
     profile_q = str(args.get("profile_keyword") or "").strip().lower()
     if profile_q:
         filtered = []
@@ -164,7 +302,8 @@ async def influencer_search(args: dict[str, Any]) -> dict[str, Any]:
     if total < 5:
         hint = (
             f"当前筛选仅命中 {total} 人（少于建议的 5 人）。"
-            "请放宽粉丝区间/标签/平台后再次 influencer_search，或换关键词。"
+            "请先 influencer_list_tags 取真实 tag_ids；"
+            "或去掉 platform/tag_ids，仅保留 follower_min + 短 keyword 再 search。"
         )
     return {
         "ok": True,
@@ -174,6 +313,14 @@ async def influencer_search(args: dict[str, Any]) -> dict[str, Any]:
         "page_size": data.get("page_size") or page_size,
         "items": items,
         "hint": hint,
+        "warnings": warnings or None,
+        "applied": {
+            "platform": platform if used_attempt in {"full", "drop_tags", "followers_platform"} else None,
+            "keyword": keyword if used_attempt in {"full", "drop_tags"} else None,
+            "tag_ids": tag_ids if used_attempt == "full" else [],
+            "follower_min": follower_min if used_attempt != "unfiltered" else None,
+            "widen": used_attempt,
+        },
         "min_recommended": 5,
     }
 

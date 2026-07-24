@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import Any, AsyncIterator
 
@@ -41,6 +42,69 @@ def _system() -> str:
         + f"可用工具: {json.dumps(MATCH_TOOLS, ensure_ascii=False)}\n"
         + _contracts()
     )
+
+
+def _parse_follower_min_from_brief(text: str) -> int | None:
+    """从商单文本解析粉丝下限（通用，非垂类硬编码）。"""
+    t = text or ""
+    m = re.search(r"粉丝[量数]?\s*[≥>~＞]?\s*(\d+)\s*万", t)
+    if m:
+        return int(m.group(1)) * 10000
+    m = re.search(r"(\d+)\s*万\s*(?:以上|粉丝)", t)
+    if m:
+        return int(m.group(1)) * 10000
+    m = re.search(r"follower[_\s-]*min\s*[=:：]?\s*(\d+)", t, re.I)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"粉丝[量数]?\s*[≥>~＞]?\s*(\d{4,})", t)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _extract_topic_keyword(text: str) -> str | None:
+    """抽短主题词：去掉常见噪声后取 2～8 字片段，供 keyword 检索。"""
+    t = re.sub(r"\s+", "", text or "")
+    for noise in (
+        "推广商单",
+        "推销商单",
+        "商单",
+        "粉丝量",
+        "粉丝数",
+        "粉丝",
+        "以上",
+        "需要",
+        "要是",
+        "偏",
+        "风格",
+        "高质量",
+        "请",
+        "筛选",
+        "达人",
+        "博主",
+    ):
+        t = t.replace(noise, " ")
+    t = re.sub(r"\d+万?", " ", t)
+    parts = [p for p in re.split(r"[\s,，、/|]+", t) if len(p) >= 2]
+    if not parts:
+        return None
+    # 取最短有意义片段，避免整句
+    parts.sort(key=len)
+    return parts[0][:8]
+
+
+async def _fallback_catalog_search(user_text: str) -> dict[str, Any]:
+    """模型空转时的通用兜底检索：粉丝下限 + 短 keyword。"""
+    from tools.influencer_tools import influencer_search
+
+    args: dict[str, Any] = {"page_size": 30}
+    fmin = _parse_follower_min_from_brief(user_text)
+    if fmin:
+        args["follower_min"] = fmin
+    kw = _extract_topic_keyword(user_text)
+    if kw:
+        args["keyword"] = kw
+    return await influencer_search(args)
 
 
 async def _run_match_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -142,6 +206,30 @@ async def run_match_chat(
                 yield sse("think.delta", {"content": thought + "\n"})
 
             if action.lower() in {"finish", "final", "answer", "done"}:
+                if not catalog and round_i < max_rounds - 1:
+                    # 空库禁止早退：强制进入放宽检索
+                    reject = {
+                        "ok": False,
+                        "error": (
+                            "当前 Observation 中尚无达人记录，禁止 finish。"
+                            "请先 influencer_list_tags，再用 follower_min + 短 keyword"
+                            "（或真实 tag_ids）调用 influencer_search；"
+                            "platform 只能是 douyin 或 xiaohongshu 单值。"
+                        ),
+                    }
+                    scratchpad.add_thought_action(thought, "finish", action_input, round_i)
+                    scratchpad.set_observation(observation_preview(reject))
+                    yield sse(
+                        "trajectory.step",
+                        observation_step(
+                            "finish",
+                            round_i=round_i,
+                            ok=False,
+                            summary="empty_catalog_reject_finish",
+                            reason="empty_catalog",
+                        ),
+                    )
+                    continue
                 draft = action_input if isinstance(action_input, str) else json.dumps(
                     action_input, ensure_ascii=False
                 )
@@ -205,7 +293,16 @@ async def run_match_chat(
                 reason="" if ok else summary,
             )
             trajectory.append(done)
-            yield sse("tool.finished", {"tool": action, "result": result})
+            # 勿把完整 Observation 推给前端：体积过大易拖垮 SSE / 代理断连
+            yield sse(
+                "tool.finished",
+                {
+                    "tool": action,
+                    "ok": ok,
+                    "summary": summary[:300],
+                    "count": (result.get("count") if isinstance(result, dict) else None),
+                },
+            )
             yield sse("trajectory.step", done)
 
         else:
@@ -215,17 +312,33 @@ async def run_match_chat(
                 ranked_ids=last_rank_ids or None,
             )
 
-        if not final_text:
-            final_text = build_grounded_answer(catalog, brief=user_text)
+        # 模型空转兜底：仍无 catalog 时做一次通用放宽检索（非垂类硬编码）
+        rebuilt_after_fallback = False
+        if not catalog:
+            fb = await _fallback_catalog_search(user_text)
+            ingest_observation_catalog(catalog, fb)
+            trajectory.append(
+                observation_step(
+                    "influencer_search",
+                    round_i=max_rounds,
+                    ok=bool(fb.get("ok")),
+                    summary=f"fallback count={fb.get('count', 0)}",
+                    reason="empty_catalog_fallback",
+                )
+            )
+            yield sse("trajectory.step", trajectory[-1])
+            rebuilt_after_fallback = True
+
+        if not final_text or rebuilt_after_fallback:
+            final_text = build_grounded_answer(
+                catalog,
+                brief=user_text,
+                ranked_ids=last_rank_ids or None,
+            )
 
         cards = build_influencer_cards(catalog, ranked_ids=last_rank_ids or None)
 
-        yield sse("think.close", {})
-        for chunk in _emit_answer_chunks(final_text):
-            yield chunk
-        if cards:
-            yield sse("match.cards", {"items": cards, "count": len(cards)})
-
+        # 先落库再推 SSE：客户端/代理提前断连时，历史仍可回看结果
         db.add(
             Message(
                 conversation_id=conversation_id,
@@ -245,6 +358,12 @@ async def run_match_chat(
             )
         )
         db.commit()
+
+        yield sse("think.close", {})
+        for chunk in _emit_answer_chunks(final_text):
+            yield chunk
+        if cards:
+            yield sse("match.cards", {"items": cards, "count": len(cards)})
         yield sse(
             "done",
             {"ok": True, "run_id": run_id, "count": len(cards), "influencers": cards},

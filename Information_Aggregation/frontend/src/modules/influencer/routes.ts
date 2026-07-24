@@ -45,10 +45,16 @@ export const influencerRoutes: RouteRecordRaw[] = [
     meta: { title: '商单筛库', module: 'influencer', roles: [ROLES.ADMIN, ROLES.SUPER_ADMIN] },
   },
   {
+    path: 'match-history',
+    name: 'MatchHistoryList',
+    component: () => import('@/views/MatchHistoryList.vue'),
+    meta: { title: '表单匹配历史', module: 'influencer', roles: [ROLES.ADMIN, ROLES.SUPER_ADMIN] },
+  },
+  {
     path: 'match/:id',
     name: 'MatchDetail',
-    redirect: { name: 'MatchList' },
-    meta: { title: '商单筛库', module: 'influencer', roles: [ROLES.ADMIN, ROLES.SUPER_ADMIN] },
+    component: () => import('@/views/MatchDetail.vue'),
+    meta: { title: '匹配详情', module: 'influencer', roles: [ROLES.ADMIN, ROLES.SUPER_ADMIN] },
   },
   {
     path: 'agencies',

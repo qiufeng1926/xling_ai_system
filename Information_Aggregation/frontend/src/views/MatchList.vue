@@ -3,6 +3,7 @@
     <aside class="match-left">
       <div class="left-header">
         <el-button type="primary" size="small" @click="onNewChat">新建商单筛库</el-button>
+        <el-button size="small" @click="router.push(INFLUENCER_ROUTES.matchHistory)">表单匹配历史</el-button>
       </div>
       <p class="left-hint">
         专用筛库智能体（与通用智能体隔离）：只读取达人库并 grounded 总结，不搜索网页。通用智能体可通过 call_influencer_match 单向调用本能力。
@@ -22,14 +23,36 @@
     </aside>
 
     <main class="match-center">
-      <div class="center-title">商单筛库 · ReAct</div>
+      <div class="center-head">
+        <div class="center-title">商单筛库 · ReAct</div>
+        <el-button
+          size="small"
+          :disabled="!canExportLatest || streaming"
+          :loading="exporting"
+          @click="onExportLatest"
+        >
+          导出本轮结果
+        </el-button>
+      </div>
       <div ref="msgBoxRef" class="msg-box">
         <div v-if="!messages.length && !streaming" class="empty-tip">
           示例：抖音探店商单，粉丝 5 万以上，有联系方式，偏本地生活风格，请从达人库筛至少 5 位并总结合作政策与人设。
         </div>
 
         <div v-for="(m, idx) in displayMessages" :key="idx" class="msg" :class="m.role">
-          <div class="msg-role">{{ roleLabel(m.role) }}</div>
+          <div class="msg-role-row">
+            <div class="msg-role">{{ roleLabel(m.role) }}</div>
+            <el-button
+              v-if="m.role === 'assistant' && m.influencers?.length && m.id"
+              link
+              type="primary"
+              size="small"
+              :loading="exportingId === m.id"
+              @click="onExportMessage(m.id)"
+            >
+              导出 Excel
+            </el-button>
+          </div>
           <div class="msg-content">{{ displayText(m.content) }}</div>
           <div v-if="m.influencers?.length" class="card-grid">
             <button
@@ -209,6 +232,7 @@ import { ElMessage } from 'element-plus'
 import {
   createMatchConversation,
   deleteMatchConversation,
+  downloadMatchConversationExport,
   downloadWorkspaceFile,
   listMatchConversations,
   listMatchMessages,
@@ -245,9 +269,16 @@ const histTrajOpen = ref<Record<number, boolean>>({})
 const pendingFiles = ref<MsgFile[]>([])
 const liveCards = ref<MatchInfluencerCard[]>([])
 const msgBoxRef = ref<HTMLElement | null>(null)
+const exporting = ref(false)
+const exportingId = ref<number | null>(null)
 let chatAbort: AbortController | null = null
 
 const displayMessages = computed(() => messages.value)
+
+const canExportLatest = computed(() => {
+  if (!activeId.value) return false
+  return messages.value.some((m) => m.role === 'assistant' && (m.influencers?.length || 0) > 0)
+})
 
 function roleLabel(role: string) {
   if (role === 'user') return '商单'
@@ -346,6 +377,32 @@ async function onDownload(fileId: number, name?: string) {
     await downloadWorkspaceFile(fileId, name)
   } catch (e: any) {
     ElMessage.error(e?.message || '下载失败')
+  }
+}
+
+async function onExportMessage(messageId: number) {
+  if (!activeId.value || exportingId.value) return
+  exportingId.value = messageId
+  try {
+    await downloadMatchConversationExport(activeId.value, messageId)
+    ElMessage.success('已导出本轮筛库结果')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '导出失败')
+  } finally {
+    exportingId.value = null
+  }
+}
+
+async function onExportLatest() {
+  if (!activeId.value || exporting.value) return
+  exporting.value = true
+  try {
+    await downloadMatchConversationExport(activeId.value)
+    ElMessage.success('已导出最近一轮筛库结果')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '导出失败')
+  } finally {
+    exporting.value = false
   }
 }
 
@@ -463,8 +520,15 @@ async function onSend() {
         pendingFiles.value = []
         liveCards.value = []
       }
+      // 断流时后端可能稍后才落库：轮询补齐助手消息
       try {
-        await refreshMessagesFromServer()
+        for (let i = 0; i < 8; i++) {
+          await refreshMessagesFromServer()
+          const items = messages.value
+          const last = items[items.length - 1]
+          if (last?.role === 'assistant') break
+          if (i < 7) await new Promise((r) => setTimeout(r, 800 + i * 400))
+        }
         await refreshConversations()
       } catch {
         /* interceptor */
@@ -506,6 +570,9 @@ onUnmounted(() => {
 }
 .left-header {
   margin-bottom: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .left-hint {
   margin: 0 0 10px;
@@ -547,9 +614,15 @@ onUnmounted(() => {
   flex-direction: column;
   padding: 12px;
 }
+.center-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
 .center-title {
   font-weight: 600;
-  margin-bottom: 8px;
   color: #303133;
 }
 .msg-box {
@@ -568,10 +641,16 @@ onUnmounted(() => {
 .msg {
   margin-bottom: 14px;
 }
+.msg-role-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
 .msg-role {
   font-size: 12px;
   color: #909399;
-  margin-bottom: 4px;
 }
 .msg-content {
   background: #f5f7fa;

@@ -10,7 +10,8 @@
           </p>
         </div>
         <el-space>
-          <el-button @click="$router.push(INFLUENCER_ROUTES.match)">返回列表</el-button>
+          <el-button @click="$router.push(INFLUENCER_ROUTES.matchHistory)">返回历史</el-button>
+          <el-button @click="$router.push(INFLUENCER_ROUTES.match)">商单筛库</el-button>
           <el-button :disabled="!selectedCount" @click="handleExport(true)">
             导出已选 ({{ selectedCount }})
           </el-button>

@@ -308,6 +308,7 @@ const activeMenu = computed(() => {
   if (path.startsWith('/influencer/collection')) return INFLUENCER_ROUTES.collection
   if (path.startsWith('/influencer/review')) return INFLUENCER_ROUTES.review
   if (path.startsWith('/influencer/tags')) return INFLUENCER_ROUTES.tags
+  if (path.startsWith('/influencer/match-history')) return INFLUENCER_ROUTES.matchHistory
   if (path.startsWith('/influencer/match')) return INFLUENCER_ROUTES.match
   if (path.startsWith('/influencer/agencies')) return INFLUENCER_ROUTES.agencies
   if (path.startsWith('/influencer/users')) return INFLUENCER_ROUTES.users

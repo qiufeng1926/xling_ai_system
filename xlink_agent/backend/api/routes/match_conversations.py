@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from starlette.responses import Response
 
 from api.auth_utils import get_current_user, require_user_id
 from api.portal_auth import PortalUser
 from db.models import Conversation, Message
 from db.session import get_db
 from match_agent import MATCH_SKILL_SLUG
+from match_agent.export import cards_to_xlsx, load_cards_for_export
 from match_agent.orchestrator import run_match_chat
 from tools.portal_context import reset_portal_bearer, set_portal_bearer
 
@@ -148,6 +151,35 @@ def list_match_messages(
     return {"items": items}
 
 
+@router.get("/conversations/{conversation_id}/export")
+def export_match_results(
+    conversation_id: int,
+    message_id: int | None = Query(None, description="指定助手消息；默认最近一轮含卡片结果"),
+    user: PortalUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """一键导出本轮筛库卡片为 xlsx（字段来自 grounded metadata，非模型编造）。"""
+    uid = require_user_id(user)
+    conv = _ensure_match_conv(db, uid, conversation_id)
+    cards, src_mid = load_cards_for_export(
+        db, conversation_id=conversation_id, message_id=message_id
+    )
+    if not cards:
+        raise HTTPException(404, "当前会话没有可导出的筛库结果")
+
+    buf = cards_to_xlsx(cards)
+    safe_title = (conv.title or "商单筛库").replace("/", "_").replace("\\", "_")[:40]
+    filename = f"筛库_{safe_title}_{src_mid or conversation_id}.xlsx"
+    encoded = quote(filename)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded}",
+        },
+    )
+
+
 @router.post("/conversations/{conversation_id}/chat")
 async def match_chat(
     conversation_id: int,
@@ -166,14 +198,18 @@ async def match_chat(
 
     async def event_gen():
         token = set_portal_bearer(bearer)
+        agen = run_match_chat(
+            db,
+            user_id=uid,
+            conversation_id=conversation_id,
+            user_text=body.message.strip(),
+        )
         try:
-            async for chunk in run_match_chat(
-                db,
-                user_id=uid,
-                conversation_id=conversation_id,
-                user_text=body.message.strip(),
-            ):
+            async for chunk in agen:
+                # 客户端已断：继续排空生成器，确保助手消息落库，而不是中途 GeneratorExit
                 if await request.is_disconnected():
+                    async for _ in agen:
+                        pass
                     break
                 yield chunk
         finally:
