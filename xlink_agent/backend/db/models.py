@@ -33,6 +33,8 @@ class Conversation(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
     title: Mapped[str] = mapped_column(String(200), default="新对话")
     status: Mapped[str] = mapped_column(String(32), default="active")
+    # 会话绑定 Skill：仅这些会话注入对应会话级 Skill（如 influencer-match）
+    skill_slug: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()

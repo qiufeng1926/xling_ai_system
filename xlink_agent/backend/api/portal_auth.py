@@ -45,7 +45,7 @@ def fetch_live_portal_profile(bearer_token: str) -> dict | None:
     if not base or not bearer_token:
         return None
     try:
-        with httpx.Client(timeout=3.0) as client:
+        with httpx.Client(timeout=3.0, trust_env=False) as client:
             resp = client.get(
                 f"{base}/api/v1/auth/me",
                 headers={"Authorization": f"Bearer {bearer_token}"},

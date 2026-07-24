@@ -28,6 +28,12 @@ TOOL_KIND: dict[str, str] = {
     "http_request_write": "write",
     "run_code": "code",
     "memory_recall": "kb",
+    "call_influencer_match": "search",
+    "influencer_list_tags": "search",
+    "influencer_list_agencies": "search",
+    "influencer_search": "search",
+    "influencer_get": "fetch",
+    "influencer_rank": "code",
     "finish": "finish",
 }
 
@@ -54,6 +60,12 @@ TOOL_TITLE: dict[str, str] = {
     "http_request_write": "外呼写操作（需确认）",
     "run_code": "运行代码计算",
     "memory_recall": "召回会话记忆",
+    "call_influencer_match": "调用商单筛库智能体",
+    "influencer_list_tags": "对齐达人标签",
+    "influencer_list_agencies": "查询 MCN 机构",
+    "influencer_search": "筛选达人库",
+    "influencer_get": "拉取达人详情",
+    "influencer_rank": "排序匹配达人",
     "finish": "整理最终答复",
 }
 
@@ -80,6 +92,12 @@ TOOL_TITLE_DONE: dict[str, str] = {
     "http_request_write": "写操作已完成",
     "run_code": "代码执行完成",
     "memory_recall": "记忆召回完成",
+    "call_influencer_match": "商单筛库完成",
+    "influencer_list_tags": "标签已对齐",
+    "influencer_list_agencies": "机构列表已就绪",
+    "influencer_search": "达人筛选完成",
+    "influencer_get": "达人详情已拉取",
+    "influencer_rank": "匹配排序完成",
     "finish": "答复已就绪",
 }
 
@@ -105,6 +123,12 @@ TOOL_TITLE_FAIL: dict[str, str] = {
     "http_request_write": "写操作失败",
     "run_code": "代码执行失败",
     "memory_recall": "记忆召回失败",
+    "call_influencer_match": "商单筛库调用失败",
+    "influencer_list_tags": "标签查询失败",
+    "influencer_list_agencies": "机构查询失败",
+    "influencer_search": "达人筛选失败",
+    "influencer_get": "达人详情拉取失败",
+    "influencer_rank": "匹配排序失败",
 }
 
 INTERCEPT_TITLE: dict[str, str] = {
@@ -178,6 +202,9 @@ def tool_detail(tool: str, args: dict[str, Any] | str | None) -> str:
     if tool == "web_search":
         q = str(args.get("query") or "")
         return f"关键词：{q[:120]}" if q else ""
+    if tool == "call_influencer_match":
+        brief = str(args.get("brief") or args.get("query") or "")
+        return f"商单：{brief[:120]}" if brief else "调用商单筛库"
     if tool == "openlibrary_lookup":
         qs = args.get("queries") or []
         if isinstance(qs, list) and qs:

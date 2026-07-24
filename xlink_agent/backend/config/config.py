@@ -94,6 +94,8 @@ browser_headless = _env_bool("BROWSER_HEADLESS", "true")
 log_dir = _env("LOG_DIR") or str(_project_root / "logs")
 log_service_name = _env("LOG_SERVICE_NAME", "xlink-agent") or "xlink-agent"
 log_level = _env("LOG_LEVEL", "INFO") or "INFO"
+# 单文件达到该大小则滚动新建（同时跨自然日也会新建）
+log_max_bytes = int(_env("LOG_MAX_BYTES", str(30 * 1024 * 1024)) or str(30 * 1024 * 1024))
 
 confirmation_ttl_sec = int(_env("CONFIRMATION_TTL_SEC", "600") or "600")
 agent_max_tool_rounds = int(_env("AGENT_MAX_TOOL_ROUNDS", "12") or "12")

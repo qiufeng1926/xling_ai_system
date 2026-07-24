@@ -40,7 +40,7 @@
       <el-space wrap>
         <el-button type="primary" @click="$router.push(INFLUENCER_ROUTES.collection)">发起采集</el-button>
         <el-button type="success" @click="$router.push(INFLUENCER_ROUTES.review)">待审核列表</el-button>
-        <el-button v-if="showAdminActions" type="warning" @click="$router.push(INFLUENCER_ROUTES.match)">智能匹配</el-button>
+        <el-button v-if="showAdminActions" type="warning" @click="$router.push(INFLUENCER_ROUTES.match)">商单筛库</el-button>
         <el-button @click="$router.push(INFLUENCER_ROUTES.influencers)">{{ influencerBtnLabel }}</el-button>
         <el-button v-if="showAdminActions" @click="$router.push(INFLUENCER_ROUTES.tags)">标签管理</el-button>
         <el-button v-if="showAdminActions" @click="$router.push(INFLUENCER_ROUTES.agencies)">MCN机构</el-button>

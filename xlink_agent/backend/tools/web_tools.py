@@ -515,6 +515,14 @@ TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
         },
         "example": {"query": "上次那个销售周报结论", "mode": "auto"},
     },
+    "call_influencer_match": {
+        "desc": (
+            "单向调用「商单筛库」专用智能体：传入商单 brief，由其在达人库内 ReAct 筛选并 grounded 总结。"
+            "不可搜索网页；通用智能体不要自己编造达人。"
+        ),
+        "input": {"brief": "商单/brief 全文"},
+        "example": {"brief": "抖音探店，粉丝5万以上，需要联系方式，至少推荐5位"},
+    },
     "openlibrary_lookup": {
         "desc": (
             "Open Library 书目核验/发现：queries 批量核验书名；"
@@ -527,6 +535,38 @@ TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
             "limit": "可选≤12",
         },
         "example": {"queries": ["史记", "人类简史"], "q": "world history", "limit": 8},
+    },
+    "influencer_list_tags": {
+        "desc": "【仅商单筛库专用运行时】列出达人库标签。",
+        "input": {"query": "可选关键词"},
+        "example": {"query": "美妆"},
+    },
+    "influencer_list_agencies": {
+        "desc": "【仅商单筛库专用运行时】列出 MCN/机构。",
+        "input": {"query": "可选机构名关键词", "limit": "可选"},
+        "example": {"query": "美ONE"},
+    },
+    "influencer_search": {
+        "desc": "【仅商单筛库专用运行时】按条件筛达人库。",
+        "input": {
+            "platform": "可选 douyin|xiaohongshu",
+            "keyword": "可选",
+            "follower_min": "可选",
+            "follower_max": "可选",
+            "tag_ids": [1, 2],
+            "page_size": 20,
+        },
+        "example": {"platform": "douyin", "follower_min": 10000, "page_size": 30},
+    },
+    "influencer_get": {
+        "desc": "【仅商单筛库专用运行时】按 ID 拉达人详情。",
+        "input": {"influencer_id": 1},
+        "example": {"influencer_id": 12},
+    },
+    "influencer_rank": {
+        "desc": "【仅商单筛库专用运行时】对 candidates 打分排序。",
+        "input": {"candidates": [], "preferred_tags": ["探店"], "limit": 10},
+        "example": {"candidates": [], "preferred_tags": ["美妆"], "limit": 8},
     },
 }
 
@@ -652,6 +692,75 @@ def validate_and_normalize_args(tool: str, args: Any) -> tuple[dict[str, Any] | 
         from tools.openlibrary import normalize_openlibrary_args
 
         return normalize_openlibrary_args(args)
+
+    if tool == "call_influencer_match":
+        brief = str(args.get("brief") or args.get("query") or args.get("message") or "").strip()
+        if not brief:
+            return None, "call_influencer_match 需要 brief"
+        return {"brief": brief}, None
+
+    if tool == "influencer_list_tags":
+        return {"query": str(args.get("query") or args.get("keyword") or "").strip()}, None
+
+    if tool == "influencer_list_agencies":
+        out_a: dict[str, Any] = {
+            "query": str(args.get("query") or args.get("keyword") or "").strip(),
+        }
+        if args.get("limit") is not None:
+            try:
+                out_a["limit"] = max(1, min(int(args.get("limit")), 100))
+            except Exception:
+                out_a["limit"] = 50
+        return out_a, None
+
+    if tool == "influencer_search":
+        out_s: dict[str, Any] = {}
+        for key in ("platform", "keyword", "q", "source", "profile_keyword"):
+            if args.get(key) is not None and str(args.get(key)).strip():
+                out_s[key] = str(args.get(key)).strip()
+        for key in ("follower_min", "follower_max", "agency_id", "page", "page_size", "limit"):
+            if args.get(key) is not None and str(args.get(key)).strip() != "":
+                try:
+                    out_s[key] = int(args.get(key))
+                except Exception:
+                    return None, f"influencer_search 的 {key} 必须是整数"
+        tag_ids = args.get("tag_ids") or args.get("required_tag_ids")
+        if isinstance(tag_ids, list):
+            cleaned = []
+            for x in tag_ids:
+                try:
+                    cleaned.append(int(x))
+                except Exception:
+                    continue
+            if cleaned:
+                out_s["tag_ids"] = cleaned
+        elif tag_ids is not None and str(tag_ids).strip().isdigit():
+            out_s["tag_ids"] = [int(tag_ids)]
+        return out_s, None
+
+    if tool == "influencer_get":
+        iid = args.get("influencer_id") or args.get("id")
+        try:
+            return {"influencer_id": int(iid)}, None
+        except Exception:
+            return None, "influencer_get 需要整数 influencer_id"
+
+    if tool == "influencer_rank":
+        cands = args.get("candidates") or args.get("items")
+        if not isinstance(cands, list) or not cands:
+            return None, "influencer_rank 需要非空 candidates 数组"
+        out_r: dict[str, Any] = {"candidates": cands}
+        for key in ("preferred_tags", "preferred_tag_names", "required_tags", "required_tag_names"):
+            if isinstance(args.get(key), list):
+                out_r[key] = [str(x).strip() for x in args[key] if str(x).strip()]
+        if args.get("keyword"):
+            out_r["keyword"] = str(args.get("keyword")).strip()
+        out_r["must_have_contact"] = bool(args.get("must_have_contact"))
+        try:
+            out_r["limit"] = max(5, min(int(args.get("limit") or 10), 50))
+        except Exception:
+            out_r["limit"] = 10
+        return out_r, None
 
     if tool.startswith("file_write_"):
         return _normalize_file_write_args(tool, args)

@@ -41,7 +41,7 @@
           </el-menu-item>
           <el-menu-item v-if="showAdminMenus" :index="INFLUENCER_ROUTES.match">
             <el-icon><Connection /></el-icon>
-            <span>智能匹配</span>
+            <span>商单筛库</span>
           </el-menu-item>
         </el-sub-menu>
 

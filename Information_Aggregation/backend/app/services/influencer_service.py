@@ -128,8 +128,26 @@ class InfluencerService:
             query = query.filter(Influencer.follower_count <= filters.follower_max)
         if filters.keyword:
             keyword = f"%{filters.keyword}%"
+            from sqlalchemy import or_, cast, String, exists
+
+            from app.models import InfluencerProfile
+
+            profile_hit = exists().where(
+                InfluencerProfile.influencer_id == Influencer.id,
+                or_(
+                    cast(InfluencerProfile.cooperation_policy, String).like(keyword),
+                    cast(InfluencerProfile.internal_notes, String).like(keyword),
+                    cast(InfluencerProfile.shooting_style, String).like(keyword),
+                    cast(InfluencerProfile.persona_traits, String).like(keyword),
+                    cast(InfluencerProfile.contact_info, String).like(keyword),
+                ),
+            )
             query = query.filter(
-                (Influencer.nickname.like(keyword)) | (Influencer.platform_uid.like(keyword))
+                or_(
+                    Influencer.nickname.like(keyword),
+                    Influencer.platform_uid.like(keyword),
+                    profile_hit,
+                )
             )
         if filters.tag_ids:
             query = query.join(InfluencerTag).filter(InfluencerTag.tag_id.in_(filters.tag_ids))

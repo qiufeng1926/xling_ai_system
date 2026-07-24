@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -13,12 +13,15 @@ from api.auth_utils import get_current_user, require_user_id
 from api.portal_auth import PortalUser
 from db.models import Conversation, Message
 from db.session import get_db
+from skills.scoped import CONVERSATION_SCOPED_SKILLS
+from tools.portal_context import reset_portal_bearer, set_portal_bearer
 
 router = APIRouter(prefix="/v1/conversations", tags=["conversations"])
 
 
 class ConversationCreate(BaseModel):
     title: str = "新对话"
+    skill_slug: str | None = Field(default=None, max_length=120)
 
 
 class ConversationPatch(BaseModel):
@@ -35,24 +38,38 @@ def _conv_dict(c: Conversation) -> dict[str, Any]:
         "id": c.id,
         "title": c.title,
         "status": c.status,
+        "skill_slug": getattr(c, "skill_slug", None),
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }
 
 
+def _bearer_from_request(request: Request) -> str:
+    auth = request.headers.get("Authorization") or ""
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return ""
+
+
 @router.get("")
 def list_conversations(
+    skill_slug: str | None = Query(default=None),
     user: PortalUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     uid = require_user_id(user)
-    rows = (
-        db.query(Conversation)
-        .filter(Conversation.user_id == uid, Conversation.status != "deleted")
-        .order_by(Conversation.updated_at.desc())
-        .limit(100)
-        .all()
+    q = db.query(Conversation).filter(
+        Conversation.user_id == uid, Conversation.status != "deleted"
     )
+    if skill_slug:
+        q = q.filter(Conversation.skill_slug == skill_slug)
+    else:
+        # 默认列表排除会话级筛库对话，避免污染通用 AgentHub
+        q = q.filter(
+            (Conversation.skill_slug.is_(None))
+            | (~Conversation.skill_slug.in_(list(CONVERSATION_SCOPED_SKILLS)))
+        )
+    rows = q.order_by(Conversation.updated_at.desc()).limit(100).all()
     return {"items": [_conv_dict(r) for r in rows]}
 
 
@@ -63,7 +80,17 @@ def create_conversation(
     db: Session = Depends(get_db),
 ):
     uid = require_user_id(user)
-    row = Conversation(user_id=uid, title=body.title or "新对话")
+    slug = (body.skill_slug or "").strip() or None
+    if slug in CONVERSATION_SCOPED_SKILLS:
+        raise HTTPException(
+            400,
+            "商单筛库会话请走 /api/agent/v1/match/conversations，勿使用通用对话接口",
+        )
+    row = Conversation(
+        user_id=uid,
+        title=body.title or "新对话",
+        skill_slug=slug,
+    )
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -224,16 +251,22 @@ async def chat(
     row = db.get(Conversation, conversation_id)
     if not row or row.user_id != uid:
         raise HTTPException(404, "会话不存在")
-    if row.title == "新对话":
-        row.title = body.message.strip()[:40] or "新对话"
+    if row.title == "新对话" or (row.skill_slug and row.title in {"商单筛库", "新商单筛库"}):
+        row.title = body.message.strip()[:40] or row.title
         db.commit()
 
+    bearer = _bearer_from_request(request)
+
     async def event_gen():
-        async for chunk in run_chat(
-            db, user_id=uid, conversation_id=conversation_id, user_text=body.message.strip()
-        ):
-            if await request.is_disconnected():
-                break
-            yield chunk
+        token = set_portal_bearer(bearer)
+        try:
+            async for chunk in run_chat(
+                db, user_id=uid, conversation_id=conversation_id, user_text=body.message.strip()
+            ):
+                if await request.is_disconnected():
+                    break
+                yield chunk
+        finally:
+            reset_portal_bearer(token)
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")

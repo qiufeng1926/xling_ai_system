@@ -38,5 +38,13 @@ def seed_builtin_skills(db: Session) -> None:
                     enabled=True,
                 )
             )
+    # 商单筛库已迁至独立 match_agent 运行时，禁用旧会话级 Skill 残留
+    stale = (
+        db.query(Skill)
+        .filter(Skill.scope == "builtin", Skill.slug == "influencer-match")
+        .first()
+    )
+    if stale:
+        stale.enabled = False
     db.commit()
     logger.info("已同步官方 Skill %s 个", len(builtins))

@@ -68,6 +68,20 @@ async def execute_tool(
     if normalized is not None:
         args = normalized
 
+    if name.startswith("influencer_"):
+        return {
+            "ok": False,
+            "error": (
+                "达人库低级工具仅供商单筛库专用智能体使用。"
+                "通用智能体请改用 call_influencer_match。"
+            ),
+        }
+
+    if name == "call_influencer_match":
+        from tools.call_influencer_match import call_influencer_match
+
+        return await call_influencer_match(args, db=db, user_id=user_id)
+
     if name == "web_search":
         return await web_search(str(args.get("query") or ""), user_id=user_id)
     if name == "web_fetch":

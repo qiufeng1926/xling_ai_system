@@ -16,6 +16,9 @@ playwright install chromium
 #   scripts\init-local-mysql.cmd
 # （默认 root 密码 root，与门户 .env 中 MYSQL_ROOT_PASSWORD 一致）
 uvicorn api.main:app --reload --port 8003 --timeout-graceful-shutdown 5
+# 日志：终端 stderr 同步输出；文件在 backend/logs/
+#   命名 xlink-agent_YYYYMMDD_HHMMSS_mmm.log
+#   跨自然日或单文件 ≥30MB（LOG_MAX_BYTES）自动新建
 # 注意：长对话/ReAct 跑着时不要改 backend 代码触发热重载，
 # 否则 uvicorn 会卡在 Waiting for connections to close（SSE 未断开）。
 # 若已卡住：在该终端 Ctrl+C 强制退出后重新启动。

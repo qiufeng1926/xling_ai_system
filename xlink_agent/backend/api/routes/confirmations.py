@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -10,12 +10,20 @@ from api.auth_utils import get_current_user, require_user_id
 from api.portal_auth import PortalUser
 from db.models import Confirmation
 from db.session import get_db
+from tools.portal_context import reset_portal_bearer, set_portal_bearer
 
 router = APIRouter(prefix="/v1/confirmations", tags=["confirmations"])
 
 
 class ConfirmBody(BaseModel):
     approved: bool
+
+
+def _bearer_from_request(request: Request) -> str:
+    auth = request.headers.get("Authorization") or ""
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return ""
 
 
 @router.get("/{confirmation_id}")
@@ -59,6 +67,7 @@ async def resolve_confirmation(
 async def resume_confirmation_stream(
     confirmation_id: int,
     body: ConfirmBody,
+    request: Request,
     user: PortalUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -68,11 +77,17 @@ async def resume_confirmation_stream(
     if not row or row.user_id != uid:
         raise HTTPException(404, "确认单不存在")
 
+    bearer = _bearer_from_request(request)
+
     async def gen():
-        async for chunk in resume_chat_after_confirmation(
-            db, user_id=uid, confirmation_id=confirmation_id, approved=body.approved
-        ):
-            yield chunk
+        token = set_portal_bearer(bearer)
+        try:
+            async for chunk in resume_chat_after_confirmation(
+                db, user_id=uid, confirmation_id=confirmation_id, approved=body.approved
+            ):
+                yield chunk
+        finally:
+            reset_portal_bearer(token)
 
     return StreamingResponse(
         gen(),

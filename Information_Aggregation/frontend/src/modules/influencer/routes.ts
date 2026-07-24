@@ -42,13 +42,13 @@ export const influencerRoutes: RouteRecordRaw[] = [
     path: 'match',
     name: 'MatchList',
     component: () => import('@/views/MatchList.vue'),
-    meta: { title: '智能匹配', module: 'influencer', roles: [ROLES.ADMIN, ROLES.SUPER_ADMIN] },
+    meta: { title: '商单筛库', module: 'influencer', roles: [ROLES.ADMIN, ROLES.SUPER_ADMIN] },
   },
   {
     path: 'match/:id',
     name: 'MatchDetail',
-    component: () => import('@/views/MatchDetail.vue'),
-    meta: { title: '匹配结果', module: 'influencer', roles: [ROLES.ADMIN, ROLES.SUPER_ADMIN] },
+    redirect: { name: 'MatchList' },
+    meta: { title: '商单筛库', module: 'influencer', roles: [ROLES.ADMIN, ROLES.SUPER_ADMIN] },
   },
   {
     path: 'agencies',

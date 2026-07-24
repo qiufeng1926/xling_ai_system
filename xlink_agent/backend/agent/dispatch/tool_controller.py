@@ -29,12 +29,16 @@ class ToolController:
             return []
         # 闲聊：去掉写文件 / 浏览器等重工具，保留搜索与记忆
         if transition == TaskTransition.CHITCHAT or query.intent == "chitchat":
+            # 商单筛库会话：保留 influencer_*，勿裁剪
+            if any(str(t).startswith("influencer_") for t in tools):
+                return list(tools)
             light = {
                 "web_search",
                 "web_fetch",
                 "kb_search",
                 "memory_recall",
                 "run_code",
+                "call_influencer_match",
             }
             return [t for t in tools if t in light] or tools
         return list(tools)

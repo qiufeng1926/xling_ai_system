@@ -53,6 +53,9 @@ def list_skills(
         for r in db.query(UserSkillInstall).filter(UserSkillInstall.user_id == uid).all()
     }
     builtins = db.query(Skill).filter(Skill.scope == "builtin", Skill.enabled.is_(True)).all()
+    from skills.scoped import CONVERSATION_SCOPED_SKILLS
+
+    builtins = [s for s in builtins if (s.slug or "") not in CONVERSATION_SCOPED_SKILLS]
     mine = (
         db.query(Skill)
         .filter(Skill.scope == "user", Skill.owner_user_id == uid)

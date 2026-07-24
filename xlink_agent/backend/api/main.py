@@ -5,14 +5,30 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import browser_ws, confirmations, conversations, knowledge, memory, skills, workspace
+from api.routes import (
+    browser_ws,
+    confirmations,
+    conversations,
+    knowledge,
+    match_conversations,
+    memory,
+    skills,
+    workspace,
+)
 from browser.pool import browser_pool
-from config.config import app_env, app_name, cors_origins, portal_frontend_url, workspace_root
+from config.config import (
+    app_env,
+    app_name,
+    cors_origins,
+    log_service_name,
+    portal_frontend_url,
+    workspace_root,
+)
 from db.seed import seed_builtin_skills
 from db.session import SessionLocal, init_db
 from utils.logger import setup_logging
 
-logger = setup_logging(service_name="xlink-agent", console=True)
+logger = setup_logging(service_name=log_service_name, console=True, force=True)
 
 
 def _parse_cors_origins() -> list[str]:
@@ -61,6 +77,7 @@ app.add_middleware(
 # 统一前缀 /api/agent
 PREFIX = "/api/agent"
 app.include_router(conversations.router, prefix=PREFIX)
+app.include_router(match_conversations.router, prefix=PREFIX)
 app.include_router(skills.router, prefix=PREFIX)
 app.include_router(knowledge.router, prefix=PREFIX)
 app.include_router(workspace.router, prefix=PREFIX)

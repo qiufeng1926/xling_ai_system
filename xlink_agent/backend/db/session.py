@@ -36,6 +36,8 @@ def init_db() -> None:
         "ALTER TABLE messages MODIFY COLUMN metadata_json LONGTEXT NULL",
         "ALTER TABLE run_events MODIFY COLUMN payload_json LONGTEXT NULL",
         "ALTER TABLE confirmations MODIFY COLUMN payload_json LONGTEXT NULL",
+        "ALTER TABLE conversations ADD COLUMN skill_slug VARCHAR(120) NULL",
+        "CREATE INDEX ix_conversations_skill_slug ON conversations (skill_slug)",
     )
     with engine.begin() as conn:
         for sql in patches:

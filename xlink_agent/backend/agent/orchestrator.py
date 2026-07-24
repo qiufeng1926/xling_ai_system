@@ -125,7 +125,7 @@ from agent.trajectory import (
     observation_step,
 )
 from config.config import agent_max_tool_rounds, confirmation_ttl_sec
-from db.models import Confirmation, Message, RunEvent, Skill, UserSkillInstall
+from db.models import Confirmation, Conversation, Message, RunEvent, Skill, UserSkillInstall
 from tools.web_tools import render_tool_contracts, validate_and_normalize_args
 from tools.runtime import CONFIRM_TOOLS, execute_tool
 from utils.logger import get_logger
@@ -155,6 +155,8 @@ KNOWN_TOOLS = {
     "file_delete",
     "run_code",
     "memory_recall",
+    # 单向调用专用商单筛库智能体（不可反向）
+    "call_influencer_match",
 }
 
 SYSTEM_PROMPT = REACT_SYSTEM_PROMPT
@@ -389,7 +391,16 @@ def _recover_file_tool(
     return None
 
 
-def _active_skills(db: Session, user_id: int) -> list[Skill]:
+def _active_skills(
+    db: Session,
+    user_id: int,
+    *,
+    conversation_skill_slug: str | None = None,
+) -> list[Skill]:
+    from skills.scoped import CONVERSATION_SCOPED_SKILLS
+
+    # 通用编排：永远不加载会话级筛库 Skill（筛库走 match_agent 独立运行时）
+    _ = conversation_skill_slug
     installed_ids = [
         r.skill_id
         for r in db.query(UserSkillInstall).filter(UserSkillInstall.user_id == user_id).all()
@@ -407,10 +418,19 @@ def _active_skills(db: Session, user_id: int) -> list[Skill]:
         .filter(Skill.scope == "user", Skill.owner_user_id == user_id, Skill.enabled.is_(True))
         .all()
     )
-    return list(builtins) + list(users)
+    return [
+        s
+        for s in (list(builtins) + list(users))
+        if (s.slug or "") not in CONVERSATION_SCOPED_SKILLS
+    ]
 
 
-def _merge_tools(skills: list[Skill]) -> tuple[list[str], str]:
+def _merge_tools(
+    skills: list[Skill],
+    *,
+    conversation_skill_slug: str | None = None,
+) -> tuple[list[str], str]:
+    _ = conversation_skill_slug
     tools: list[str] = []
     bodies: list[str] = []
     for s in skills:
@@ -419,9 +439,10 @@ def _merge_tools(skills: list[Skill]) -> tuple[list[str], str]:
         except Exception:
             t = []
         for name in t:
-            if name not in tools:
+            if name not in tools and not str(name).startswith("influencer_"):
                 tools.append(name)
         bodies.append(f"## Skill: {s.name}\n{s.description}\n{s.body_md}")
+
     for base in [
         "web_search",
         "web_fetch",
@@ -441,10 +462,11 @@ def _merge_tools(skills: list[Skill]) -> tuple[list[str], str]:
         "http_request",
         "run_code",
         "memory_recall",
+        "call_influencer_match",
     ]:
         if base not in tools:
             tools.append(base)
-    # Open Library 默认关闭：不暴露给模型；技能里若带了也剔除
+    # Open Library 默认关闭
     try:
         from config import config as cfg
 
@@ -456,6 +478,8 @@ def _merge_tools(skills: list[Skill]) -> tuple[list[str], str]:
             tools.append("openlibrary_lookup")
     else:
         tools = [t for t in tools if t != "openlibrary_lookup"]
+    # 通用对话永不直接暴露达人库低级工具
+    tools = [t for t in tools if not str(t).startswith("influencer_")]
     return tools, "\n\n".join(bodies)
 
 
@@ -779,7 +803,12 @@ async def run_chat(
     from agent.dispatch import DispatchRequest, get_dispatch_layer
 
     def _merge_tools_for_user(sess: Session, uid: int) -> tuple[list[str], str]:
-        return _merge_tools(_active_skills(sess, uid))
+        conv = sess.get(Conversation, conversation_id)
+        slug = getattr(conv, "skill_slug", None) if conv else None
+        return _merge_tools(
+            _active_skills(sess, uid, conversation_skill_slug=slug),
+            conversation_skill_slug=slug,
+        )
 
     dispatch = get_dispatch_layer()
     turn = await dispatch.prepare_turn(
@@ -2332,8 +2361,10 @@ async def resume_chat_after_confirmation(
         trajectory_log.append(step)
         return sse("trajectory.step", step)
 
-    skills = _active_skills(db, user_id)
-    tools, skill_body = _merge_tools(skills)
+    conv_row = db.get(Conversation, conversation_id)
+    slug = getattr(conv_row, "skill_slug", None) if conv_row else None
+    skills = _active_skills(db, user_id, conversation_skill_slug=slug)
+    tools, skill_body = _merge_tools(skills, conversation_skill_slug=slug)
     if tools_ckpt:
         # 合并检查点工具与当前可用工具
         for t in tools_ckpt:
